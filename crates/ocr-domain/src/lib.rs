@@ -42,6 +42,8 @@ pub enum Error {
     InvalidJobId,
     #[error("upload id is invalid")]
     InvalidUploadId,
+    #[error("webhook subscription id is invalid")]
+    InvalidWebhookSubscriptionId,
     #[error("idempotency key is invalid")]
     InvalidIdempotencyKey,
     #[error("request digest must be a lowercase sha256 digest")]
@@ -302,6 +304,34 @@ impl TryFrom<String> for UploadId {
 
 impl From<UploadId> for String {
     fn from(value: UploadId) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct WebhookSubscriptionId(String);
+
+impl WebhookSubscriptionId {
+    pub fn new(value: &str) -> Result<Self> {
+        validated_id(value, "whs_", Error::InvalidWebhookSubscriptionId).map(Self)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for WebhookSubscriptionId {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self> {
+        Self::new(&value)
+    }
+}
+
+impl From<WebhookSubscriptionId> for String {
+    fn from(value: WebhookSubscriptionId) -> Self {
         value.0
     }
 }

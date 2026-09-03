@@ -303,6 +303,7 @@ async fn seed_job(store: &PgJobStore, admin_pool: &PgPool, job_id: &str, tenant_
             idempotency_key: IdempotencyKey::new(&format!("runner-{job_id}")).unwrap(),
             request_digest: RequestDigest::new(&format!("sha256:{}", "a".repeat(64))).unwrap(),
             upload_id,
+            webhook_subscription_id: None,
         })
         .await
         .unwrap();

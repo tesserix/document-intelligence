@@ -58,6 +58,7 @@ use axum::{
 };
 use ocr_domain::{
     DocumentResult, IdempotencyKey, JobId, JobState, ProductId, RequestDigest, TenantId, UploadId,
+    WebhookSubscriptionId,
 };
 pub use ocr_store::StoredUpload;
 use ocr_store::{
@@ -874,6 +875,18 @@ async fn create_job(
             request_id.clone(),
         )
     })?;
+    let webhook_subscription_id = command
+        .webhook_subscription_id
+        .as_deref()
+        .map(WebhookSubscriptionId::new)
+        .transpose()
+        .map_err(|_| {
+            ApiError::bad_request(
+                "invalid_webhook_subscription_id",
+                "webhook subscription id is invalid",
+                request_id.clone(),
+            )
+        })?;
 
     let canonical = serde_json::to_vec(&command.0).map_err(|_| {
         ApiError::bad_request(
@@ -901,6 +914,7 @@ async fn create_job(
             idempotency_key,
             request_digest,
             upload_id,
+            webhook_subscription_id,
         })
         .await
         .map_err(|error| match error {

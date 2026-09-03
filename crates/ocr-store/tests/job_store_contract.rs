@@ -1,5 +1,6 @@
 use ocr_domain::{
     DocumentId, IdempotencyKey, JobId, PageWorkflow, ProductId, RequestDigest, TenantId, UploadId,
+    WebhookSubscriptionId,
 };
 use ocr_store::{
     AcceptUpload, AcceptUploadOutcome, CancelOutcome, ClaimJobOutbox, ClaimUploadInspection,
@@ -20,7 +21,56 @@ fn request(job_id: &str, tenant_id: &str, key: &str, digest: char) -> CreateJob 
         request_digest: RequestDigest::new(&format!("sha256:{}", digest.to_string().repeat(64)))
             .unwrap(),
         upload_id: upload_id_for(tenant_id),
+        webhook_subscription_id: None,
     }
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn create_persists_only_a_validated_webhook_subscription_reference() {
+    let (store, admin_pool, _) = store().await;
+    clear_fixture(&admin_pool, &["job_WEBHOOK_REFERENCE"]).await;
+    seed_accepted_upload(&admin_pool, "ten_WEBHOOK_REFERENCE").await;
+    let mut create = request(
+        "job_WEBHOOK_REFERENCE",
+        "ten_WEBHOOK_REFERENCE",
+        "webhook-reference",
+        'a',
+    );
+    create.webhook_subscription_id = Some(WebhookSubscriptionId::new("whs_APPROVED1").unwrap());
+
+    assert!(matches!(
+        store.create(create).await.unwrap(),
+        CreateOutcome::Created(_)
+    ));
+    let stored: Option<String> = sqlx::query_scalar(
+        "select webhook_subscription_id from ocr_jobs where job_id = 'job_WEBHOOK_REFERENCE'",
+    )
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(stored.as_deref(), Some("whs_APPROVED1"));
+
+    let invalid = sqlx::query(
+        "update ocr_jobs set webhook_subscription_id = 'https://attacker.invalid' \
+         where job_id = 'job_WEBHOOK_REFERENCE'",
+    )
+    .execute(&admin_pool)
+    .await;
+    assert!(invalid.is_err());
+
+    let mut conflicting = request(
+        "job_WEBHOOK_REPLAY",
+        "ten_WEBHOOK_REFERENCE",
+        "webhook-reference",
+        'a',
+    );
+    conflicting.webhook_subscription_id =
+        Some(WebhookSubscriptionId::new("whs_DIFFERENT1").unwrap());
+    assert!(matches!(
+        store.create(conflicting).await,
+        Err(Error::IdempotencyConflict)
+    ));
 }
 
 #[tokio::test]

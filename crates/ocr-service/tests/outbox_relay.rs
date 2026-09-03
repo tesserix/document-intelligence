@@ -100,6 +100,7 @@ async fn relay_dispatches_a_deterministic_workflow_once_then_acknowledges() {
             idempotency_key: IdempotencyKey::new("relay-job").unwrap(),
             request_digest: RequestDigest::new(&format!("sha256:{}", "c".repeat(64))).unwrap(),
             upload_id: UploadId::new("upl_RELAY").unwrap(),
+            webhook_subscription_id: None,
         })
         .await
         .unwrap();

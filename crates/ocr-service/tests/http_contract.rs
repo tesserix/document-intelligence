@@ -140,6 +140,30 @@ async fn result_route_rejects_an_invalid_job_identifier_without_database_work() 
     assert_eq!(body["code"], "job_not_found");
 }
 
+#[tokio::test]
+async fn create_rejects_an_untrusted_webhook_destination_before_database_work() {
+    let response = router(store_without_connection())
+        .layer(Extension(
+            TrustedIdentity::new("kora", "ten_ALPHA").unwrap(),
+        ))
+        .oneshot(
+            Request::post("/v1/ocr/jobs")
+                .header("content-type", "application/json")
+                .header("idempotency-key", "invalid-webhook")
+                .body(Body::from(
+                    r#"{"source":{"upload_id":"upl_ALPHA"},"document_type":"auto","webhook_subscription_id":"https://attacker.invalid/hook"}"#,
+                ))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["code"], "invalid_webhook_subscription_id");
+}
+
 #[test]
 fn trusted_identity_rejects_noncanonical_scope() {
     assert!(TrustedIdentity::new("prod/kora", "ten_ALPHA").is_err());

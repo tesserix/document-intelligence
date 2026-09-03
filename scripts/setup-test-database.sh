@@ -24,6 +24,8 @@ psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0010_import_rejectio
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0011_job_outbox_delivery_lease.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0012_page_workflow_checkpoints.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0013_page_artifacts.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0014_webhook_subscription.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0014_webhook_subscription.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0013_page_artifacts.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0012_page_workflow_checkpoints.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0011_job_outbox_delivery_lease.down.sql >/dev/null
@@ -50,6 +52,7 @@ psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0010_import_rejectio
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0011_job_outbox_delivery_lease.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0012_page_workflow_checkpoints.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0013_page_artifacts.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0014_webhook_subscription.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 <<SQL >/dev/null
 grant usage on schema public to ${application_role};
 grant select, insert, update, delete on ocr_jobs, ocr_outbox to ${application_role};

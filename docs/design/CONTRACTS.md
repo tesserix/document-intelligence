@@ -163,6 +163,11 @@ The response is `200` only when `Prefer: wait=N` completed within the bounded se
 
 Repeated requests with the same tenant/key and identical digest return the original job. Reuse with different input returns `409 idempotency_conflict`.
 
+`webhook_subscription_id` is an optional opaque `whs_` identifier resolved by
+trusted service configuration. The API rejects URLs and non-canonical IDs, and
+persists the reference atomically with the job; request data can never select a
+callback destination or signing secret directly.
+
 ## Job state
 
 States are `accepted`, `inspecting`, `processing`, `validating`, `cancelling`, `cancelled`, `rejected`, `partial`, `review_required`, and `completed`. Status includes page totals/completed/failed, bounded progress, stable reason/warning codes, timestamps, and result/review availability. It never includes extracted content.

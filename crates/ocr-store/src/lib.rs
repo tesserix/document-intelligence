@@ -2,7 +2,7 @@
 
 use ocr_domain::{
     DocumentId, DocumentVersion, IdempotencyKey, JobId, JobState, PageTask, PageWorkflow,
-    ProductId, RequestDigest, TenantId, UploadId,
+    ProductId, RequestDigest, TenantId, UploadId, WebhookSubscriptionId,
 };
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use thiserror::Error;
@@ -40,6 +40,7 @@ pub struct CreateJob {
     pub idempotency_key: IdempotencyKey,
     pub request_digest: RequestDigest,
     pub upload_id: UploadId,
+    pub webhook_subscription_id: Option<WebhookSubscriptionId>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -1129,8 +1130,9 @@ impl PgJobStore {
 
         let inserted = sqlx::query(
             "insert into ocr_jobs \
-             (job_id, tenant_id, product_id, idempotency_key, request_digest, upload_id) \
-             select $1, $2, $3, $4, $5, $6 from ocr_uploads \
+             (job_id, tenant_id, product_id, idempotency_key, request_digest, upload_id, \
+              webhook_subscription_id) \
+             select $1, $2, $3, $4, $5, $6, $7 from ocr_uploads \
              where product_id = $3 and tenant_id = $2 and upload_id = $6 and status = 'accepted' \
              on conflict (product_id, tenant_id, idempotency_key) do nothing \
              returning job_id, status::text as status, created_at",
@@ -1141,6 +1143,12 @@ impl PgJobStore {
         .bind(request.idempotency_key.as_str())
         .bind(request.request_digest.as_str())
         .bind(request.upload_id.as_str())
+        .bind(
+            request
+                .webhook_subscription_id
+                .as_ref()
+                .map(WebhookSubscriptionId::as_str),
+        )
         .fetch_optional(&mut *transaction)
         .await?;
 
@@ -1162,7 +1170,8 @@ impl PgJobStore {
         }
 
         let existing = sqlx::query(
-            "select job_id, status::text as status, created_at, request_digest from ocr_jobs \
+            "select job_id, status::text as status, created_at, request_digest, \
+             webhook_subscription_id from ocr_jobs \
              where product_id = $1 and tenant_id = $2 and idempotency_key = $3",
         )
         .bind(request.product_id.as_str())
@@ -1176,7 +1185,14 @@ impl PgJobStore {
         };
 
         let existing_digest: &str = existing.try_get("request_digest")?;
-        if existing_digest != request.request_digest.as_str() {
+        let existing_webhook: Option<&str> = existing.try_get("webhook_subscription_id")?;
+        if existing_digest != request.request_digest.as_str()
+            || existing_webhook
+                != request
+                    .webhook_subscription_id
+                    .as_ref()
+                    .map(WebhookSubscriptionId::as_str)
+        {
             return Err(Error::IdempotencyConflict);
         }
 
