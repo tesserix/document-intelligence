@@ -5,6 +5,7 @@ use ocr_store::{
     ClaimJobOutbox, CreatePageWorkflowOutcome, JobOutboxEventType, PgJobStore,
     PublishJobOutboxOutcome, SavePageWorkflowOutcome, StoredPageWorkflow,
 };
+use sha2::{Digest, Sha256};
 use thiserror::Error;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -223,7 +224,7 @@ where
         for event in events {
             let dispatch = WorkflowDispatch {
                 event_id: event.event_id,
-                workflow_id: format!("ocr-job-{}", event.job_id.as_str()),
+                workflow_id: scoped_workflow_id(product_id, tenant_id, &event.job_id),
                 product_id: product_id.clone(),
                 tenant_id: tenant_id.clone(),
                 job_id: event.job_id,
@@ -251,4 +252,15 @@ where
         }
         Ok(RelayOutcome::Published(published))
     }
+}
+
+pub fn scoped_workflow_id(product_id: &ProductId, tenant_id: &TenantId, job_id: &JobId) -> String {
+    let mut digest = Sha256::new();
+    digest.update(product_id.as_str());
+    digest.update([0]);
+    digest.update(tenant_id.as_str());
+    digest.update([0]);
+    digest.update(job_id.as_str());
+    let encoded = format!("{:x}", digest.finalize());
+    format!("ocr-v1-{}", &encoded[..32])
 }
