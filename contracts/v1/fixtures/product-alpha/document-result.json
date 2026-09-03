@@ -1,0 +1,125 @@
+{
+  "citations": [
+    {
+      "observation_id": "obs_TOTAL",
+      "page": 1,
+      "polygon": {
+        "points": [
+          {
+            "x": 0.7,
+            "y": 0.8
+          },
+          {
+            "x": 0.9,
+            "y": 0.8
+          },
+          {
+            "x": 0.9,
+            "y": 0.85
+          },
+          {
+            "x": 0.7,
+            "y": 0.85
+          }
+        ]
+      }
+    }
+  ],
+  "confidence": {
+    "classification": 0.9,
+    "extraction": 0.97,
+    "input_quality": 0.95,
+    "ocr": 0.98,
+    "overall": 0.95,
+    "validation": 1.0
+  },
+  "content_trust": "untrusted",
+  "cost": {
+    "currency": "AUD",
+    "decimal": "0.0012"
+  },
+  "document_id": "doc_ALPHA",
+  "document_version": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+  "duration_ms": 42,
+  "fields": {
+    "total": {
+      "confidence": 0.97,
+      "evidence": [
+        {
+          "observation_id": "obs_TOTAL",
+          "page": 1,
+          "polygon": {
+            "points": [
+              {
+                "x": 0.7,
+                "y": 0.8
+              },
+              {
+                "x": 0.9,
+                "y": 0.8
+              },
+              {
+                "x": 0.9,
+                "y": 0.85
+              },
+              {
+                "x": 0.7,
+                "y": 0.85
+              }
+            ]
+          }
+        }
+      ],
+      "value": {
+        "currency": "AUD",
+        "decimal": "12.50"
+      }
+    }
+  },
+  "markdown": "Total **12.50**",
+  "model_version": "fixture-1.0.0",
+  "pages": [
+    {
+      "height": 1600,
+      "observations": [
+        {
+          "confidence": 0.98,
+          "level": "word",
+          "observation_id": "obs_TOTAL",
+          "parent_observation_id": null,
+          "polygon": {
+            "points": [
+              {
+                "x": 0.7,
+                "y": 0.8
+              },
+              {
+                "x": 0.9,
+                "y": 0.8
+              },
+              {
+                "x": 0.9,
+                "y": 0.85
+              },
+              {
+                "x": 0.7,
+                "y": 0.85
+              }
+            ]
+          },
+          "reading_order": 0,
+          "text": "12.50"
+        }
+      ],
+      "page": 1,
+      "width": 1200
+    }
+  ],
+  "processing_profile_version": "printed-en-v1",
+  "provider": "tesserix",
+  "schema_version": "1.0",
+  "tables": [],
+  "text": "Total 12.50",
+  "validation_failures": [],
+  "warnings": []
+}

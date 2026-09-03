@@ -1,0 +1,32 @@
+{
+  "artifacts": {
+    "create-job.schema.json": {
+      "sha256": "dcf9a6c7083f8e63df9f30f9c5fa80cff3a1fb26c20873604b5ec228086c56d4"
+    },
+    "document-result.schema.json": {
+      "sha256": "40b1581ec483be73add1d0287f0b60aff3c4b715ac2f5e63b9a6a6324f3e8570"
+    },
+    "fixtures/negative-cases.json": {
+      "sha256": "66f4e49cfd350113f6bdea4a982855fdcc35a2628d30a1088f2f3876a8a5f91f"
+    },
+    "fixtures/product-alpha/create-job.json": {
+      "sha256": "b2759c086cd3ae3b71bcbccc7ee99ed34c154787347704121a5b46defd94775a"
+    },
+    "fixtures/product-alpha/document-result.json": {
+      "sha256": "d070e704d9945cfb560a51afd1f262caa76ef672554143c7b0086bdbe6b3ff4e"
+    },
+    "fixtures/product-beta/create-job.json": {
+      "sha256": "0fdf5e10f0cb18924f79f8385353619441fcf99795aa17b4b3f762c8f7f3db0c"
+    },
+    "fixtures/product-beta/document-result.json": {
+      "sha256": "bf59b320b1bca6469fe5ad99d23b23495ef8a0d49a4da9a4f1bd4c353b75b225"
+    },
+    "openapi.json": {
+      "sha256": "1f2d014e7bcadbee5b2e359779ff1d1c7c96e26210cedb06de136456213b5b92"
+    }
+  },
+  "compatibility_status": "pre-release",
+  "contract_version": "1.0.0",
+  "implementation_issue": "https://github.com/tesserix/document-intelligence/issues/15",
+  "review_issue": "https://github.com/tesserix/document-intelligence/issues/4"
+}

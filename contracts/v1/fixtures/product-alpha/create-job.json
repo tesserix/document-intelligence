@@ -1,0 +1,21 @@
+{
+  "document_type": "invoice",
+  "extraction": {
+    "schema_id": "invoice",
+    "schema_version": "1.0"
+  },
+  "language_hints": [
+    "en-AU"
+  ],
+  "output": {
+    "evidence": true,
+    "layout": true,
+    "markdown": true,
+    "text": true
+  },
+  "processing_class": "interactive",
+  "source": {
+    "upload_id": "upl_ALPHA"
+  },
+  "webhook_subscription_id": "whs_ALPHA"
+}
