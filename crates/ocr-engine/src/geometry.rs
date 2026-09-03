@@ -1,6 +1,44 @@
 use crate::{Error, Result};
 use serde::{Deserialize, Serialize};
 
+const MAXIMUM_DESKEW_DEGREES: f64 = 12.0;
+
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawDeskewAngle")]
+pub struct DeskewAngle {
+    degrees: f64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDeskewAngle {
+    degrees: f64,
+}
+
+impl TryFrom<RawDeskewAngle> for DeskewAngle {
+    type Error = Error;
+
+    fn try_from(value: RawDeskewAngle) -> Result<Self> {
+        Self::new(value.degrees)
+    }
+}
+
+impl DeskewAngle {
+    pub fn new(degrees: f64) -> Result<Self> {
+        if degrees.is_finite()
+            && (-MAXIMUM_DESKEW_DEGREES..=MAXIMUM_DESKEW_DEGREES).contains(&degrees)
+        {
+            Ok(Self { degrees })
+        } else {
+            Err(Error::InvalidDeskewAngle)
+        }
+    }
+
+    pub fn degrees(self) -> f64 {
+        self.degrees
+    }
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(try_from = "RawCropRegion")]
 pub struct CropRegion {
@@ -63,6 +101,7 @@ pub enum Rotation {
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TransformStep {
     Crop { region: CropRegion },
+    Deskew { angle: DeskewAngle },
     FlipHorizontal,
     FlipVertical,
     Rotation { rotation: Rotation },
@@ -81,6 +120,10 @@ impl TransformChain {
 
     pub fn push_crop(&mut self, crop: CropRegion) {
         self.steps.push(TransformStep::Crop { region: crop });
+    }
+
+    pub fn push_deskew(&mut self, angle: DeskewAngle) {
+        self.steps.push(TransformStep::Deskew { angle });
     }
 
     pub fn push_rotation(&mut self, rotation: Rotation) {
@@ -120,6 +163,15 @@ impl TransformChain {
                     region.left + x * region.width,
                     region.top + y * region.height,
                 ),
+                TransformStep::Deskew { angle } => {
+                    let radians = angle.degrees().to_radians();
+                    let translated_x = x - 0.5;
+                    let translated_y = y - 0.5;
+                    (
+                        0.5 + radians.cos() * translated_x + radians.sin() * translated_y,
+                        0.5 - radians.sin() * translated_x + radians.cos() * translated_y,
+                    )
+                }
                 TransformStep::FlipHorizontal => (1.0 - x, y),
                 TransformStep::FlipVertical => (x, 1.0 - y),
                 TransformStep::Rotation {

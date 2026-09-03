@@ -1,12 +1,16 @@
 //! Safe, bounded image preparation for the Rust OCR engine.
 
+mod deskew;
 mod detection;
 mod geometry;
 mod page;
 mod recognition;
 
+pub use deskew::{
+    deskew_image, estimate_skew, DeskewDecision, DeskewPolicy, DeskewResult, SkewEstimate,
+};
 pub use detection::{select_regions, DetectionCandidate, DetectionLimits};
-pub use geometry::{CropRegion, Rotation, TransformChain, TransformStep};
+pub use geometry::{CropRegion, DeskewAngle, Rotation, TransformChain, TransformStep};
 pub use page::build_page_observations;
 pub use recognition::{assemble_recognitions, RecognitionAlternative, RecognizedRegion};
 
@@ -36,6 +40,10 @@ pub enum Error {
     UnsupportedOrInvalidImage,
     #[error("image geometry is invalid")]
     InvalidGeometry,
+    #[error("deskew angle must be finite and within twelve degrees")]
+    InvalidDeskewAngle,
+    #[error("deskew policy is invalid")]
+    InvalidDeskewPolicy,
     #[error("detector candidate is invalid")]
     InvalidDetectionCandidate,
     #[error("detector limits are invalid")]
