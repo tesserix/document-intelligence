@@ -1,13 +1,23 @@
+use std::sync::Arc;
+
 use ocr_domain::{
     IdempotencyKey, JobId, PageTask, PageWorkflow, ProductId, RequestDigest, TenantId, UploadId,
 };
 use ocr_service::{PageProcessError, PageProcessFuture, PageProcessor};
-use ocr_store::{CreateJob, CreatePageWorkflowOutcome, PgJobStore};
+use ocr_store::{CreateJob, CreatePageWorkflowOutcome, PgJobStore, StoredPageArtifact};
 use ocr_temporal::{
-    CheckpointedPageExecutor, DurableActivityInput, DurableActivityStatus,
-    DurableExecutionErrorKind, DurablePageExecution,
+    CheckpointedPageExecutor, DurableActivityInput, DurableActivityStatus, DurableDocumentWorkflow,
+    DurableExecutionErrorKind, DurablePageActivities, DurablePageExecution,
+    DurableWorkflowResultMetadata, DurableWorkflowRunInput,
 };
 use sqlx::PgPool;
+use temporalio_client::{WorkflowGetResultOptions, WorkflowStartOptions};
+use temporalio_sdk::{
+    testing::{
+        DevServerLogLevel, EphemeralExe, LocalWorkflowEnvironmentOptions, WorkflowEnvironment,
+    },
+    Runtime, Worker, WorkerOptions,
+};
 
 struct ExhaustingProcessor;
 
@@ -27,7 +37,7 @@ async fn stores() -> (PgJobStore, PgPool) {
     (PgJobStore::new(application_pool), admin_pool)
 }
 
-async fn seed_job(store: &PgJobStore, admin: &PgPool) {
+async fn seed_job(store: &PgJobStore, admin: &PgPool, page_count: u32) {
     let job = "job_TEMPORAL_BRIDGE";
     let tenant = "ten_TEMPORAL_BRIDGE";
     let upload = "upl_TEMPORAL_BRIDGE";
@@ -82,7 +92,7 @@ async fn seed_job(store: &PgJobStore, admin: &PgPool) {
         .await
         .unwrap();
     let job_id = JobId::new(job).unwrap();
-    let workflow = PageWorkflow::new(job_id.clone(), 1, 3).unwrap();
+    let workflow = PageWorkflow::new(job_id.clone(), page_count, 3).unwrap();
     assert!(matches!(
         store
             .create_page_workflow(
@@ -101,7 +111,7 @@ async fn seed_job(store: &PgJobStore, admin: &PgPool) {
 #[ignore = "requires TEST_DATABASE_URL"]
 async fn cnpg_owns_attempt_exhaustion_and_cross_tenant_access_is_denied() {
     let (store, admin) = stores().await;
-    seed_job(&store, &admin).await;
+    seed_job(&store, &admin, 1).await;
     let executor = CheckpointedPageExecutor::new(store, ExhaustingProcessor, 1, 1).unwrap();
     let input = DurableActivityInput::new(
         ProductId::new("kora").unwrap(),
@@ -131,4 +141,99 @@ async fn cnpg_owns_attempt_exhaustion_and_cross_tenant_access_is_denied() {
     let error = executor.run(&wrong_tenant).await.unwrap_err();
     assert_eq!(error.kind(), DurableExecutionErrorKind::ScopeNotFound);
     assert!(!error.is_retryable());
+}
+
+struct PageTwoExhaustingProcessor;
+
+impl PageProcessor for PageTwoExhaustingProcessor {
+    fn process<'a>(&'a self, task: PageTask) -> PageProcessFuture<'a> {
+        Box::pin(async move {
+            if task.page == 2 {
+                return Err(PageProcessError::Retryable);
+            }
+            Ok(StoredPageArtifact {
+                page: task.page,
+                attempt: task.attempt,
+                activity_key: task.activity_key,
+                object_bucket: "dev-kora-ocr-pages".to_owned(),
+                object_name: format!("page-artifacts/{}.json", task.page),
+                object_generation: i64::from(task.attempt),
+                object_digest: format!("sha256:{}", "d".repeat(64)),
+                content_length: 256,
+            })
+        })
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires TEST_DATABASE_URL and TEMPORAL_CLI_PATH"]
+async fn temporal_sdk_activity_exhaustion_preserves_successful_page_artifacts() {
+    let Ok(cli) = std::env::var("TEMPORAL_CLI_PATH") else {
+        return;
+    };
+    let (store, admin) = stores().await;
+    seed_job(&store, &admin, 3).await;
+    let executor =
+        CheckpointedPageExecutor::new(store.clone(), PageTwoExhaustingProcessor, 1, 1).unwrap();
+    let input = DurableActivityInput::new(
+        ProductId::new("kora").unwrap(),
+        TenantId::new("ten_TEMPORAL_BRIDGE").unwrap(),
+        JobId::new("job_TEMPORAL_BRIDGE").unwrap(),
+    );
+    let env = WorkflowEnvironment::start_local(
+        LocalWorkflowEnvironmentOptions::builder()
+            .server_executable(EphemeralExe::ExistingPath(cli))
+            .log_level(DevServerLogLevel::Never)
+            .build(),
+    )
+    .await
+    .unwrap();
+    let runtime = Runtime::new_assume_tokio(Default::default()).unwrap();
+    let worker_options = WorkerOptions::new("ocr-temporal-durable-postgres")
+        .register_workflow::<DurableDocumentWorkflow>()
+        .unwrap()
+        .register_activities(DurablePageActivities::new(Arc::new(executor)))
+        .build();
+    let mut worker = Worker::new(&runtime, env.client().clone(), worker_options).unwrap();
+    let shutdown = worker.shutdown_handle();
+
+    tokio::task::LocalSet::new()
+        .run_until(async move {
+            let worker_task = tokio::task::spawn_local(async move { worker.run().await });
+            let handle = env
+                .client()
+                .start_workflow(
+                    DurableDocumentWorkflow::run,
+                    DurableWorkflowRunInput::first(input),
+                    WorkflowStartOptions::new(
+                        "ocr-temporal-durable-postgres",
+                        "ocr-temporal-durable-postgres-exhaustion",
+                    )
+                    .build(),
+                )
+                .await
+                .unwrap();
+            let result: DurableWorkflowResultMetadata = handle
+                .get_result(WorkflowGetResultOptions::default())
+                .await
+                .unwrap();
+            assert_eq!(result.status, DurableActivityStatus::Partial);
+            assert_eq!(result.runner_iterations, 5);
+
+            shutdown();
+            worker_task.await.unwrap().unwrap();
+            env.shutdown().await.unwrap();
+        })
+        .await;
+
+    let tenant = TenantId::new("ten_TEMPORAL_BRIDGE").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let job = JobId::new("job_TEMPORAL_BRIDGE").unwrap();
+    let artifacts = store
+        .load_page_artifacts(&tenant, &product, &job)
+        .await
+        .unwrap();
+    assert_eq!(artifacts.len(), 2);
+    assert_eq!(artifacts[0].page, 1);
+    assert_eq!(artifacts[1].page, 3);
 }

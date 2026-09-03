@@ -30,3 +30,8 @@ fi
 tar -xzf "${archive_path}" -C "${qualification_dir}" temporal
 TEMPORAL_CLI_PATH="${qualification_dir}/temporal" \
   cargo test -p ocr-temporal --test live_temporal_qualification -- --ignored --nocapture --test-threads=1
+
+if [[ -n "${TEST_DATABASE_URL:-}" && -n "${TEST_DATABASE_ADMIN_URL:-}" ]]; then
+  TEMPORAL_CLI_PATH="${qualification_dir}/temporal" \
+    cargo test -p ocr-temporal --test durable_postgres_bridge -- --ignored --nocapture --test-threads=1
+fi

@@ -4,7 +4,7 @@ use std::{
     future::Future, net::SocketAddr, ops::RangeInclusive, pin::Pin, sync::Arc, time::Duration,
 };
 
-use ocr_domain::{JobId, ProductId, TenantId};
+use ocr_domain::{JobId, ProductId, TenantId, MAXIMUM_PAGE_ATTEMPTS, MAXIMUM_PAGE_COUNT};
 use ocr_service::{
     scoped_workflow_id, CheckpointedPageRunner, PageProcessor, PageRunnerError, PageRunnerOutcome,
     WorkflowAction, WorkflowDispatch, WorkflowDispatchError, WorkflowDispatchOutcome,
@@ -29,10 +29,12 @@ use thiserror::Error;
 use tokio::io::AsyncWriteExt;
 
 const WORKFLOW_SCHEMA_VERSION: &str = "1";
-const MAX_PAGE_COUNT: u32 = 300;
+const MAX_PAGE_COUNT: u32 = MAXIMUM_PAGE_COUNT;
 const MAX_WORKFLOW_INPUT_BYTES: usize = 512;
 const TEMPORAL_RPC_TIMEOUT: Duration = Duration::from_secs(5);
 const PAGES_PER_RUN: u32 = 50;
+const DURABLE_ITERATIONS_PER_RUN: u32 = 50;
+const MAX_DURABLE_RUNNER_ITERATIONS: u32 = MAX_PAGE_COUNT * MAXIMUM_PAGE_ATTEMPTS as u32;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkflowInput {
@@ -431,6 +433,7 @@ pub enum DurableExecutionErrorKind {
     RevisionConflict,
     InvalidInput,
     ScopeNotFound,
+    IterationLimit,
 }
 
 #[derive(Debug, Copy, Clone, Error, PartialEq, Eq)]
@@ -542,7 +545,7 @@ where
 }
 
 pub fn durable_activity_options(iteration: u32) -> Option<ActivityOptions> {
-    if !(1..=MAX_PAGE_COUNT * 3).contains(&iteration) {
+    if !(1..=MAX_PAGE_COUNT * u32::from(MAXIMUM_PAGE_ATTEMPTS)).contains(&iteration) {
         return None;
     }
     let policy = ActivityPolicy::page_ocr();
@@ -568,6 +571,159 @@ pub struct DurablePageActivities {
 impl DurablePageActivities {
     pub fn new(execution: Arc<dyn DurablePageExecution>) -> Self {
         Self { execution }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DurableWorkflowRunInput {
+    schema_version: String,
+    product_id: ProductId,
+    tenant_id: TenantId,
+    job_id: JobId,
+    next_iteration: u32,
+    run_number: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireDurableWorkflowRunInput {
+    schema_version: String,
+    product_id: ProductId,
+    tenant_id: TenantId,
+    job_id: JobId,
+    next_iteration: u32,
+    run_number: u32,
+}
+
+impl<'de> Deserialize<'de> for DurableWorkflowRunInput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = WireDurableWorkflowRunInput::deserialize(deserializer)?;
+        let expected_iteration = wire
+            .run_number
+            .checked_sub(1)
+            .and_then(|run| run.checked_mul(DURABLE_ITERATIONS_PER_RUN))
+            .and_then(|iteration| iteration.checked_add(1));
+        if wire.schema_version != WORKFLOW_SCHEMA_VERSION
+            || expected_iteration != Some(wire.next_iteration)
+            || !(1..=MAX_DURABLE_RUNNER_ITERATIONS).contains(&wire.next_iteration)
+        {
+            return Err(serde::de::Error::custom(
+                "invalid durable workflow run input",
+            ));
+        }
+        Ok(Self {
+            schema_version: wire.schema_version,
+            product_id: wire.product_id,
+            tenant_id: wire.tenant_id,
+            job_id: wire.job_id,
+            next_iteration: wire.next_iteration,
+            run_number: wire.run_number,
+        })
+    }
+}
+
+impl DurableWorkflowRunInput {
+    pub fn first(input: DurableActivityInput) -> Self {
+        Self {
+            schema_version: WORKFLOW_SCHEMA_VERSION.to_owned(),
+            product_id: input.product_id,
+            tenant_id: input.tenant_id,
+            job_id: input.job_id,
+            next_iteration: 1,
+            run_number: 1,
+        }
+    }
+
+    pub fn run_number(&self) -> u32 {
+        self.run_number
+    }
+
+    pub fn iteration_range(&self) -> RangeInclusive<u32> {
+        let last_iteration = self
+            .next_iteration
+            .saturating_add(DURABLE_ITERATIONS_PER_RUN - 1)
+            .min(MAX_DURABLE_RUNNER_ITERATIONS);
+        self.next_iteration..=last_iteration
+    }
+
+    pub fn next_run(&self) -> Option<Self> {
+        let next_iteration = self.iteration_range().end().saturating_add(1);
+        (next_iteration <= MAX_DURABLE_RUNNER_ITERATIONS).then(|| Self {
+            schema_version: self.schema_version.clone(),
+            product_id: self.product_id.clone(),
+            tenant_id: self.tenant_id.clone(),
+            job_id: self.job_id.clone(),
+            next_iteration,
+            run_number: self.run_number.saturating_add(1),
+        })
+    }
+
+    fn activity_input(&self) -> DurableActivityInput {
+        DurableActivityInput::new(
+            self.product_id.clone(),
+            self.tenant_id.clone(),
+            self.job_id.clone(),
+        )
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct DurableWorkflowResultMetadata {
+    pub status: DurableActivityStatus,
+    pub runner_iterations: u32,
+    pub runs: u32,
+}
+
+#[workflow]
+#[derive(Default)]
+pub struct DurableDocumentWorkflow;
+
+#[workflow_methods]
+impl DurableDocumentWorkflow {
+    #[run(name = "ocr_durable_document_v1")]
+    pub async fn run(
+        ctx: &mut WorkflowContext<Self>,
+        input: DurableWorkflowRunInput,
+    ) -> WorkflowResult<DurableWorkflowResultMetadata> {
+        for iteration in input.iteration_range() {
+            let options = match durable_activity_options(iteration) {
+                Some(options) => options,
+                None => {
+                    return Err(
+                        ApplicationFailure::non_retryable(DurableExecutionError::new(
+                            DurableExecutionErrorKind::InvalidInput,
+                        ))
+                        .into(),
+                    )
+                }
+            };
+            let outcome = ctx
+                .execute_activity(
+                    DurablePageActivities::run_checkpointed_pages,
+                    input.activity_input(),
+                    options,
+                )
+                .await?;
+            if outcome.status() != DurableActivityStatus::Running {
+                return Ok(DurableWorkflowResultMetadata {
+                    status: outcome.status(),
+                    runner_iterations: iteration,
+                    runs: input.run_number,
+                });
+            }
+        }
+        if let Some(next) = input.next_run() {
+            ctx.continue_as_new(next, ContinueAsNewOptions::default())?;
+        }
+        Err(
+            ApplicationFailure::non_retryable(DurableExecutionError::new(
+                DurableExecutionErrorKind::IterationLimit,
+            ))
+            .into(),
+        )
     }
 }
 

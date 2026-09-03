@@ -2,7 +2,9 @@
 
 mod page_workflow;
 
-pub use page_workflow::{PageTask, PageWorkflow, PageWorkflowStatus};
+pub use page_workflow::{
+    PageTask, PageWorkflow, PageWorkflowStatus, MAXIMUM_PAGE_ATTEMPTS, MAXIMUM_PAGE_COUNT,
+};
 
 use std::collections::BTreeMap;
 

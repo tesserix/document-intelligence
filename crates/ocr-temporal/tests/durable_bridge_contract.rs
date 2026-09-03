@@ -4,7 +4,7 @@ use ocr_domain::PageWorkflowStatus;
 use ocr_service::{PageRunnerError, PageRunnerOutcome};
 use ocr_temporal::{
     durable_activity_options, DurableActivityInput, DurableActivityOutput, DurableActivityStatus,
-    DurableExecutionError, DurableExecutionErrorKind,
+    DurableExecutionError, DurableExecutionErrorKind, DurableWorkflowRunInput,
 };
 use temporalio_sdk::{activities::ActivityError, ActivityCancellationType, ActivityCloseTimeouts};
 
@@ -137,5 +137,44 @@ fn durable_runner_activity_has_bounded_transport_recovery() {
     );
     assert_eq!(retry.maximum_attempts(), 3);
     assert!(durable_activity_options(0).is_none());
-    assert!(durable_activity_options(901).is_none());
+    assert!(durable_activity_options(3_000).is_some());
+    assert!(durable_activity_options(3_001).is_none());
+}
+
+#[test]
+fn durable_workflow_continues_after_fifty_content_free_runner_iterations() {
+    let first = serde_json::from_str::<DurableWorkflowRunInput>(
+        r#"{"schema_version":"1","product_id":"kora","tenant_id":"ten_BRIDGE","job_id":"job_BRIDGE","next_iteration":1,"run_number":1}"#,
+    )
+    .unwrap();
+    let next = first.next_run().unwrap();
+
+    assert_eq!(first.iteration_range(), 1..=50);
+    assert_eq!(next.run_number(), 2);
+    assert_eq!(next.iteration_range(), 51..=100);
+    assert_eq!(
+        serde_json::to_value(next).unwrap(),
+        serde_json::json!({
+            "schema_version": "1",
+            "product_id": "kora",
+            "tenant_id": "ten_BRIDGE",
+            "job_id": "job_BRIDGE",
+            "next_iteration": 51,
+            "run_number": 2,
+        })
+    );
+}
+
+#[test]
+fn durable_workflow_rejects_injected_or_impossible_run_state() {
+    for json in [
+        r#"{"schema_version":"1","product_id":"kora","tenant_id":"ten_BRIDGE","job_id":"job_BRIDGE","next_iteration":2,"run_number":1}"#,
+        r#"{"schema_version":"1","product_id":"kora","tenant_id":"ten_BRIDGE","job_id":"job_BRIDGE","next_iteration":1,"run_number":1,"document_text":"untrusted"}"#,
+        r#"{"schema_version":"1","product_id":"kora","tenant_id":"ten_BRIDGE","job_id":"job_BRIDGE","next_iteration":3001,"run_number":61}"#,
+    ] {
+        assert!(
+            serde_json::from_str::<DurableWorkflowRunInput>(json).is_err(),
+            "{json}"
+        );
+    }
 }
