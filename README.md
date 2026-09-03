@@ -70,6 +70,10 @@ using `JOB_STATUS_CACHE_ACTIVE_TTL_SECONDS`,
 every miss, invalid entry, timeout, or Valkey error falls through to the same
 product- and tenant-scoped database lookup.
 
+Run `scripts/test-valkey-cache.sh` for the digest-pinned real-Valkey contract
+check. It verifies an expiring scoped round trip and bounded rejection of an
+oversized value without coupling the reusable PostgreSQL CI job to Valkey.
+
 Tracing is JSON-only when `OTEL_EXPORTER_OTLP_ENDPOINT` is absent. When set, the
 endpoint must be a loopback collector or a fully qualified Kubernetes
 `*.svc.cluster.local` gateway and `DEPLOYMENT_ENVIRONMENT` must be canonical.
