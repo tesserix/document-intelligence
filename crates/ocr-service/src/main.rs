@@ -3,8 +3,8 @@ use std::{collections::HashMap, env, str::FromStr, sync::Arc};
 use anyhow::{Context, Result};
 use ocr_domain::ProductId;
 use ocr_service::{
-    router, router_with_dependencies, router_with_result_reader, router_with_upload_issuer,
-    GcsResultReader, GcsUploadIssuer,
+    router, router_with_dependencies, router_with_result_reader, router_with_upload_services,
+    GcsResultReader, GcsUploadArtifactReader, GcsUploadIssuer,
 };
 use ocr_store::PgJobStore;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -36,11 +36,15 @@ async fn main() -> Result<()> {
             let issuer =
                 GcsUploadIssuer::new(&upload_buckets.values().cloned().collect::<Vec<_>>())
                     .context("QUARANTINE_BUCKETS contains invalid configuration")?;
+            let artifact_reader =
+                GcsUploadArtifactReader::new(&upload_buckets.values().cloned().collect::<Vec<_>>())
+                    .context("QUARANTINE_BUCKETS contains invalid configuration")?;
             router_with_dependencies(
                 PgJobStore::new(pool),
                 Arc::new(reader),
                 upload_buckets,
                 Arc::new(issuer),
+                Arc::new(artifact_reader),
             )
         }
         (Some(result_buckets), None) => {
@@ -52,7 +56,15 @@ async fn main() -> Result<()> {
             let issuer =
                 GcsUploadIssuer::new(&upload_buckets.values().cloned().collect::<Vec<_>>())
                     .context("QUARANTINE_BUCKETS contains invalid configuration")?;
-            router_with_upload_issuer(PgJobStore::new(pool), upload_buckets, Arc::new(issuer))
+            let artifact_reader =
+                GcsUploadArtifactReader::new(&upload_buckets.values().cloned().collect::<Vec<_>>())
+                    .context("QUARANTINE_BUCKETS contains invalid configuration")?;
+            router_with_upload_services(
+                PgJobStore::new(pool),
+                upload_buckets,
+                Arc::new(issuer),
+                Arc::new(artifact_reader),
+            )
         }
         (None, None) => router(PgJobStore::new(pool)),
     };

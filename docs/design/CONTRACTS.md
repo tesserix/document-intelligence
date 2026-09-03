@@ -56,6 +56,21 @@ reconciliation, even if a caller omits an advisory storage header. Inspection
 pins the exact observed object generation before promotion, so later writes
 cannot change the bytes being processed.
 
+After the PUT, `POST /v1/ocr/uploads/{upload_id}/complete` reconciles the object.
+It has no request body and is naturally idempotent on the upload resource. The
+service streams rather than buffers the object, verifies the declared byte
+length and SHA-256, detects MIME from magic bytes, and records the exact GCS
+generation. The response exposes only `upload_id` and `status: uploaded`; it
+does not expose storage metadata. Missing and foreign uploads both return
+`404 upload_not_found`; absent objects return `409 upload_not_ready`; expired
+reservations return `409 upload_expired`; mismatches return
+`422 upload_verification_failed`.
+
+The GCS read completes before the short CNPG transaction. That transaction
+conditionally records `reserved → uploaded` and one `ocr.upload.received.v1`
+outbox event. A crash before commit is retried; a crash after commit replays the
+stored generation without duplicating the event.
+
 ## Create job
 
 ```json
@@ -74,6 +89,13 @@ cannot change the bytes being processed.
 ```
 
 The source is exactly one service-issued `upload_id`, approved tenant-storage reference, or batch-manifest entry. It is never an arbitrary URL. Inline custom schemas are deferred until schema-size, keyword, ownership and versioning rules are approved; production requests should prefer a registered immutable schema ID/version.
+
+For the implemented upload path, job creation performs a scoped database join
+and succeeds only when the referenced upload is already `uploaded` for the same
+verified product and tenant. A guessed, foreign, missing, expired-before-upload,
+or still-reserved identifier returns `404 upload_not_found`. Subsequent malware
+and parser inspection remains part of the job workflow and can still reject the
+document before OCR.
 
 The response is `200` only when `Prefer: wait=N` completed within the bounded server wait; otherwise it is `202`:
 

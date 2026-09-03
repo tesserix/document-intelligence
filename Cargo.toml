@@ -13,7 +13,9 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "time"] }
-tokio = { version = "1.47", features = ["macros", "net", "rt-multi-thread", "signal"] }
+tokio = { version = "1.47", features = ["macros", "net", "rt-multi-thread", "signal", "sync"] }
+bytes = "1.10"
+futures-util = "0.3"
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["limit", "request-id", "timeout", "trace"] }

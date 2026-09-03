@@ -1,9 +1,11 @@
 //! HTTP boundary for the document intelligence service.
 
 mod result_artifacts;
+mod upload_artifacts;
 mod upload_intents;
 
 pub use result_artifacts::{GcsResultReader, ResultArtifactConfigurationError};
+pub use upload_artifacts::{GcsUploadArtifactReader, UploadArtifactConfigurationError};
 pub use upload_intents::{GcsUploadIssuer, UploadIntentConfigurationError};
 
 use std::{
@@ -27,7 +29,7 @@ use ocr_domain::{
 pub use ocr_store::StoredUpload;
 use ocr_store::{
     CancelOutcome, CreateJob, CreateOutcome, CreateUpload, CreateUploadOutcome, PgJobStore,
-    ResultLookup, StoredResultLocator,
+    RecordUpload, RecordUploadOutcome, ResultLookup, StoredResultLocator, UploadState,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -41,7 +43,7 @@ use uuid::Uuid;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const MAXIMUM_RESULT_BYTES: usize = 16 * 1024 * 1024;
-const MAXIMUM_UPLOAD_BYTES: i64 = 100 * 1024 * 1024;
+pub(crate) const MAXIMUM_UPLOAD_BYTES: i64 = 100 * 1024 * 1024;
 const UPLOAD_INTENT_TTL_MINUTES: i64 = 10;
 
 #[derive(Debug)]
@@ -74,6 +76,41 @@ pub trait UploadIntentIssuer: Send + Sync {
     fn issue<'a>(&'a self, upload: &'a StoredUpload) -> UploadIssueFuture<'a>;
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum UploadArtifactError {
+    NotFound,
+    Invalid,
+    Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedUploadArtifact {
+    pub object_generation: i64,
+    pub content_type: String,
+    pub content_length: i64,
+    pub digest: String,
+}
+
+pub type UploadArtifactReadFuture<'a> = Pin<
+    Box<
+        dyn Future<Output = std::result::Result<VerifiedUploadArtifact, UploadArtifactError>>
+            + Send
+            + 'a,
+    >,
+>;
+
+pub trait UploadArtifactReader: Send + Sync {
+    fn verify<'a>(&'a self, upload: &'a StoredUpload) -> UploadArtifactReadFuture<'a>;
+}
+
+struct UnavailableUploadArtifactReader;
+
+impl UploadArtifactReader for UnavailableUploadArtifactReader {
+    fn verify<'a>(&'a self, _upload: &'a StoredUpload) -> UploadArtifactReadFuture<'a> {
+        Box::pin(async { Err(UploadArtifactError::Unavailable) })
+    }
+}
+
 struct UnavailableUploadIssuer;
 
 impl UploadIntentIssuer for UnavailableUploadIssuer {
@@ -102,6 +139,8 @@ struct AppState {
     uploads: Arc<dyn UploadIntentIssuer>,
     upload_buckets: HashMap<String, String>,
     upload_intents_configured: bool,
+    upload_artifacts: Arc<dyn UploadArtifactReader>,
+    upload_artifacts_configured: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +277,39 @@ impl ApiError {
             },
         }
     }
+
+    fn upload_not_found(request_id: String) -> Self {
+        Self {
+            status: StatusCode::NOT_FOUND,
+            body: ErrorBody {
+                code: "upload_not_found",
+                message: "upload was not found",
+                request_id,
+            },
+        }
+    }
+
+    fn upload_conflict(code: &'static str, message: &'static str, request_id: String) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            body: ErrorBody {
+                code,
+                message,
+                request_id,
+            },
+        }
+    }
+
+    fn upload_verification_failed(request_id: String) -> Self {
+        Self {
+            status: StatusCode::UNPROCESSABLE_ENTITY,
+            body: ErrorBody {
+                code: "upload_verification_failed",
+                message: "uploaded object did not match its reservation",
+                request_id,
+            },
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -291,6 +363,12 @@ struct UploadIntentResponse {
     required_headers: BTreeMap<String, String>,
     #[serde(with = "time::serde::rfc3339")]
     expires_at: time::OffsetDateTime,
+}
+
+#[derive(Debug, Serialize)]
+struct UploadCompletionResponse {
+    upload_id: UploadId,
+    status: &'static str,
 }
 
 #[derive(Debug, Serialize, Deserialize)]
@@ -353,11 +431,15 @@ impl MakeRequestId for RequestIdFactory {
 pub fn router(store: PgJobStore) -> Router {
     build_router(
         store,
-        Arc::new(UnavailableResultReader),
-        false,
-        Arc::new(UnavailableUploadIssuer),
-        HashMap::new(),
-        false,
+        RouterDependencies {
+            results: Arc::new(UnavailableResultReader),
+            result_artifacts_configured: false,
+            uploads: Arc::new(UnavailableUploadIssuer),
+            upload_buckets: HashMap::new(),
+            upload_intents_configured: false,
+            upload_artifacts: Arc::new(UnavailableUploadArtifactReader),
+            upload_artifacts_configured: false,
+        },
     )
 }
 
@@ -367,11 +449,15 @@ pub fn router_with_result_reader(
 ) -> Router {
     build_router(
         store,
-        results,
-        true,
-        Arc::new(UnavailableUploadIssuer),
-        HashMap::new(),
-        false,
+        RouterDependencies {
+            results,
+            result_artifacts_configured: true,
+            uploads: Arc::new(UnavailableUploadIssuer),
+            upload_buckets: HashMap::new(),
+            upload_intents_configured: false,
+            upload_artifacts: Arc::new(UnavailableUploadArtifactReader),
+            upload_artifacts_configured: false,
+        },
     )
 }
 
@@ -382,11 +468,35 @@ pub fn router_with_upload_issuer(
 ) -> Router {
     build_router(
         store,
-        Arc::new(UnavailableResultReader),
-        false,
-        uploads,
-        upload_buckets,
-        true,
+        RouterDependencies {
+            results: Arc::new(UnavailableResultReader),
+            result_artifacts_configured: false,
+            uploads,
+            upload_buckets,
+            upload_intents_configured: true,
+            upload_artifacts: Arc::new(UnavailableUploadArtifactReader),
+            upload_artifacts_configured: false,
+        },
+    )
+}
+
+pub fn router_with_upload_services(
+    store: PgJobStore,
+    upload_buckets: HashMap<String, String>,
+    uploads: Arc<dyn UploadIntentIssuer>,
+    upload_artifacts: Arc<dyn UploadArtifactReader>,
+) -> Router {
+    build_router(
+        store,
+        RouterDependencies {
+            results: Arc::new(UnavailableResultReader),
+            result_artifacts_configured: false,
+            uploads,
+            upload_buckets,
+            upload_intents_configured: true,
+            upload_artifacts,
+            upload_artifacts_configured: true,
+        },
     )
 }
 
@@ -395,34 +505,55 @@ pub fn router_with_dependencies(
     results: Arc<dyn ResultArtifactReader>,
     upload_buckets: HashMap<String, String>,
     uploads: Arc<dyn UploadIntentIssuer>,
+    upload_artifacts: Arc<dyn UploadArtifactReader>,
 ) -> Router {
-    build_router(store, results, true, uploads, upload_buckets, true)
+    build_router(
+        store,
+        RouterDependencies {
+            results,
+            result_artifacts_configured: true,
+            uploads,
+            upload_buckets,
+            upload_intents_configured: true,
+            upload_artifacts,
+            upload_artifacts_configured: true,
+        },
+    )
 }
 
-fn build_router(
-    store: PgJobStore,
+struct RouterDependencies {
     results: Arc<dyn ResultArtifactReader>,
     result_artifacts_configured: bool,
     uploads: Arc<dyn UploadIntentIssuer>,
     upload_buckets: HashMap<String, String>,
     upload_intents_configured: bool,
-) -> Router {
+    upload_artifacts: Arc<dyn UploadArtifactReader>,
+    upload_artifacts_configured: bool,
+}
+
+fn build_router(store: PgJobStore, dependencies: RouterDependencies) -> Router {
     let request_id_header = HeaderName::from_static(REQUEST_ID_HEADER);
     Router::new()
         .route("/healthz", get(|| async { StatusCode::OK }))
         .route("/readyz", get(readiness))
         .route("/v1/ocr/uploads", post(create_upload))
+        .route(
+            "/v1/ocr/uploads/{upload_id}/complete",
+            post(complete_upload),
+        )
         .route("/v1/ocr/jobs", post(create_job))
         .route("/v1/ocr/jobs/{job_id}", get(get_job))
         .route("/v1/ocr/jobs/{job_id}/result", get(get_result))
         .route("/v1/ocr/jobs/{job_id}/cancel", post(cancel_job))
         .with_state(AppState {
             jobs: store,
-            results,
-            result_artifacts_configured,
-            uploads,
-            upload_buckets,
-            upload_intents_configured,
+            results: dependencies.results,
+            result_artifacts_configured: dependencies.result_artifacts_configured,
+            uploads: dependencies.uploads,
+            upload_buckets: dependencies.upload_buckets,
+            upload_intents_configured: dependencies.upload_intents_configured,
+            upload_artifacts: dependencies.upload_artifacts,
+            upload_artifacts_configured: dependencies.upload_artifacts_configured,
         })
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
@@ -439,7 +570,10 @@ async fn readiness(
     request: axum::extract::Request,
 ) -> Result<StatusCode, ApiError> {
     let request_id = request_id_from_extensions(request.extensions());
-    if !state.result_artifacts_configured || !state.upload_intents_configured {
+    if !state.result_artifacts_configured
+        || !state.upload_intents_configured
+        || !state.upload_artifacts_configured
+    {
         return Err(ApiError::unavailable(request_id));
     }
     state
@@ -448,6 +582,98 @@ async fn readiness(
         .await
         .map_err(|_| ApiError::unavailable(request_id))?;
     Ok(StatusCode::OK)
+}
+
+async fn complete_upload(
+    State(state): State<AppState>,
+    identity: VerifiedIdentity,
+    Path(upload_id): Path<String>,
+    request: axum::extract::Request,
+) -> Result<Json<UploadCompletionResponse>, ApiError> {
+    let request_id = request_id_from_extensions(request.extensions());
+    let upload_id =
+        UploadId::new(&upload_id).map_err(|_| ApiError::upload_not_found(request_id.clone()))?;
+    let upload = state
+        .jobs
+        .find_upload(&identity.0.tenant_id, &identity.0.product_id, &upload_id)
+        .await
+        .map_err(|_| ApiError::unavailable(request_id.clone()))?
+        .ok_or_else(|| ApiError::upload_not_found(request_id.clone()))?;
+    match upload.state {
+        UploadState::Uploaded => {
+            return Ok(Json(UploadCompletionResponse {
+                upload_id,
+                status: "uploaded",
+            }));
+        }
+        UploadState::Reserved if upload.expires_at <= time::OffsetDateTime::now_utc() => {
+            return Err(ApiError::upload_conflict(
+                "upload_expired",
+                "upload reservation has expired",
+                request_id,
+            ));
+        }
+        UploadState::Reserved => {}
+        _ => {
+            return Err(ApiError::upload_conflict(
+                "upload_not_completable",
+                "upload cannot be completed in its current state",
+                request_id,
+            ));
+        }
+    }
+    let artifact = state
+        .upload_artifacts
+        .verify(&upload)
+        .await
+        .map_err(|error| match error {
+            UploadArtifactError::NotFound => ApiError::upload_conflict(
+                "upload_not_ready",
+                "uploaded object is not available",
+                request_id.clone(),
+            ),
+            UploadArtifactError::Invalid => {
+                ApiError::upload_verification_failed(request_id.clone())
+            }
+            UploadArtifactError::Unavailable => ApiError::unavailable(request_id.clone()),
+        })?;
+    let outcome = state
+        .jobs
+        .record_uploaded(
+            &identity.0.tenant_id,
+            &identity.0.product_id,
+            &upload_id,
+            RecordUpload {
+                object_generation: artifact.object_generation,
+                verified_content_type: artifact.content_type,
+                verified_content_length: artifact.content_length,
+                verified_digest: artifact.digest,
+            },
+        )
+        .await
+        .map_err(|_| ApiError::unavailable(request_id.clone()))?;
+    match outcome {
+        RecordUploadOutcome::Recorded(_) | RecordUploadOutcome::Existing(_) => {
+            Ok(Json(UploadCompletionResponse {
+                upload_id,
+                status: "uploaded",
+            }))
+        }
+        RecordUploadOutcome::Expired => Err(ApiError::upload_conflict(
+            "upload_expired",
+            "upload reservation has expired",
+            request_id,
+        )),
+        RecordUploadOutcome::VerificationMismatch => {
+            Err(ApiError::upload_verification_failed(request_id))
+        }
+        RecordUploadOutcome::NotRecordable => Err(ApiError::upload_conflict(
+            "upload_not_completable",
+            "upload cannot be completed in its current state",
+            request_id,
+        )),
+        RecordUploadOutcome::NotFound => Err(ApiError::upload_not_found(request_id)),
+    }
 }
 
 async fn create_upload(
@@ -608,13 +834,13 @@ async fn create_job(
             request_id.clone(),
         )
     })?;
-    if !is_upload_id(&command.source.upload_id) {
-        return Err(ApiError::bad_request(
+    let upload_id = UploadId::new(&command.source.upload_id).map_err(|_| {
+        ApiError::bad_request(
             "invalid_request",
             "request body is invalid",
-            request_id,
-        ));
-    }
+            request_id.clone(),
+        )
+    })?;
 
     let canonical = serde_json::to_vec(&command.0).map_err(|_| {
         ApiError::bad_request(
@@ -641,10 +867,14 @@ async fn create_job(
             product_id: identity.0.product_id,
             idempotency_key,
             request_digest,
+            upload_id,
         })
         .await
         .map_err(|error| match error {
             ocr_store::Error::IdempotencyConflict => ApiError::conflict(request_id.clone()),
+            ocr_store::Error::UploadSourceUnavailable => {
+                ApiError::upload_not_found(request_id.clone())
+            }
             _ => ApiError::unavailable(request_id.clone()),
         })?;
     let job = match outcome {
@@ -776,13 +1006,4 @@ fn request_id_from_headers(headers: &HeaderMap) -> String {
         .and_then(|value| value.to_str().ok())
         .map(str::to_owned)
         .unwrap_or_else(|| Uuid::new_v4().to_string())
-}
-
-fn is_upload_id(value: &str) -> bool {
-    let suffix = value.strip_prefix("upl_").unwrap_or_default();
-    !suffix.is_empty()
-        && suffix.len() <= 64
-        && suffix
-            .bytes()
-            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }

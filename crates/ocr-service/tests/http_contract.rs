@@ -5,15 +5,22 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use ocr_service::{
-    router, router_with_result_reader, router_with_upload_issuer, IssuedUpload,
-    ResultArtifactReader, ResultReadFuture, StoredUpload, TrustedIdentity, UploadIntentIssuer,
-    UploadIssueFuture,
+    router, router_with_result_reader, router_with_upload_issuer, router_with_upload_services,
+    IssuedUpload, ResultArtifactReader, ResultReadFuture, StoredUpload, TrustedIdentity,
+    UploadArtifactReadFuture, UploadArtifactReader, UploadIntentIssuer, UploadIssueFuture,
+    VerifiedUploadArtifact,
 };
 use ocr_store::{PgJobStore, StoredResultLocator};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::{
+        atomic::{AtomicUsize, Ordering},
+        Arc,
+    },
+    time::Duration,
+};
 use tower::ServiceExt;
 
 fn store_without_connection() -> PgJobStore {
@@ -53,6 +60,19 @@ impl UploadIntentIssuer for StaticUploadIssuer {
                 .collect(),
             })
         })
+    }
+}
+
+struct StaticUploadArtifactReader {
+    artifact: VerifiedUploadArtifact,
+    calls: Arc<AtomicUsize>,
+}
+
+impl UploadArtifactReader for StaticUploadArtifactReader {
+    fn verify<'a>(&'a self, _upload: &'a StoredUpload) -> UploadArtifactReadFuture<'a> {
+        self.calls.fetch_add(1, Ordering::SeqCst);
+        let artifact = self.artifact.clone();
+        Box::pin(async move { Ok(artifact) })
     }
 }
 
@@ -143,6 +163,30 @@ async fn create_replay_read_and_cross_tenant_visibility_are_end_to_end() {
         "delete from ocr_jobs where product_id = 'kora' and tenant_id = 'ten_HTTP' \
          and idempotency_key = 'http-contract-request'",
     )
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+    sqlx::query("delete from ocr_upload_outbox where upload_id = 'upl_HTTPTEST'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from ocr_uploads where upload_id = 'upl_HTTPTEST'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into ocr_uploads \
+         (upload_id, tenant_id, product_id, idempotency_key, request_digest, object_bucket, \
+          object_name, expected_content_type, expected_content_length, expected_digest, status, \
+          expires_at, object_generation, verified_content_type, verified_content_length, \
+          verified_digest, uploaded_at) \
+         values ('upl_HTTPTEST', 'ten_HTTP', 'kora', 'http-upload-source', $1, \
+          'dev-kora-ocr-quarantine', 'products/kora/tenants/ten_HTTP/quarantine/upl_HTTPTEST', \
+          'application/pdf', 8, $2, 'uploaded', now() + interval '10 minutes', 3, \
+          'application/pdf', 8, $2, now())",
+    )
+    .bind(format!("sha256:{}", "a".repeat(64)))
+    .bind(format!("sha256:{}", "b".repeat(64)))
     .execute(&admin_pool)
     .await
     .unwrap();
@@ -530,4 +574,201 @@ async fn upload_intent_is_created_for_the_verified_scope_without_exposing_storag
     let replayed: Value =
         serde_json::from_slice(&replay.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(replayed["upload_id"], created["upload_id"]);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn uploaded_object_is_verified_pinned_and_completed_once_for_its_tenant() {
+    let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL must be set");
+    let admin_url =
+        std::env::var("TEST_DATABASE_ADMIN_URL").expect("TEST_DATABASE_ADMIN_URL must be set");
+    let admin_pool = PgPoolOptions::new().connect(&admin_url).await.unwrap();
+    sqlx::query(
+        "delete from ocr_upload_outbox where upload_id in \
+         (select upload_id from ocr_uploads where product_id = 'kora' \
+          and tenant_id = 'ten_HTTPCOMPLETE' and idempotency_key = 'upload-complete-1')",
+    )
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "delete from ocr_uploads where product_id = 'kora' \
+         and tenant_id = 'ten_HTTPCOMPLETE' and idempotency_key = 'upload-complete-1'",
+    )
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+    let bytes = b"%PDF-1.7";
+    let digest = format!("sha256:{:x}", Sha256::digest(bytes));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let application = router_with_upload_services(
+        PgJobStore::new(PgPoolOptions::new().connect(&url).await.unwrap()),
+        [("kora".to_owned(), "dev-kora-ocr-quarantine".to_owned())]
+            .into_iter()
+            .collect(),
+        Arc::new(StaticUploadIssuer),
+        Arc::new(StaticUploadArtifactReader {
+            artifact: VerifiedUploadArtifact {
+                object_generation: 73,
+                content_type: "application/pdf".to_owned(),
+                content_length: i64::try_from(bytes.len()).unwrap(),
+                digest: digest.clone(),
+            },
+            calls: Arc::clone(&calls),
+        }),
+    );
+    let create_body = format!(
+        r#"{{"content_type":"application/pdf","content_length":{},"sha256":"{digest}"}}"#,
+        bytes.len()
+    );
+    let create = application
+        .clone()
+        .layer(Extension(
+            TrustedIdentity::new("kora", "ten_HTTPCOMPLETE").unwrap(),
+        ))
+        .oneshot(
+            Request::post("/v1/ocr/uploads")
+                .header("content-type", "application/json")
+                .header("idempotency-key", "upload-complete-1")
+                .body(Body::from(create_body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(create.status(), StatusCode::CREATED);
+    let created: Value =
+        serde_json::from_slice(&create.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    let upload_id = created["upload_id"].as_str().unwrap();
+
+    let foreign = application
+        .clone()
+        .layer(Extension(
+            TrustedIdentity::new("kora", "ten_OTHER").unwrap(),
+        ))
+        .oneshot(
+            Request::post(format!("/v1/ocr/uploads/{upload_id}/complete"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    for expected_status in [StatusCode::OK, StatusCode::OK] {
+        let response = application
+            .clone()
+            .layer(Extension(
+                TrustedIdentity::new("kora", "ten_HTTPCOMPLETE").unwrap(),
+            ))
+            .oneshot(
+                Request::post(format!("/v1/ocr/uploads/{upload_id}/complete"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected_status);
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["upload_id"], upload_id);
+        assert_eq!(body["status"], "uploaded");
+        assert!(body.get("object_generation").is_none());
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 1);
+    let event_count: i64 =
+        sqlx::query_scalar("select count(*) from ocr_upload_outbox where upload_id = $1")
+            .bind(upload_id)
+            .fetch_one(&admin_pool)
+            .await
+            .unwrap();
+    assert_eq!(event_count, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn job_creation_rejects_missing_reserved_and_foreign_uploads_as_not_found() {
+    let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL must be set");
+    let admin_url =
+        std::env::var("TEST_DATABASE_ADMIN_URL").expect("TEST_DATABASE_ADMIN_URL must be set");
+    let admin_pool = PgPoolOptions::new().connect(&admin_url).await.unwrap();
+    sqlx::query(
+        "delete from ocr_outbox where job_id in \
+         (select job_id from ocr_jobs where idempotency_key like 'job-source-boundary-%')",
+    )
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+    sqlx::query("delete from ocr_jobs where idempotency_key like 'job-source-boundary-%'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from ocr_upload_outbox where upload_id = 'upl_FOREIGNJOB'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from ocr_uploads where upload_id in ('upl_FOREIGNJOB', 'upl_RESERVEDJOB')")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into ocr_uploads \
+         (upload_id, tenant_id, product_id, idempotency_key, request_digest, object_bucket, \
+          object_name, expected_content_type, expected_content_length, expected_digest, status, \
+          expires_at, object_generation, verified_content_type, verified_content_length, \
+          verified_digest, uploaded_at) \
+         values ('upl_FOREIGNJOB', 'ten_OWNER', 'kora', 'foreign-job-upload', $1, \
+          'dev-kora-ocr-quarantine', \
+          'products/kora/tenants/ten_OWNER/quarantine/upl_FOREIGNJOB', 'application/pdf', 8, $2, \
+          'uploaded', now() + interval '10 minutes', 9, 'application/pdf', 8, $2, now())",
+    )
+    .bind(format!("sha256:{}", "a".repeat(64)))
+    .bind(format!("sha256:{}", "b".repeat(64)))
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+    sqlx::query(
+        "insert into ocr_uploads \
+         (upload_id, tenant_id, product_id, idempotency_key, request_digest, object_bucket, \
+          object_name, expected_content_type, expected_content_length, expected_digest, expires_at) \
+         values ('upl_RESERVEDJOB', 'ten_CALLER', 'kora', 'reserved-job-upload', $1, \
+          'dev-kora-ocr-quarantine', \
+          'products/kora/tenants/ten_CALLER/quarantine/upl_RESERVEDJOB', 'application/pdf', 8, $2, \
+          now() + interval '10 minutes')",
+    )
+    .bind(format!("sha256:{}", "c".repeat(64)))
+    .bind(format!("sha256:{}", "d".repeat(64)))
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+    let application = router(PgJobStore::new(
+        PgPoolOptions::new().connect(&url).await.unwrap(),
+    ));
+
+    for (case, tenant, upload_id) in [
+        ("missing", "ten_CALLER", "upl_MISSINGJOB"),
+        ("reserved", "ten_CALLER", "upl_RESERVEDJOB"),
+        ("foreign", "ten_CALLER", "upl_FOREIGNJOB"),
+    ] {
+        let response = application
+            .clone()
+            .layer(Extension(TrustedIdentity::new("kora", tenant).unwrap()))
+            .oneshot(
+                Request::post("/v1/ocr/jobs")
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", format!("job-source-boundary-{case}"))
+                    .body(Body::from(format!(
+                        r#"{{"source":{{"upload_id":"{upload_id}"}},"document_type":"auto"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "case {case}");
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["code"], "upload_not_found", "case {case}");
+    }
 }

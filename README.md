@@ -61,6 +61,9 @@ at `503`.
 `POST /v1/ocr/uploads` accepts only declared MIME, byte length, and canonical
 SHA-256 plus `Idempotency-Key`. It issues a ten-minute HTTPS PUT capability for
 an opaque service-generated object. The caller must send the returned headers.
-The declaration is never trusted as inspection: MIME, digest, size, malware,
-pixel/page, decompression, and parser limits are independently enforced before
-the upload can become an accepted document source.
+`POST /v1/ocr/uploads/{upload_id}/complete` streams the object from its isolated
+bucket, pins its exact GCS generation, hashes outside the async executor, and
+checks byte length plus content-derived MIME before recording one durable
+outbox event. A job accepts only a reconciled upload owned by the same verified
+product and tenant. Malware, pixel/page, decompression, and parser checks remain
+the next quarantine stage before OCR processing.

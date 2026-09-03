@@ -20,6 +20,8 @@ pub enum Error {
     InvalidStoredResult,
     #[error("stored upload is invalid")]
     InvalidStoredUpload,
+    #[error("upload source is unavailable")]
+    UploadSourceUnavailable,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -31,6 +33,7 @@ pub struct CreateJob {
     pub product_id: ProductId,
     pub idempotency_key: IdempotencyKey,
     pub request_digest: RequestDigest,
+    pub upload_id: UploadId,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -86,9 +89,38 @@ pub enum CreateUploadOutcome {
     Existing(StoredUpload),
 }
 
+#[derive(Debug)]
+pub struct RecordUpload {
+    pub object_generation: i64,
+    pub verified_content_type: String,
+    pub verified_content_length: i64,
+    pub verified_digest: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RecordUploadOutcome {
+    Recorded(StoredUpload),
+    Existing(StoredUpload),
+    Expired,
+    VerificationMismatch,
+    NotRecordable,
+    NotFound,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum UploadState {
+    Reserved,
+    Uploaded,
+    Inspecting,
+    Accepted,
+    Rejected,
+    Expired,
+}
+
 #[derive(Debug, PartialEq, Eq)]
 pub struct StoredUpload {
     pub upload_id: UploadId,
+    pub state: UploadState,
     pub object_bucket: String,
     pub object_name: String,
     pub expected_content_type: String,
@@ -96,6 +128,8 @@ pub struct StoredUpload {
     pub expected_digest: String,
     pub expires_at: OffsetDateTime,
     pub created_at: OffsetDateTime,
+    pub object_generation: Option<i64>,
+    pub uploaded_at: Option<OffsetDateTime>,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -131,7 +165,8 @@ impl PgJobStore {
              values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11) \
              on conflict (product_id, tenant_id, idempotency_key) do nothing \
              returning upload_id, object_bucket, object_name, expected_content_type, \
-             expected_content_length, expected_digest, expires_at, created_at",
+             expected_content_length, expected_digest, expires_at, created_at, status::text as status, \
+             object_generation, uploaded_at",
         )
         .bind(request.upload_id.as_str())
         .bind(request.tenant_id.as_str())
@@ -155,7 +190,8 @@ impl PgJobStore {
 
         let existing = sqlx::query(
             "select upload_id, object_bucket, object_name, expected_content_type, \
-             expected_content_length, expected_digest, expires_at, created_at, request_digest \
+             expected_content_length, expected_digest, expires_at, created_at, request_digest, \
+             status::text as status, object_generation, uploaded_at \
              from ocr_uploads where product_id = $1 and tenant_id = $2 and idempotency_key = $3",
         )
         .bind(request.product_id.as_str())
@@ -182,7 +218,8 @@ impl PgJobStore {
         set_scope(&mut transaction, tenant_id, product_id).await?;
         let row = sqlx::query(
             "select upload_id, object_bucket, object_name, expected_content_type, \
-             expected_content_length, expected_digest, expires_at, created_at from ocr_uploads \
+             expected_content_length, expected_digest, expires_at, created_at, status::text as status, \
+             object_generation, uploaded_at from ocr_uploads \
              where product_id = $1 and tenant_id = $2 and upload_id = $3",
         )
         .bind(product_id.as_str())
@@ -194,14 +231,107 @@ impl PgJobStore {
         row.map(stored_upload).transpose()
     }
 
+    pub async fn record_uploaded(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        upload_id: &UploadId,
+        record: RecordUpload,
+    ) -> Result<RecordUploadOutcome> {
+        validate_record(&record)?;
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let updated = sqlx::query(
+            "update ocr_uploads set status = 'uploaded', object_generation = $4, \
+             verified_content_type = $5, verified_content_length = $6, verified_digest = $7, \
+             uploaded_at = now(), updated_at = now() \
+             where product_id = $1 and tenant_id = $2 and upload_id = $3 \
+             and status = 'reserved' and expires_at > now() \
+             and expected_content_type = $5 and expected_content_length = $6 \
+             and expected_digest = $7 \
+             returning upload_id, object_bucket, object_name, expected_content_type, \
+             expected_content_length, expected_digest, expires_at, created_at, status::text as status, \
+             object_generation, uploaded_at",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(upload_id.as_str())
+        .bind(record.object_generation)
+        .bind(&record.verified_content_type)
+        .bind(record.verified_content_length)
+        .bind(&record.verified_digest)
+        .fetch_optional(&mut *transaction)
+        .await?;
+
+        if let Some(updated) = updated {
+            sqlx::query(
+                "insert into ocr_upload_outbox \
+                 (product_id, tenant_id, upload_id, event_type, payload) \
+                 values ($1, $2, $3, 'ocr.upload.received.v1', \
+                 jsonb_build_object('upload_id', $3::text, 'status', 'uploaded'))",
+            )
+            .bind(product_id.as_str())
+            .bind(tenant_id.as_str())
+            .bind(upload_id.as_str())
+            .execute(&mut *transaction)
+            .await?;
+            let upload = stored_upload(updated)?;
+            transaction.commit().await?;
+            return Ok(RecordUploadOutcome::Recorded(upload));
+        }
+
+        let existing = sqlx::query(
+            "select upload_id, object_bucket, object_name, expected_content_type, \
+             expected_content_length, expected_digest, expires_at, created_at, status::text as status, \
+             object_generation, uploaded_at, verified_content_type, verified_content_length, \
+             verified_digest from ocr_uploads \
+             where product_id = $1 and tenant_id = $2 and upload_id = $3",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(upload_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(existing) = existing else {
+            transaction.commit().await?;
+            return Ok(RecordUploadOutcome::NotFound);
+        };
+        let state = parse_upload_state(existing.try_get("status")?)?;
+        let outcome = match state {
+            UploadState::Uploaded
+                if existing.try_get::<Option<i64>, _>("object_generation")?
+                    == Some(record.object_generation)
+                    && existing.try_get::<Option<&str>, _>("verified_content_type")?
+                        == Some(record.verified_content_type.as_str())
+                    && existing.try_get::<Option<i64>, _>("verified_content_length")?
+                        == Some(record.verified_content_length)
+                    && existing.try_get::<Option<&str>, _>("verified_digest")?
+                        == Some(record.verified_digest.as_str()) =>
+            {
+                RecordUploadOutcome::Existing(stored_upload(existing)?)
+            }
+            UploadState::Reserved
+                if existing.try_get::<OffsetDateTime, _>("expires_at")?
+                    <= OffsetDateTime::now_utc() =>
+            {
+                RecordUploadOutcome::Expired
+            }
+            UploadState::Reserved => RecordUploadOutcome::VerificationMismatch,
+            _ => RecordUploadOutcome::NotRecordable,
+        };
+        transaction.commit().await?;
+        Ok(outcome)
+    }
+
     pub async fn create(&self, request: CreateJob) -> Result<CreateOutcome> {
         let mut transaction = self.pool.begin().await?;
         set_scope(&mut transaction, &request.tenant_id, &request.product_id).await?;
 
         let inserted = sqlx::query(
             "insert into ocr_jobs \
-             (job_id, tenant_id, product_id, idempotency_key, request_digest) \
-             values ($1, $2, $3, $4, $5) \
+             (job_id, tenant_id, product_id, idempotency_key, request_digest, upload_id) \
+             select $1, $2, $3, $4, $5, $6 from ocr_uploads \
+             where product_id = $3 and tenant_id = $2 and upload_id = $6 and status = 'uploaded' \
              on conflict (product_id, tenant_id, idempotency_key) do nothing \
              returning job_id, status::text as status, created_at",
         )
@@ -210,6 +340,7 @@ impl PgJobStore {
         .bind(request.product_id.as_str())
         .bind(request.idempotency_key.as_str())
         .bind(request.request_digest.as_str())
+        .bind(request.upload_id.as_str())
         .fetch_optional(&mut *transaction)
         .await?;
 
@@ -237,8 +368,12 @@ impl PgJobStore {
         .bind(request.product_id.as_str())
         .bind(request.tenant_id.as_str())
         .bind(request.idempotency_key.as_str())
-        .fetch_one(&mut *transaction)
+        .fetch_optional(&mut *transaction)
         .await?;
+
+        let Some(existing) = existing else {
+            return Err(Error::UploadSourceUnavailable);
+        };
 
         let existing_digest: &str = existing.try_get("request_digest")?;
         if existing_digest != request.request_digest.as_str() {
@@ -422,6 +557,7 @@ fn stored_upload(row: sqlx::postgres::PgRow) -> Result<StoredUpload> {
     let upload = StoredUpload {
         upload_id: UploadId::new(row.try_get("upload_id")?)
             .map_err(|_| Error::InvalidStoredUpload)?,
+        state: parse_upload_state(row.try_get("status")?)?,
         object_bucket: row.try_get("object_bucket")?,
         object_name: row.try_get("object_name")?,
         expected_content_type: row.try_get("expected_content_type")?,
@@ -429,9 +565,45 @@ fn stored_upload(row: sqlx::postgres::PgRow) -> Result<StoredUpload> {
         expected_digest: row.try_get("expected_digest")?,
         expires_at: row.try_get("expires_at")?,
         created_at: row.try_get("created_at")?,
+        object_generation: row.try_get("object_generation")?,
+        uploaded_at: row.try_get("uploaded_at")?,
     };
     validate_upload(&upload)?;
     Ok(upload)
+}
+
+fn parse_upload_state(value: &str) -> Result<UploadState> {
+    Ok(match value {
+        "reserved" => UploadState::Reserved,
+        "uploaded" => UploadState::Uploaded,
+        "inspecting" => UploadState::Inspecting,
+        "accepted" => UploadState::Accepted,
+        "rejected" => UploadState::Rejected,
+        "expired" => UploadState::Expired,
+        _ => return Err(Error::InvalidStoredUpload),
+    })
+}
+
+fn validate_record(record: &RecordUpload) -> Result<()> {
+    let digest = record.verified_digest.strip_prefix("sha256:");
+    let valid_digest = digest.is_some_and(|value| {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    let valid_content_type = matches!(
+        record.verified_content_type.as_str(),
+        "application/pdf" | "image/jpeg" | "image/png" | "image/tiff" | "image/webp"
+    );
+    if record.object_generation <= 0
+        || !(1..=104_857_600).contains(&record.verified_content_length)
+        || !valid_digest
+        || !valid_content_type
+    {
+        return Err(Error::InvalidStoredUpload);
+    }
+    Ok(())
 }
 
 fn validate_upload(upload: &StoredUpload) -> Result<()> {
@@ -446,12 +618,19 @@ fn validate_upload(upload: &StoredUpload) -> Result<()> {
         upload.expected_content_type.as_str(),
         "application/pdf" | "image/jpeg" | "image/png" | "image/tiff" | "image/webp"
     );
+    let verification_shape_is_valid = match upload.state {
+        UploadState::Reserved | UploadState::Expired => {
+            upload.object_generation.is_none() && upload.uploaded_at.is_none()
+        }
+        _ => upload.object_generation.is_some() && upload.uploaded_at.is_some(),
+    };
     if upload.object_bucket.is_empty()
         || upload.object_name.is_empty()
         || !(1..=104_857_600).contains(&upload.expected_content_length)
         || !valid_digest
         || !valid_content_type
         || upload.expires_at <= upload.created_at
+        || !verification_shape_is_valid
     {
         return Err(Error::InvalidStoredUpload);
     }
