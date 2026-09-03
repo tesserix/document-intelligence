@@ -11,7 +11,7 @@ use ocr_service::{
     UploadArtifactReadFuture, UploadArtifactReader, UploadIntentIssuer, UploadIssueFuture,
     VerifiedUploadArtifact,
 };
-use ocr_store::{AcceptUpload, PgJobStore, StoredResultLocator};
+use ocr_store::{AcceptUpload, ClaimUploadInspection, PgJobStore, StoredResultLocator};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
@@ -181,12 +181,13 @@ async fn create_replay_read_and_cross_tenant_visibility_are_end_to_end() {
           object_name, expected_content_type, expected_content_length, expected_digest, status, \
           expires_at, object_generation, verified_content_type, verified_content_length, \
           verified_digest, uploaded_at, source_bucket, source_object_name, \
-          source_object_generation, source_digest, source_content_length, accepted_at) \
+          source_object_generation, source_digest, source_content_length, accepted_at, \
+          inspection_attempts) \
          values ('upl_HTTPTEST', 'ten_HTTP', 'kora', 'http-upload-source', $1, \
           'dev-kora-ocr-quarantine', 'products/kora/tenants/ten_HTTP/quarantine/upl_HTTPTEST', \
           'application/pdf', 8, $2, 'accepted', now() + interval '10 minutes', 3, \
           'application/pdf', 8, $2, now(), 'dev-kora-ocr-source', \
-          'products/kora/tenants/ten_HTTP/documents/source', 4, $2, 8, now())",
+          'products/kora/tenants/ten_HTTP/documents/source', 4, $2, 8, now(), 1)",
     )
     .bind(format!("sha256:{}", "a".repeat(64)))
     .bind(format!("sha256:{}", "b".repeat(64)))
@@ -895,11 +896,23 @@ async fn a_second_product_uses_the_same_contract_without_cross_product_visibilit
         assert_eq!(completion.status(), StatusCode::OK, "product {product}");
 
         store
+            .claim_upload_inspection(
+                &TenantId::new("ten_COMPAT").unwrap(),
+                &ProductId::new(product).unwrap(),
+                &UploadId::new(upload_id).unwrap(),
+                ClaimUploadInspection {
+                    lease_owner: "compat-importer".to_owned(),
+                },
+            )
+            .await
+            .unwrap();
+        store
             .accept_upload(
                 &TenantId::new("ten_COMPAT").unwrap(),
                 &ProductId::new(product).unwrap(),
                 &UploadId::new(upload_id).unwrap(),
                 AcceptUpload {
+                    inspection_lease_owner: "compat-importer".to_owned(),
                     source_bucket: format!("dev-{product}-ocr-source"),
                     source_object_name: format!(
                         "products/{product}/tenants/ten_COMPAT/documents/{digest}/source"

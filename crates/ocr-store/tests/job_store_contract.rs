@@ -1,7 +1,8 @@
 use ocr_domain::{DocumentId, IdempotencyKey, JobId, ProductId, RequestDigest, TenantId, UploadId};
 use ocr_store::{
-    AcceptUpload, AcceptUploadOutcome, CancelOutcome, CreateJob, CreateOutcome, CreateUpload,
-    CreateUploadOutcome, Error, PgJobStore, RecordUpload, RecordUploadOutcome, ResultLookup,
+    AcceptUpload, AcceptUploadOutcome, CancelOutcome, ClaimUploadInspection,
+    ClaimUploadInspectionOutcome, CreateJob, CreateOutcome, CreateUpload, CreateUploadOutcome,
+    Error, PgJobStore, RecordUpload, RecordUploadOutcome, ResultLookup,
 };
 use sqlx::PgPool;
 
@@ -60,6 +61,8 @@ async fn set_upload_state(admin_pool: &PgPool, tenant_id: &str, state: &str) {
          source_object_generation = case when $2 = 'accepted' then 2 end, \
          source_digest = case when $2 = 'accepted' then verified_digest end, \
          source_content_length = case when $2 = 'accepted' then verified_content_length end, \
+         inspection_attempts = case when $2 = 'accepted' then 1 else 0 end, \
+         inspection_lease_owner = null, inspection_lease_expires_at = null, \
          accepted_at = case when $2 = 'accepted' then now() end \
          where tenant_id = $1",
     )
@@ -412,7 +415,8 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
         )
         .await
         .unwrap();
-    let acceptance = || AcceptUpload {
+    let acceptance = |lease_owner: &str| AcceptUpload {
+        inspection_lease_owner: lease_owner.to_owned(),
         source_bucket: "dev-kora-ocr-source".to_owned(),
         source_object_name: "products/kora/tenants/ten_ACCEPT_SOURCE/documents/sha256/source"
             .to_owned(),
@@ -421,12 +425,91 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
         source_content_length: 1024,
     };
 
+    let not_claimed = store
+        .accept_upload(
+            &tenant_id,
+            &product_id,
+            &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
+            acceptance("importer-01"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(not_claimed, AcceptUploadOutcome::NotAcceptable);
+
+    let claimed = store
+        .claim_upload_inspection(
+            &tenant_id,
+            &product_id,
+            &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
+            ClaimUploadInspection {
+                lease_owner: "importer-01".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    let replayed_claim = store
+        .claim_upload_inspection(
+            &tenant_id,
+            &product_id,
+            &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
+            ClaimUploadInspection {
+                lease_owner: "importer-01".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    let competing_claim = store
+        .claim_upload_inspection(
+            &tenant_id,
+            &product_id,
+            &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
+            ClaimUploadInspection {
+                lease_owner: "importer-02".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(claimed, ClaimUploadInspectionOutcome::Claimed);
+    assert_eq!(replayed_claim, ClaimUploadInspectionOutcome::Existing);
+    assert_eq!(competing_claim, ClaimUploadInspectionOutcome::Busy);
+
+    sqlx::query(
+        "update ocr_uploads set inspection_lease_expires_at = now() - interval '1 second' \
+         where upload_id = 'upl_ACCEPT_SOURCE'",
+    )
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+    let reclaimed = store
+        .claim_upload_inspection(
+            &tenant_id,
+            &product_id,
+            &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
+            ClaimUploadInspection {
+                lease_owner: "importer-02".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(reclaimed, ClaimUploadInspectionOutcome::Claimed);
+
+    let stale_owner = store
+        .accept_upload(
+            &tenant_id,
+            &product_id,
+            &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
+            acceptance("importer-01"),
+        )
+        .await
+        .unwrap();
+    assert_eq!(stale_owner, AcceptUploadOutcome::NotAcceptable);
+
     let foreign = store
         .accept_upload(
             &TenantId::new("ten_OTHER").unwrap(),
             &product_id,
             &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
-            acceptance(),
+            acceptance("importer-02"),
         )
         .await
         .unwrap();
@@ -437,7 +520,7 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
             &tenant_id,
             &product_id,
             &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
-            acceptance(),
+            acceptance("importer-02"),
         )
         .await
         .unwrap();
@@ -446,7 +529,7 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
             &tenant_id,
             &product_id,
             &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
-            acceptance(),
+            acceptance("importer-02"),
         )
         .await
         .unwrap();
@@ -457,7 +540,7 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
             &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
             AcceptUpload {
                 source_object_generation: 74,
-                ..acceptance()
+                ..acceptance("importer-02")
             },
         )
         .await
@@ -466,9 +549,10 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
     assert_eq!(replayed, AcceptUploadOutcome::Existing);
     assert_eq!(mismatched, AcceptUploadOutcome::SourceMismatch);
 
-    let row: (String, String, i64, String, i64) = sqlx::query_as(
+    let row: (String, String, i64, String, i64, i32) = sqlx::query_as(
         "select source_bucket, source_object_name, source_object_generation, source_digest, \
-         source_content_length from ocr_uploads where upload_id = 'upl_ACCEPT_SOURCE'",
+         source_content_length, inspection_attempts from ocr_uploads \
+         where upload_id = 'upl_ACCEPT_SOURCE'",
     )
     .fetch_one(&admin_pool)
     .await
@@ -481,10 +565,77 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
     assert_eq!(row.2, 73);
     assert_eq!(row.3, digest);
     assert_eq!(row.4, 1024);
+    assert_eq!(row.5, 2);
 
     let events: i64 = sqlx::query_scalar(
         "select count(*) from ocr_upload_outbox where upload_id = 'upl_ACCEPT_SOURCE' \
          and event_type = 'ocr.upload.accepted.v1'",
+    )
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(events, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn exhausted_inspection_attempts_reject_the_upload_once() {
+    let (store, admin_pool, _) = store().await;
+    sqlx::query("delete from ocr_upload_outbox where upload_id = 'upl_EXHAUSTED'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from ocr_uploads where upload_id = 'upl_EXHAUSTED'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    seed_uploaded_upload(&admin_pool, "ten_EXHAUSTED").await;
+    sqlx::query(
+        "update ocr_uploads set status = 'inspecting', inspection_attempts = 10, \
+         inspection_lease_owner = 'dead-importer', \
+         inspection_lease_expires_at = now() - interval '1 second' \
+         where upload_id = 'upl_EXHAUSTED'",
+    )
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+
+    let outcome = store
+        .claim_upload_inspection(
+            &TenantId::new("ten_EXHAUSTED").unwrap(),
+            &ProductId::new("kora").unwrap(),
+            &UploadId::new("upl_EXHAUSTED").unwrap(),
+            ClaimUploadInspection {
+                lease_owner: "importer-recovery".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(outcome, ClaimUploadInspectionOutcome::AttemptsExhausted);
+    let replayed = store
+        .claim_upload_inspection(
+            &TenantId::new("ten_EXHAUSTED").unwrap(),
+            &ProductId::new("kora").unwrap(),
+            &UploadId::new("upl_EXHAUSTED").unwrap(),
+            ClaimUploadInspection {
+                lease_owner: "importer-recovery".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(replayed, ClaimUploadInspectionOutcome::NotInspectable);
+
+    let state: String = sqlx::query_scalar(
+        "select status::text from ocr_uploads where upload_id = 'upl_EXHAUSTED'",
+    )
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(state, "rejected");
+    let events: i64 = sqlx::query_scalar(
+        "select count(*) from ocr_upload_outbox where upload_id = 'upl_EXHAUSTED' \
+         and event_type = 'ocr.upload.rejected.v1' \
+         and payload->>'reason_code' = 'inspection_attempts_exhausted'",
     )
     .fetch_one(&admin_pool)
     .await

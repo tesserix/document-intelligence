@@ -109,11 +109,27 @@ pub enum RecordUploadOutcome {
 
 #[derive(Debug)]
 pub struct AcceptUpload {
+    pub inspection_lease_owner: String,
     pub source_bucket: String,
     pub source_object_name: String,
     pub source_object_generation: i64,
     pub source_digest: String,
     pub source_content_length: i64,
+}
+
+#[derive(Debug)]
+pub struct ClaimUploadInspection {
+    pub lease_owner: String,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ClaimUploadInspectionOutcome {
+    Claimed,
+    Existing,
+    Busy,
+    AttemptsExhausted,
+    NotInspectable,
+    NotFound,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -354,9 +370,11 @@ impl PgJobStore {
         let updated = sqlx::query(
             "update ocr_uploads set status = 'accepted', source_bucket = $4, \
              source_object_name = $5, source_object_generation = $6, source_digest = $7, \
-             source_content_length = $8, accepted_at = now(), updated_at = now() \
+             source_content_length = $8, accepted_at = now(), inspection_lease_owner = null, \
+             inspection_lease_expires_at = null, updated_at = now() \
              where product_id = $1 and tenant_id = $2 and upload_id = $3 \
-             and status = 'uploaded' and verified_digest = $7 and verified_content_length = $8 \
+             and status = 'inspecting' and verified_digest = $7 and verified_content_length = $8 \
+             and inspection_lease_owner = $9 and inspection_lease_expires_at > now() \
              returning upload_id",
         )
         .bind(product_id.as_str())
@@ -367,6 +385,7 @@ impl PgJobStore {
         .bind(source.source_object_generation)
         .bind(&source.source_digest)
         .bind(source.source_content_length)
+        .bind(&source.inspection_lease_owner)
         .fetch_optional(&mut *transaction)
         .await?;
 
@@ -420,6 +439,113 @@ impl PgJobStore {
         } else {
             AcceptUploadOutcome::NotAcceptable
         };
+        transaction.commit().await?;
+        Ok(outcome)
+    }
+
+    pub async fn claim_upload_inspection(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        upload_id: &UploadId,
+        claim: ClaimUploadInspection,
+    ) -> Result<ClaimUploadInspectionOutcome> {
+        validate_lease_owner(&claim.lease_owner)?;
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let existing = sqlx::query(
+            "select status::text as status, inspection_attempts, inspection_lease_owner, \
+             coalesce(inspection_lease_expires_at > now(), false) as lease_active \
+             from ocr_uploads where product_id = $1 and tenant_id = $2 and upload_id = $3 \
+             for update",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(upload_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(existing) = existing else {
+            transaction.commit().await?;
+            return Ok(ClaimUploadInspectionOutcome::NotFound);
+        };
+        let state = parse_upload_state(existing.try_get("status")?)?;
+        let attempts: i32 = existing.try_get("inspection_attempts")?;
+        let current_owner: Option<&str> = existing.try_get("inspection_lease_owner")?;
+        let lease_active: bool = existing.try_get("lease_active")?;
+        let outcome = match state {
+            UploadState::Uploaded if attempts < 10 => ClaimUploadInspectionOutcome::Claimed,
+            UploadState::Inspecting
+                if lease_active && current_owner == Some(claim.lease_owner.as_str()) =>
+            {
+                ClaimUploadInspectionOutcome::Existing
+            }
+            UploadState::Inspecting if !lease_active && attempts < 10 => {
+                ClaimUploadInspectionOutcome::Claimed
+            }
+            UploadState::Inspecting if !lease_active => {
+                ClaimUploadInspectionOutcome::AttemptsExhausted
+            }
+            UploadState::Inspecting if lease_active => ClaimUploadInspectionOutcome::Busy,
+            _ => ClaimUploadInspectionOutcome::NotInspectable,
+        };
+        match outcome {
+            ClaimUploadInspectionOutcome::Claimed => {
+                sqlx::query(
+                    "update ocr_uploads set status = 'inspecting', \
+                     inspection_attempts = inspection_attempts + 1, \
+                     inspection_lease_owner = $4, \
+                     inspection_lease_expires_at = now() + interval '5 minutes', \
+                     updated_at = now() \
+                     where product_id = $1 and tenant_id = $2 and upload_id = $3",
+                )
+                .bind(product_id.as_str())
+                .bind(tenant_id.as_str())
+                .bind(upload_id.as_str())
+                .bind(&claim.lease_owner)
+                .execute(&mut *transaction)
+                .await?;
+            }
+            ClaimUploadInspectionOutcome::Existing => {
+                sqlx::query(
+                    "update ocr_uploads set inspection_lease_expires_at = now() + interval '5 minutes', \
+                     updated_at = now() where product_id = $1 and tenant_id = $2 \
+                     and upload_id = $3 and inspection_lease_owner = $4",
+                )
+                .bind(product_id.as_str())
+                .bind(tenant_id.as_str())
+                .bind(upload_id.as_str())
+                .bind(&claim.lease_owner)
+                .execute(&mut *transaction)
+                .await?;
+            }
+            ClaimUploadInspectionOutcome::AttemptsExhausted => {
+                sqlx::query(
+                    "update ocr_uploads set status = 'rejected', inspection_lease_owner = null, \
+                     inspection_lease_expires_at = null, updated_at = now() \
+                     where product_id = $1 and tenant_id = $2 and upload_id = $3",
+                )
+                .bind(product_id.as_str())
+                .bind(tenant_id.as_str())
+                .bind(upload_id.as_str())
+                .execute(&mut *transaction)
+                .await?;
+                sqlx::query(
+                    "insert into ocr_upload_outbox \
+                     (product_id, tenant_id, upload_id, event_type, payload) \
+                     values ($1, $2, $3, 'ocr.upload.rejected.v1', \
+                     jsonb_build_object('upload_id', $3::text, 'status', 'rejected', \
+                     'reason_code', 'inspection_attempts_exhausted'))",
+                )
+                .bind(product_id.as_str())
+                .bind(tenant_id.as_str())
+                .bind(upload_id.as_str())
+                .execute(&mut *transaction)
+                .await?;
+            }
+            ClaimUploadInspectionOutcome::Busy
+            | ClaimUploadInspectionOutcome::NotInspectable
+            | ClaimUploadInspectionOutcome::NotFound => {}
+        }
         transaction.commit().await?;
         Ok(outcome)
     }
@@ -721,10 +847,25 @@ fn validate_accepted_source(source: &AcceptUpload) -> Result<()> {
         || source.source_object_generation <= 0
         || !(1..=104_857_600).contains(&source.source_content_length)
         || !valid_digest
+        || !is_valid_lease_owner(&source.inspection_lease_owner)
     {
         return Err(Error::InvalidStoredUpload);
     }
     Ok(())
+}
+
+fn validate_lease_owner(owner: &str) -> Result<()> {
+    if !is_valid_lease_owner(owner) {
+        return Err(Error::InvalidStoredUpload);
+    }
+    Ok(())
+}
+
+fn is_valid_lease_owner(owner: &str) -> bool {
+    (1..=128).contains(&owner.len())
+        && owner
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.' | b':'))
 }
 
 fn validate_upload(upload: &StoredUpload) -> Result<()> {

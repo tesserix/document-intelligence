@@ -68,5 +68,8 @@ outbox event. Reconciliation leaves the object in `uploaded` quarantine state;
 it cannot start a job. The acceptance store records the immutable promoted
 source locator and a second content-free outbox event atomically, and only that
 `accepted` state can start a job for the same verified product and tenant.
-Malware, pixel/page, decompression, parser sandboxing, and the GCS promotion
-adapter remain the next quarantine stage before OCR processing.
+Inspection uses a five-minute, tenant-scoped CNPG lease: duplicate delivery by
+the same worker renews it, another worker is excluded, an expired lease is
+reclaimable, and ten exhausted attempts atomically reject the upload and emit a
+content-free event. Malware, pixel/page, decompression, parser sandboxing, and
+the GCS promotion adapter remain the next quarantine stage before OCR processing.
