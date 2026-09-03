@@ -378,22 +378,41 @@ impl WorkflowRunInput {
     }
 }
 
-pub struct QualificationPageActivities;
+#[derive(Default)]
+pub struct QualificationPageActivities {
+    started: Option<Arc<tokio::sync::Notify>>,
+}
+
+impl QualificationPageActivities {
+    pub fn with_started_notifier(started: Arc<tokio::sync::Notify>) -> Self {
+        Self {
+            started: Some(started),
+        }
+    }
+}
 
 #[activities]
 impl QualificationPageActivities {
     #[activity(name = "ocr_page_v1")]
     pub async fn process_page(
+        self: Arc<Self>,
         ctx: ActivityContext,
         input: PageActivityInput,
     ) -> Result<u32, ActivityError> {
+        let hold_for_observation = self.started.is_some();
+        if let Some(started) = &self.started {
+            started.notify_one();
+        }
         if ctx.is_cancelled() {
             return Err(ActivityError::cancelled());
         }
-        ctx.record_heartbeat(input.page).await?;
-        tokio::task::yield_now().await;
-        if ctx.is_cancelled() {
-            return Err(ActivityError::cancelled());
+        let heartbeat_steps = if hold_for_observation { 100 } else { 1 };
+        for progress in 1..=heartbeat_steps {
+            ctx.record_heartbeat((input.page, progress)).await?;
+            tokio::time::sleep(Duration::from_millis(10)).await;
+            if ctx.is_cancelled() {
+                return Err(ActivityError::cancelled());
+            }
         }
         Ok(input.page)
     }
