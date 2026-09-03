@@ -438,13 +438,8 @@ async fn exhausted_page_preserves_completed_artifacts_and_publishes_partial_resu
     );
 
     let publisher = ResultPublisher::new(store.clone(), Arc::new(MatchingResultWriter));
-    let finalizer = DocumentFinalizer::new(
-        store.clone(),
-        Arc::new(PageJsonReader),
-        publisher,
-        2,
-    )
-    .unwrap();
+    let finalizer =
+        DocumentFinalizer::new(store.clone(), Arc::new(PageJsonReader), publisher, 2).unwrap();
     assert!(matches!(
         finalizer
             .finalize(
