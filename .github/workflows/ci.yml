@@ -14,19 +14,18 @@ concurrency:
 
 jobs:
   rust:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.85.0 --profile minimal --component clippy,rustfmt
-      - name: Verify locked dependencies
-        run: cargo fetch --locked
-      - name: Check formatting
-        run: cargo +1.85.0 fmt --check
-      - name: Lint
-        run: cargo +1.85.0 clippy --workspace --all-targets --locked -- -D warnings
-      - name: Build
-        run: cargo +1.85.0 build --workspace --locked
-      - name: Test
-        run: cargo +1.85.0 test --workspace --locked
+    uses: tesserix/tesserix-workflows/.github/workflows/rust-ci.yml@62f7f663a98d5ef92567850dd03c8c2513c9068e
+    with:
+      toolchain: 1.94.0
+      coverage_min_lines: 70
+      database_enabled: true
+      database_setup_script: scripts/setup-test-database.sh
+
+  secret-scan:
+    uses: tesserix/tesserix-workflows/.github/workflows/secret-scan.yml@62f7f663a98d5ef92567850dd03c8c2513c9068e
+
+  container:
+    uses: tesserix/tesserix-workflows/.github/workflows/container-ci.yml@62f7f663a98d5ef92567850dd03c8c2513c9068e
+    with:
+      images: >-
+        [{"name":"ocr-service","context":".","dockerfile":"Dockerfile","target":"","source_root":"crates/ocr-service","smoke_path":"/healthz","smoke_port":8080,"trivy_ignore_file":"","build_args":"","requires_application_build_secret":false},{"name":"ocr-parser-sandbox","context":".","dockerfile":"Dockerfile.parser","target":"","source_root":"crates/ocr-parser-sandbox","smoke_path":"/","smoke_port":0,"trivy_ignore_file":"","build_args":"","requires_application_build_secret":false}]

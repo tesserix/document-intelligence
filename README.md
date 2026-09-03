@@ -47,3 +47,69 @@ consumer integrations around the shared service.
 ## Design checkpoint
 
 Before implementation, reviewers must confirm the launch scale, residency regions, retention defaults, supported identity issuer, review-application owner, Google Document AI processor locations, Temporal hosting model, and the quality/cost thresholds in the evaluation plan.
+
+## Current runtime configuration
+
+`DATABASE_URL` is required. `RESULT_BUCKETS` is a comma-separated allowlist of
+product/environment result buckets. `QUARANTINE_BUCKETS` maps verified product
+IDs to isolated upload buckets as comma-separated `product=bucket` entries.
+Both adapters use Application Default Credentials and GKE Workload Identity;
+service-account key files are not accepted as application configuration. A
+missing adapter leaves liveness available for diagnostics but keeps readiness
+at `503`.
+
+`POST /v1/ocr/uploads` accepts only declared MIME, byte length, and canonical
+SHA-256 plus `Idempotency-Key`. It issues a ten-minute HTTPS PUT capability for
+an opaque service-generated object. The caller must send the returned headers.
+`POST /v1/ocr/uploads/{upload_id}/complete` streams the object from its isolated
+bucket, pins its exact GCS generation, hashes outside the async executor, and
+checks byte length plus content-derived MIME before recording one durable
+outbox event. Reconciliation leaves the object in `uploaded` quarantine state;
+it cannot start a job. The acceptance store records the immutable promoted
+source locator and a second content-free outbox event atomically, and only that
+`accepted` state can start a job for the same verified product and tenant.
+Inspection uses a five-minute, tenant-scoped CNPG lease: duplicate delivery by
+the same worker renews it, another worker is excluded, an expired lease is
+reclaimable, and ten exhausted attempts atomically reject the upload and emit a
+content-free event. Acceptance also persists the bounded page count, maximum
+and aggregate pixel counts, and parser profile/version; document text never
+enters upload metadata or events. Importer orchestration remains the next
+quarantine stage before OCR processing.
+
+The malware adapter implements the bounded ClamAV `INSTREAM` protocol over a
+loopback-only TCP connection to a separately sandboxed sidecar. It streams only
+the recorded GCS generation, rechecks generation and length, caps chunks,
+response bytes, total bytes and wall time, and treats unknown replies or scanner
+failure as unavailable rather than clean. It is not yet started by a production
+importer; outbox consumption remains required before rollout.
+
+The source-promotion adapter uses GCS rewrite with the exact quarantined source
+generation and destination `ifGenerationMatch=0`. Its destination is a
+tenant/product-scoped SHA-256 path. A replay after an ambiguous successful copy
+streams and hashes the existing destination before returning its pinned
+generation; mismatched bytes fail closed. The adapter is not yet wired to a
+production importer.
+
+`ocr-parser-sandbox` is a separate no-network parser executable and image. It
+accepts document bytes only on standard input, verifies PDF or declared image
+format, bounds encoded bytes, PDF objects, pages, per-page pixels, and aggregate
+render pixels, and emits only a small JSON metadata report. Malformed input,
+password protection, and limit violations use stable content-free exit codes.
+The importer-side process adapter now adds a bounded stdin/stdout protocol, a
+two-minute hard ceiling on its configurable deadline, kill-on-timeout, strict
+metadata decoding, and stable invalid/limit/password/unavailable outcomes.
+Production use still requires the reviewed disposable runtime profile.
+
+The importer coordinator now composes the short CNPG lease transaction with
+exact-generation scanning and reading, bounded parsing, create-only promotion,
+and a final atomic acceptance or permanent rejection. Dependency outages leave
+the lease recoverable for bounded retry; foreign scope, stale ownership, source
+conflicts, password requirements, and hard parser limits fail closed without
+placing document content in database events.
+
+Job workflow dispatch now uses a tenant/product-scoped CNPG outbox lease with
+`SKIP LOCKED`, a 100-event batch ceiling, five-minute crash recovery and a
+20-attempt dead-letter bound. The relay derives `ocr-job-{job_id}`, dispatches
+start or cancellation outside the transaction, and acknowledges only with the
+same live lease. An ambiguous Temporal start is therefore replayed with the
+same workflow identity instead of creating duplicate execution.

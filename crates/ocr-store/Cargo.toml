@@ -1,0 +1,16 @@
+[package]
+name = "ocr-store"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+ocr-domain = { path = "../ocr-domain" }
+serde_json.workspace = true
+sqlx.workspace = true
+thiserror.workspace = true
+time.workspace = true
+
+[dev-dependencies]
+tokio.workspace = true
