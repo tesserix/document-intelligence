@@ -2,9 +2,11 @@
 
 mod detection;
 mod geometry;
+mod recognition;
 
 pub use detection::{select_regions, DetectionCandidate, DetectionLimits};
 pub use geometry::{CropRegion, Rotation, TransformChain, TransformStep};
+pub use recognition::{assemble_recognitions, RecognitionAlternative, RecognizedRegion};
 
 use std::io::Cursor;
 
@@ -38,6 +40,10 @@ pub enum Error {
     InvalidDetectionLimits,
     #[error("detector output exceeds the configured candidate limit")]
     DetectionOutputLimitExceeded { candidates: usize, limit: usize },
+    #[error("recognizer output is invalid")]
+    InvalidRecognition,
+    #[error("recognizer batch does not exactly cover detector regions")]
+    InvalidRecognitionBatch,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
