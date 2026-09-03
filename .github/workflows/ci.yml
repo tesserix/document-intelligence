@@ -23,3 +23,9 @@ jobs:
 
   secret-scan:
     uses: tesserix/tesserix-workflows/.github/workflows/secret-scan.yml@62f7f663a98d5ef92567850dd03c8c2513c9068e
+
+  container:
+    uses: tesserix/tesserix-workflows/.github/workflows/container-ci.yml@62f7f663a98d5ef92567850dd03c8c2513c9068e
+    with:
+      images: >-
+        [{"name":"ocr-service","context":".","dockerfile":"Dockerfile","target":"","source_root":"crates/ocr-service","smoke_path":"/healthz","smoke_port":8080,"trivy_ignore_file":"","build_args":"","requires_application_build_secret":false}]
