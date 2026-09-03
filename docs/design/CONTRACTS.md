@@ -101,6 +101,13 @@ accepted only after its size and streamed SHA-256 digest match; its exact
 generation is then persisted. Storage errors and malformed rewrite responses
 are unavailable outcomes rather than evidence of success.
 
+The parser-sandbox protocol carries bytes on standard input and a bounded JSON
+metadata report on standard output. It never emits extracted content. Exit `10`
+means invalid or unsupported content, `11` means a hard resource limit, `12`
+means a password-protected PDF without an approved one-time secret, and `13`
+means an internal or I/O failure. Runtime configuration cannot raise the hard
+100 MiB, 300-page, 100-million-pixel page, or one-billion-pixel document caps.
+
 ## Create job
 
 ```json

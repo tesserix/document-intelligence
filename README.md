@@ -87,3 +87,11 @@ tenant/product-scoped SHA-256 path. A replay after an ambiguous successful copy
 streams and hashes the existing destination before returning its pinned
 generation; mismatched bytes fail closed. The adapter is not yet wired to a
 production importer.
+
+`ocr-parser-sandbox` is a separate no-network parser executable and image. It
+accepts document bytes only on standard input, verifies PDF or declared image
+format, bounds encoded bytes, PDF objects, pages, per-page pixels, and aggregate
+render pixels, and emits only a small JSON metadata report. Malformed input,
+password protection, and limit violations use stable content-free exit codes.
+Production use still requires the reviewed disposable runtime profile and
+orchestrator deadline around this executable.

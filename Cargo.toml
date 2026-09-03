@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ocr-domain", "crates/ocr-engine", "crates/ocr-service", "crates/ocr-store"]
+members = ["crates/ocr-domain", "crates/ocr-engine", "crates/ocr-parser-sandbox", "crates/ocr-service", "crates/ocr-store"]
 resolver = "2"
 
 [workspace.package]
@@ -30,3 +30,4 @@ time = { version = "0.3", features = ["formatting", "serde"] }
 object_store = { version = "0.14.1", default-features = false, features = ["gcp"] }
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 url = "2.5"
+lopdf = { version = "0.44", default-features = false }
