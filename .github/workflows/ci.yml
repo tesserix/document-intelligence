@@ -14,19 +14,10 @@ concurrency:
 
 jobs:
   rust:
-    runs-on: ubuntu-24.04
-    timeout-minutes: 15
-    steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683
-      - name: Install pinned Rust toolchain
-        run: rustup toolchain install 1.85.0 --profile minimal --component clippy,rustfmt
-      - name: Verify locked dependencies
-        run: cargo fetch --locked
-      - name: Check formatting
-        run: cargo +1.85.0 fmt --check
-      - name: Lint
-        run: cargo +1.85.0 clippy --workspace --all-targets --locked -- -D warnings
-      - name: Build
-        run: cargo +1.85.0 build --workspace --locked
-      - name: Test
-        run: cargo +1.85.0 test --workspace --locked
+    uses: tesserix/tesserix-workflows/.github/workflows/rust-ci.yml@62f7f663a98d5ef92567850dd03c8c2513c9068e
+    with:
+      toolchain: 1.85.0
+      coverage_min_lines: 70
+
+  secret-scan:
+    uses: tesserix/tesserix-workflows/.github/workflows/secret-scan.yml@62f7f663a98d5ef92567850dd03c8c2513c9068e
