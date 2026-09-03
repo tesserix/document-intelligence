@@ -1,5 +1,7 @@
 use ocr_domain::{DocumentId, DocumentVersion};
-use ocr_service::{GcsResultReader, ResultArtifactReader};
+use std::collections::HashMap;
+
+use ocr_service::{GcsResultReader, GcsResultWriter, ResultArtifactReader};
 use ocr_store::StoredResultLocator;
 
 fn locator(bucket: &str) -> StoredResultLocator {
@@ -19,6 +21,26 @@ fn reader_requires_an_explicit_nonempty_bucket_allowlist() {
     assert!(GcsResultReader::new(&[]).is_err());
     assert!(GcsResultReader::new(&["invalid/bucket".to_owned()]).is_err());
     assert!(GcsResultReader::new(&["ocr-dev-results-au".to_owned()]).is_ok());
+}
+
+#[test]
+fn writer_requires_one_isolated_bucket_per_valid_product() {
+    assert!(GcsResultWriter::new(HashMap::new()).is_err());
+    assert!(GcsResultWriter::new(HashMap::from([(
+        "Kora".to_owned(),
+        "dev-kora-ocr-results".to_owned()
+    )]))
+    .is_err());
+    assert!(GcsResultWriter::new(HashMap::from([(
+        "kora".to_owned(),
+        "invalid/bucket".to_owned()
+    )]))
+    .is_err());
+    assert!(GcsResultWriter::new(HashMap::from([(
+        "kora".to_owned(),
+        "dev-kora-ocr-results".to_owned()
+    )]))
+    .is_ok());
 }
 
 #[tokio::test]

@@ -19,7 +19,9 @@ pub use page_runner::{
 pub use parser_process::{
     ParserInspectionReport, ParserProcess, ParserProcessError, PARSER_PROFILE, PARSER_VERSION,
 };
-pub use result_artifacts::{GcsResultReader, ResultArtifactConfigurationError};
+pub use result_artifacts::{
+    GcsResultReader, GcsResultWriter, ResultArtifactConfigurationError, ResultArtifactWriteError,
+};
 pub use result_assembly::{assemble_document_result, ResultAssemblyError};
 pub use upload_artifacts::{GcsUploadArtifactReader, UploadArtifactConfigurationError};
 pub use upload_intents::{GcsUploadIssuer, UploadIntentConfigurationError};
