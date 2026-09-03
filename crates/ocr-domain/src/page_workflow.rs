@@ -105,6 +105,10 @@ impl PageWorkflow {
         }
     }
 
+    pub fn job_id(&self) -> &JobId {
+        &self.job_id
+    }
+
     pub fn claim_ready(&mut self, limit: usize) -> Result<Vec<PageTask>> {
         if !(1..=64).contains(&limit) {
             return Err(Error::InvalidPageWorkflow);

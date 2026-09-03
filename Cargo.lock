@@ -1517,6 +1517,7 @@ name = "ocr-store"
 version = "0.1.0"
 dependencies = [
  "ocr-domain",
+ "serde_json",
  "sqlx",
  "thiserror",
  "time",

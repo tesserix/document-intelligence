@@ -1,9 +1,12 @@
-use ocr_domain::{DocumentId, IdempotencyKey, JobId, ProductId, RequestDigest, TenantId, UploadId};
+use ocr_domain::{
+    DocumentId, IdempotencyKey, JobId, PageWorkflow, ProductId, RequestDigest, TenantId, UploadId,
+};
 use ocr_store::{
     AcceptUpload, AcceptUploadOutcome, CancelOutcome, ClaimJobOutbox, ClaimUploadInspection,
-    ClaimUploadInspectionOutcome, CreateJob, CreateOutcome, CreateUpload, CreateUploadOutcome,
-    Error, JobOutboxEventType, ParserInspectionMetadata, PgJobStore, PublishJobOutboxOutcome,
-    RecordUpload, RecordUploadOutcome, RejectUploadOutcome, ResultLookup, UploadRejectionReason,
+    ClaimUploadInspectionOutcome, CreateJob, CreateOutcome, CreatePageWorkflowOutcome,
+    CreateUpload, CreateUploadOutcome, Error, JobOutboxEventType, ParserInspectionMetadata,
+    PgJobStore, PublishJobOutboxOutcome, RecordUpload, RecordUploadOutcome, RejectUploadOutcome,
+    ResultLookup, SavePageWorkflowOutcome, UploadRejectionReason,
 };
 use sqlx::PgPool;
 
@@ -90,6 +93,11 @@ async fn store() -> (PgJobStore, PgPool, PgPool) {
 
 async fn clear_fixture(admin_pool: &PgPool, job_ids: &[&str]) {
     for job_id in job_ids {
+        sqlx::query("delete from ocr_page_workflows where job_id = $1")
+            .bind(job_id)
+            .execute(admin_pool)
+            .await
+            .unwrap();
         sqlx::query("delete from ocr_results where job_id = $1")
             .bind(job_id)
             .execute(admin_pool)
@@ -106,6 +114,71 @@ async fn clear_fixture(admin_pool: &PgPool, job_ids: &[&str]) {
             .await
             .unwrap();
     }
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn page_workflow_checkpoints_are_scoped_idempotent_and_compare_and_swap() {
+    let (store, admin_pool, _) = store().await;
+    clear_fixture(&admin_pool, &["job_PAGE_STORE"]).await;
+    seed_accepted_upload(&admin_pool, "ten_PAGE_STORE").await;
+    store
+        .create(request(
+            "job_PAGE_STORE",
+            "ten_PAGE_STORE",
+            "page-store",
+            'a',
+        ))
+        .await
+        .unwrap();
+    let tenant = TenantId::new("ten_PAGE_STORE").unwrap();
+    let foreign = TenantId::new("ten_PAGE_FOREIGN").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let job = JobId::new("job_PAGE_STORE").unwrap();
+    let mut workflow = PageWorkflow::new(job.clone(), 3, 3).unwrap();
+    let first = workflow.claim_ready(3).unwrap();
+    workflow.record_success(&first[0]).unwrap();
+    workflow.record_retryable_failure(&first[1]).unwrap();
+    workflow.record_success(&first[2]).unwrap();
+
+    let created = store
+        .create_page_workflow(&tenant, &product, &job, workflow.clone())
+        .await
+        .unwrap();
+    assert!(matches!(created, CreatePageWorkflowOutcome::Created(_)));
+    let replayed = store
+        .create_page_workflow(&tenant, &product, &job, workflow.clone())
+        .await
+        .unwrap();
+    assert!(matches!(replayed, CreatePageWorkflowOutcome::Existing(_)));
+    assert!(store
+        .load_page_workflow(&foreign, &product, &job)
+        .await
+        .unwrap()
+        .is_none());
+
+    let mut stored = store
+        .load_page_workflow(&tenant, &product, &job)
+        .await
+        .unwrap()
+        .unwrap();
+    let retry = stored.workflow.claim_ready(3).unwrap();
+    assert_eq!(
+        retry.iter().map(|task| task.page).collect::<Vec<_>>(),
+        vec![2]
+    );
+    let saved = store
+        .save_page_workflow(&tenant, &product, &job, stored.revision, stored.workflow)
+        .await
+        .unwrap();
+    assert!(matches!(saved, SavePageWorkflowOutcome::Saved(value) if value.revision == 1));
+    assert_eq!(
+        store
+            .save_page_workflow(&tenant, &product, &job, 0, workflow)
+            .await
+            .unwrap(),
+        SavePageWorkflowOutcome::Conflict
+    );
 }
 
 #[tokio::test]

@@ -1,8 +1,8 @@
 //! PostgreSQL persistence for document jobs.
 
 use ocr_domain::{
-    DocumentId, DocumentVersion, IdempotencyKey, JobId, JobState, ProductId, RequestDigest,
-    TenantId, UploadId,
+    DocumentId, DocumentVersion, IdempotencyKey, JobId, JobState, PageWorkflow, ProductId,
+    RequestDigest, TenantId, UploadId,
 };
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use thiserror::Error;
@@ -24,6 +24,8 @@ pub enum Error {
     UploadSourceUnavailable,
     #[error("stored outbox event is invalid")]
     InvalidOutboxEvent,
+    #[error("stored page workflow is invalid")]
+    InvalidStoredPageWorkflow,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -57,6 +59,27 @@ pub struct StoredJob {
     pub job_id: JobId,
     pub state: JobState,
     pub created_at: OffsetDateTime,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPageWorkflow {
+    pub workflow: PageWorkflow,
+    pub revision: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum CreatePageWorkflowOutcome {
+    Created(StoredPageWorkflow),
+    Existing(StoredPageWorkflow),
+    Conflict,
+    NotFound,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum SavePageWorkflowOutcome {
+    Saved(StoredPageWorkflow),
+    Conflict,
+    NotFound,
 }
 
 #[derive(Debug)]
@@ -256,6 +279,113 @@ impl PgJobStore {
     pub async fn ready(&self) -> Result<()> {
         sqlx::query("select 1").execute(&self.pool).await?;
         Ok(())
+    }
+
+    pub async fn create_page_workflow(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        job_id: &JobId,
+        workflow: PageWorkflow,
+    ) -> Result<CreatePageWorkflowOutcome> {
+        if workflow.job_id() != job_id {
+            return Err(Error::InvalidStoredPageWorkflow);
+        }
+        let checkpoint = serialize_page_workflow(&workflow)?;
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let inserted = sqlx::query(
+            "insert into ocr_page_workflows \
+             (job_id, product_id, tenant_id, checkpoint) \
+             select jobs.job_id, jobs.product_id, jobs.tenant_id, $4::jsonb \
+             from ocr_jobs as jobs where jobs.job_id = $1 and jobs.product_id = $2 \
+             and jobs.tenant_id = $3 and jobs.status in ('accepted', 'processing') \
+             on conflict (job_id) do nothing \
+             returning revision, checkpoint::text as checkpoint",
+        )
+        .bind(job_id.as_str())
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(&checkpoint)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if let Some(row) = inserted {
+            let stored = stored_page_workflow(row)?;
+            transaction.commit().await?;
+            return Ok(CreatePageWorkflowOutcome::Created(stored));
+        }
+        let existing =
+            load_page_workflow_row(&mut transaction, tenant_id, product_id, job_id).await?;
+        transaction.commit().await?;
+        Ok(match existing {
+            Some(stored) if stored.workflow == workflow => {
+                CreatePageWorkflowOutcome::Existing(stored)
+            }
+            Some(_) => CreatePageWorkflowOutcome::Conflict,
+            None => CreatePageWorkflowOutcome::NotFound,
+        })
+    }
+
+    pub async fn load_page_workflow(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        job_id: &JobId,
+    ) -> Result<Option<StoredPageWorkflow>> {
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let stored =
+            load_page_workflow_row(&mut transaction, tenant_id, product_id, job_id).await?;
+        transaction.commit().await?;
+        Ok(stored)
+    }
+
+    pub async fn save_page_workflow(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        job_id: &JobId,
+        expected_revision: i64,
+        workflow: PageWorkflow,
+    ) -> Result<SavePageWorkflowOutcome> {
+        if expected_revision < 0 || workflow.job_id() != job_id {
+            return Err(Error::InvalidStoredPageWorkflow);
+        }
+        let checkpoint = serialize_page_workflow(&workflow)?;
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let updated = sqlx::query(
+            "update ocr_page_workflows set checkpoint = $5::jsonb, revision = revision + 1, \
+             updated_at = now() where job_id = $1 and product_id = $2 and tenant_id = $3 \
+             and revision = $4 returning revision, checkpoint::text as checkpoint",
+        )
+        .bind(job_id.as_str())
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(expected_revision)
+        .bind(&checkpoint)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if let Some(row) = updated {
+            let stored = stored_page_workflow(row)?;
+            transaction.commit().await?;
+            return Ok(SavePageWorkflowOutcome::Saved(stored));
+        }
+        let exists = sqlx::query_scalar::<_, bool>(
+            "select exists(select 1 from ocr_page_workflows where job_id = $1 \
+             and product_id = $2 and tenant_id = $3)",
+        )
+        .bind(job_id.as_str())
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .fetch_one(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(if exists {
+            SavePageWorkflowOutcome::Conflict
+        } else {
+            SavePageWorkflowOutcome::NotFound
+        })
     }
 
     pub async fn claim_job_outbox(
@@ -1057,6 +1187,45 @@ async fn set_scope(
         .execute(&mut **transaction)
         .await?;
     Ok(())
+}
+
+async fn load_page_workflow_row(
+    transaction: &mut Transaction<'_, Postgres>,
+    tenant_id: &TenantId,
+    product_id: &ProductId,
+    job_id: &JobId,
+) -> Result<Option<StoredPageWorkflow>> {
+    sqlx::query(
+        "select revision, checkpoint::text as checkpoint from ocr_page_workflows \
+         where job_id = $1 and product_id = $2 and tenant_id = $3",
+    )
+    .bind(job_id.as_str())
+    .bind(product_id.as_str())
+    .bind(tenant_id.as_str())
+    .fetch_optional(&mut **transaction)
+    .await?
+    .map(stored_page_workflow)
+    .transpose()
+}
+
+fn serialize_page_workflow(workflow: &PageWorkflow) -> Result<String> {
+    let checkpoint =
+        serde_json::to_string(workflow).map_err(|_| Error::InvalidStoredPageWorkflow)?;
+    if checkpoint.is_empty() || checkpoint.len() > 262_144 {
+        return Err(Error::InvalidStoredPageWorkflow);
+    }
+    Ok(checkpoint)
+}
+
+fn stored_page_workflow(row: sqlx::postgres::PgRow) -> Result<StoredPageWorkflow> {
+    let revision: i64 = row.try_get("revision")?;
+    let checkpoint: &str = row.try_get("checkpoint")?;
+    if revision < 0 || checkpoint.is_empty() || checkpoint.len() > 262_144 {
+        return Err(Error::InvalidStoredPageWorkflow);
+    }
+    let workflow =
+        serde_json::from_str(checkpoint).map_err(|_| Error::InvalidStoredPageWorkflow)?;
+    Ok(StoredPageWorkflow { workflow, revision })
 }
 
 fn stored_job(row: sqlx::postgres::PgRow) -> Result<StoredJob> {
