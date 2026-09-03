@@ -2,7 +2,8 @@ use ocr_domain::{DocumentId, IdempotencyKey, JobId, ProductId, RequestDigest, Te
 use ocr_store::{
     AcceptUpload, AcceptUploadOutcome, CancelOutcome, ClaimUploadInspection,
     ClaimUploadInspectionOutcome, CreateJob, CreateOutcome, CreateUpload, CreateUploadOutcome,
-    Error, PgJobStore, RecordUpload, RecordUploadOutcome, ResultLookup,
+    Error, PgJobStore, RecordUpload, RecordUploadOutcome, RejectUploadOutcome, ResultLookup,
+    UploadRejectionReason,
 };
 use sqlx::PgPool;
 
@@ -637,6 +638,99 @@ async fn exhausted_inspection_attempts_reject_the_upload_once() {
          and event_type = 'ocr.upload.rejected.v1' \
          and payload->>'reason_code' = 'inspection_attempts_exhausted'",
     )
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(events, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn claimed_upload_rejection_is_scoped_atomic_and_idempotent() {
+    let (store, admin_pool, _) = store().await;
+    sqlx::query("delete from ocr_upload_outbox where upload_id = 'upl_REJECT_MALWARE'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from ocr_uploads where upload_id = 'upl_REJECT_MALWARE'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    seed_uploaded_upload(&admin_pool, "ten_REJECT_MALWARE").await;
+    let tenant_id = TenantId::new("ten_REJECT_MALWARE").unwrap();
+    let product_id = ProductId::new("kora").unwrap();
+    let upload_id = UploadId::new("upl_REJECT_MALWARE").unwrap();
+    store
+        .claim_upload_inspection(
+            &tenant_id,
+            &product_id,
+            &upload_id,
+            ClaimUploadInspection {
+                lease_owner: "importer-malware".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let foreign = store
+        .reject_upload(
+            &TenantId::new("ten_OTHER").unwrap(),
+            &product_id,
+            &upload_id,
+            "importer-malware",
+            UploadRejectionReason::MalwareDetected,
+        )
+        .await
+        .unwrap();
+    let stale_owner = store
+        .reject_upload(
+            &tenant_id,
+            &product_id,
+            &upload_id,
+            "other-importer",
+            UploadRejectionReason::MalwareDetected,
+        )
+        .await
+        .unwrap();
+    let rejected = store
+        .reject_upload(
+            &tenant_id,
+            &product_id,
+            &upload_id,
+            "importer-malware",
+            UploadRejectionReason::MalwareDetected,
+        )
+        .await
+        .unwrap();
+    let replayed = store
+        .reject_upload(
+            &tenant_id,
+            &product_id,
+            &upload_id,
+            "importer-malware",
+            UploadRejectionReason::MalwareDetected,
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(foreign, RejectUploadOutcome::NotFound);
+    assert_eq!(stale_owner, RejectUploadOutcome::NotRejectable);
+    assert_eq!(rejected, RejectUploadOutcome::Rejected);
+    assert_eq!(replayed, RejectUploadOutcome::Existing);
+    let row: (String, String) = sqlx::query_as(
+        "select status::text, rejection_reason from ocr_uploads where upload_id = $1",
+    )
+    .bind(upload_id.as_str())
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(row, ("rejected".to_owned(), "malware_detected".to_owned()));
+    let events: i64 = sqlx::query_scalar(
+        "select count(*) from ocr_upload_outbox where upload_id = $1 \
+         and event_type = 'ocr.upload.rejected.v1' \
+         and payload->>'reason_code' = 'malware_detected'",
+    )
+    .bind(upload_id.as_str())
     .fetch_one(&admin_pool)
     .await
     .unwrap();

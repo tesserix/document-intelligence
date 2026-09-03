@@ -142,6 +142,32 @@ pub enum AcceptUploadOutcome {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum UploadRejectionReason {
+    MalwareDetected,
+    InvalidDocument,
+    ParserLimitsExceeded,
+}
+
+impl UploadRejectionReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::MalwareDetected => "malware_detected",
+            Self::InvalidDocument => "invalid_document",
+            Self::ParserLimitsExceeded => "parser_limits_exceeded",
+        }
+    }
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum RejectUploadOutcome {
+    Rejected,
+    Existing,
+    ReasonMismatch,
+    NotRejectable,
+    NotFound,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum UploadState {
     Reserved,
     Uploaded,
@@ -521,7 +547,8 @@ impl PgJobStore {
             ClaimUploadInspectionOutcome::AttemptsExhausted => {
                 sqlx::query(
                     "update ocr_uploads set status = 'rejected', inspection_lease_owner = null, \
-                     inspection_lease_expires_at = null, updated_at = now() \
+                     inspection_lease_expires_at = null, \
+                     rejection_reason = 'inspection_attempts_exhausted', updated_at = now() \
                      where product_id = $1 and tenant_id = $2 and upload_id = $3",
                 )
                 .bind(product_id.as_str())
@@ -548,6 +575,73 @@ impl PgJobStore {
         }
         transaction.commit().await?;
         Ok(outcome)
+    }
+
+    pub async fn reject_upload(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        upload_id: &UploadId,
+        lease_owner: &str,
+        reason: UploadRejectionReason,
+    ) -> Result<RejectUploadOutcome> {
+        validate_lease_owner(lease_owner)?;
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let updated = sqlx::query(
+            "update ocr_uploads set status = 'rejected', rejection_reason = $5, \
+             inspection_lease_owner = null, inspection_lease_expires_at = null, updated_at = now() \
+             where product_id = $1 and tenant_id = $2 and upload_id = $3 \
+             and status = 'inspecting' and inspection_lease_owner = $4 \
+             and inspection_lease_expires_at > now() returning upload_id",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(upload_id.as_str())
+        .bind(lease_owner)
+        .bind(reason.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if updated.is_some() {
+            sqlx::query(
+                "insert into ocr_upload_outbox \
+                 (product_id, tenant_id, upload_id, event_type, payload) \
+                 values ($1, $2, $3, 'ocr.upload.rejected.v1', \
+                 jsonb_build_object('upload_id', $3::text, 'status', 'rejected', \
+                 'reason_code', $4::text))",
+            )
+            .bind(product_id.as_str())
+            .bind(tenant_id.as_str())
+            .bind(upload_id.as_str())
+            .bind(reason.as_str())
+            .execute(&mut *transaction)
+            .await?;
+            transaction.commit().await?;
+            return Ok(RejectUploadOutcome::Rejected);
+        }
+
+        let existing = sqlx::query(
+            "select status::text as status, rejection_reason from ocr_uploads \
+             where product_id = $1 and tenant_id = $2 and upload_id = $3",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(upload_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        let Some(existing) = existing else {
+            return Ok(RejectUploadOutcome::NotFound);
+        };
+        let state = parse_upload_state(existing.try_get("status")?)?;
+        if state != UploadState::Rejected {
+            return Ok(RejectUploadOutcome::NotRejectable);
+        }
+        if existing.try_get::<Option<&str>, _>("rejection_reason")? == Some(reason.as_str()) {
+            Ok(RejectUploadOutcome::Existing)
+        } else {
+            Ok(RejectUploadOutcome::ReasonMismatch)
+        }
     }
 
     pub async fn create(&self, request: CreateJob) -> Result<CreateOutcome> {
