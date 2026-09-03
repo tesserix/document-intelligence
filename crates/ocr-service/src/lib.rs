@@ -1,5 +1,6 @@
 //! HTTP boundary for the document intelligence service.
 
+mod malware;
 mod result_artifacts;
 mod upload_artifacts;
 mod upload_intents;
@@ -1007,3 +1008,7 @@ fn request_id_from_headers(headers: &HeaderMap) -> String {
         .map(str::to_owned)
         .unwrap_or_else(|| Uuid::new_v4().to_string())
 }
+pub use malware::{
+    ClamdScanner, GcsUploadMalwareInspector, MalwareScanError, MalwareScanOutcome,
+    UploadInspectionError, UploadInspectorConfigurationError,
+};

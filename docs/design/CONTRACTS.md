@@ -86,6 +86,14 @@ source locator fails closed. A crash after object creation but before commit is 
 verifying that the existing destination is the expected content-addressed
 object and replaying the database transition.
 
+The malware transport uses ClamAV `zINSTREAM` only through a loopback sidecar.
+The Rust adapter bounds the connection-plus-scan deadline, individual protocol
+chunks, aggregate bytes and response bytes. It returns only clean, infected,
+invalid or unavailable; malware signature text and document bytes never enter
+events, errors, logs or traces. The GCS adapter requests the exact stored
+generation and rejects generation, bucket or length drift before interpreting a
+clean response.
+
 ## Create job
 
 ```json

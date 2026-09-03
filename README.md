@@ -73,3 +73,10 @@ the same worker renews it, another worker is excluded, an expired lease is
 reclaimable, and ten exhausted attempts atomically reject the upload and emit a
 content-free event. Malware, pixel/page, decompression, parser sandboxing, and
 the GCS promotion adapter remain the next quarantine stage before OCR processing.
+
+The malware adapter implements the bounded ClamAV `INSTREAM` protocol over a
+loopback-only TCP connection to a separately sandboxed sidecar. It streams only
+the recorded GCS generation, rechecks generation and length, caps chunks,
+response bytes, total bytes and wall time, and treats unknown replies or scanner
+failure as unavailable rather than clean. It is not yet started by a production
+importer; outbox consumption and source promotion remain required before rollout.
