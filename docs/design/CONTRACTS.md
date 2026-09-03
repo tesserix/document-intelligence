@@ -224,6 +224,14 @@ Full page observations are immutable and content-addressed. Every structured val
 
 Events contain no OCR text, field values, object URLs, filenames, passwords, prompts, or signed result URLs. Delivery is at least once. Consumers deduplicate `event_id`. Webhooks sign timestamp + event ID + body digest and reject stale timestamps.
 
+The job outbox relay polls explicit product/tenant scopes through RLS; it has no
+cross-tenant bypass role. Claims use `FOR UPDATE SKIP LOCKED`, at most 100 rows,
+a five-minute lease and 20 delivery attempts. The same owner renews without
+incrementing an attempt, expired work is reclaimed, and exhaustion is
+dead-lettered for alerting. Temporal start/cancel happens after claim commit.
+Only the live owner can mark an event published. The deterministic workflow ID
+is `ocr-job-{job_id}`, so replay after an ambiguous start is idempotent.
+
 ## Australis tool
 
 `extract_document` accepts an authorized document/upload reference, type hint, output mode, registered schema reference, language hints, and evidence flag. It returns either a terminal normalized result or an opaque job/status resume contract. The tool cannot accept provider credentials, arbitrary callback URLs, tenant identity, system instructions, or tool permissions.

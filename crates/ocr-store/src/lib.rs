@@ -22,6 +22,8 @@ pub enum Error {
     InvalidStoredUpload,
     #[error("upload source is unavailable")]
     UploadSourceUnavailable,
+    #[error("stored outbox event is invalid")]
+    InvalidOutboxEvent,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -55,6 +57,33 @@ pub struct StoredJob {
     pub job_id: JobId,
     pub state: JobState,
     pub created_at: OffsetDateTime,
+}
+
+#[derive(Debug)]
+pub struct ClaimJobOutbox {
+    pub lease_owner: String,
+    pub limit: i64,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum JobOutboxEventType {
+    Accepted,
+    CancellationRequested,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredJobOutboxEvent {
+    pub event_id: i64,
+    pub job_id: JobId,
+    pub event_type: JobOutboxEventType,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum PublishJobOutboxOutcome {
+    Published,
+    Existing,
+    LeaseLost,
+    NotFound,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -227,6 +256,112 @@ impl PgJobStore {
     pub async fn ready(&self) -> Result<()> {
         sqlx::query("select 1").execute(&self.pool).await?;
         Ok(())
+    }
+
+    pub async fn claim_job_outbox(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        claim: ClaimJobOutbox,
+    ) -> Result<Vec<StoredJobOutboxEvent>> {
+        validate_lease_owner(&claim.lease_owner)?;
+        if !(1..=100).contains(&claim.limit) {
+            return Err(Error::InvalidOutboxEvent);
+        }
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        sqlx::query(
+            "update ocr_outbox set dead_lettered_at = now(), delivery_lease_owner = null, \
+             delivery_lease_expires_at = null where product_id = $1 and tenant_id = $2 \
+             and published_at is null and dead_lettered_at is null and delivery_attempts = 20 \
+             and delivery_lease_expires_at <= now()",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .execute(&mut *transaction)
+        .await?;
+        let rows = sqlx::query(
+            "with candidates as ( \
+                select event_id from ocr_outbox where product_id = $1 and tenant_id = $2 \
+                and published_at is null and dead_lettered_at is null and delivery_attempts < 20 \
+                and (delivery_lease_owner = $3 or delivery_lease_expires_at is null \
+                    or delivery_lease_expires_at <= now()) \
+                order by event_id for update skip locked limit $4 \
+             ) update ocr_outbox as events set \
+                delivery_attempts = case \
+                    when events.delivery_lease_owner = $3 \
+                        and events.delivery_lease_expires_at > now() \
+                    then events.delivery_attempts else events.delivery_attempts + 1 end, \
+                delivery_lease_owner = $3, \
+                delivery_lease_expires_at = now() + interval '5 minutes' \
+             from candidates where events.event_id = candidates.event_id \
+             returning events.event_id, events.job_id, events.event_type",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(&claim.lease_owner)
+        .bind(claim.limit)
+        .fetch_all(&mut *transaction)
+        .await?;
+        let events = rows
+            .into_iter()
+            .map(stored_job_outbox_event)
+            .collect::<Result<Vec<_>>>()?;
+        transaction.commit().await?;
+        Ok(events)
+    }
+
+    pub async fn publish_job_outbox(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        event_id: i64,
+        lease_owner: &str,
+    ) -> Result<PublishJobOutboxOutcome> {
+        validate_lease_owner(lease_owner)?;
+        if event_id <= 0 {
+            return Err(Error::InvalidOutboxEvent);
+        }
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let updated = sqlx::query(
+            "update ocr_outbox set published_at = now(), delivery_lease_owner = null, \
+             delivery_lease_expires_at = null where product_id = $1 and tenant_id = $2 \
+             and event_id = $3 and published_at is null and dead_lettered_at is null \
+             and delivery_lease_owner = $4 and delivery_lease_expires_at > now() \
+             returning event_id",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(event_id)
+        .bind(lease_owner)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if updated.is_some() {
+            transaction.commit().await?;
+            return Ok(PublishJobOutboxOutcome::Published);
+        }
+        let existing = sqlx::query(
+            "select published_at from ocr_outbox where product_id = $1 and tenant_id = $2 \
+             and event_id = $3",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(event_id)
+        .fetch_optional(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        Ok(match existing {
+            Some(row)
+                if row
+                    .try_get::<Option<OffsetDateTime>, _>("published_at")?
+                    .is_some() =>
+            {
+                PublishJobOutboxOutcome::Existing
+            }
+            Some(_) => PublishJobOutboxOutcome::LeaseLost,
+            None => PublishJobOutboxOutcome::NotFound,
+        })
     }
 
     pub async fn create_upload(&self, request: CreateUpload) -> Result<CreateUploadOutcome> {
@@ -932,6 +1067,24 @@ fn stored_job(row: sqlx::postgres::PgRow) -> Result<StoredJob> {
         job_id,
         state,
         created_at,
+    })
+}
+
+fn stored_job_outbox_event(row: sqlx::postgres::PgRow) -> Result<StoredJobOutboxEvent> {
+    let event_id: i64 = row.try_get("event_id")?;
+    if event_id <= 0 {
+        return Err(Error::InvalidOutboxEvent);
+    }
+    let job_id = JobId::new(row.try_get("job_id")?).map_err(|_| Error::InvalidOutboxEvent)?;
+    let event_type = match row.try_get::<&str, _>("event_type")? {
+        "ocr.job.accepted.v1" => JobOutboxEventType::Accepted,
+        "ocr.job.cancellation_requested.v1" => JobOutboxEventType::CancellationRequested,
+        _ => return Err(Error::InvalidOutboxEvent),
+    };
+    Ok(StoredJobOutboxEvent {
+        event_id,
+        job_id,
+        event_type,
     })
 }
 

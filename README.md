@@ -106,3 +106,10 @@ and a final atomic acceptance or permanent rejection. Dependency outages leave
 the lease recoverable for bounded retry; foreign scope, stale ownership, source
 conflicts, password requirements, and hard parser limits fail closed without
 placing document content in database events.
+
+Job workflow dispatch now uses a tenant/product-scoped CNPG outbox lease with
+`SKIP LOCKED`, a 100-event batch ceiling, five-minute crash recovery and a
+20-attempt dead-letter bound. The relay derives `ocr-job-{job_id}`, dispatches
+start or cancellation outside the transaction, and acknowledges only with the
+same live lease. An ambiguous Temporal start is therefore replayed with the
+same workflow identity instead of creating duplicate execution.

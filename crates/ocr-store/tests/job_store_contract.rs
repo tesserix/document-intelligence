@@ -1,9 +1,9 @@
 use ocr_domain::{DocumentId, IdempotencyKey, JobId, ProductId, RequestDigest, TenantId, UploadId};
 use ocr_store::{
-    AcceptUpload, AcceptUploadOutcome, CancelOutcome, ClaimUploadInspection,
+    AcceptUpload, AcceptUploadOutcome, CancelOutcome, ClaimJobOutbox, ClaimUploadInspection,
     ClaimUploadInspectionOutcome, CreateJob, CreateOutcome, CreateUpload, CreateUploadOutcome,
-    Error, ParserInspectionMetadata, PgJobStore, RecordUpload, RecordUploadOutcome,
-    RejectUploadOutcome, ResultLookup, UploadRejectionReason,
+    Error, JobOutboxEventType, ParserInspectionMetadata, PgJobStore, PublishJobOutboxOutcome,
+    RecordUpload, RecordUploadOutcome, RejectUploadOutcome, ResultLookup, UploadRejectionReason,
 };
 use sqlx::PgPool;
 
@@ -134,6 +134,105 @@ async fn create_is_atomic_and_idempotent_per_trusted_scope() {
             .await
             .unwrap();
     assert_eq!(outbox_count, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn job_outbox_claim_and_publish_are_leased_scoped_and_idempotent() {
+    let (store, admin_pool, _) = store().await;
+    clear_fixture(&admin_pool, &["job_OUTBOX"]).await;
+    seed_accepted_upload(&admin_pool, "ten_OUTBOX").await;
+    store
+        .create(request("job_OUTBOX", "ten_OUTBOX", "outbox-1", 'a'))
+        .await
+        .unwrap();
+    let tenant = TenantId::new("ten_OUTBOX").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let claim = |owner: &str| ClaimJobOutbox {
+        lease_owner: owner.to_owned(),
+        limit: 10,
+    };
+
+    let claimed = store
+        .claim_job_outbox(&tenant, &product, claim("relay-01"))
+        .await
+        .unwrap();
+    assert_eq!(claimed.len(), 1);
+    assert_eq!(claimed[0].job_id, JobId::new("job_OUTBOX").unwrap());
+    assert_eq!(claimed[0].event_type, JobOutboxEventType::Accepted);
+    let event_id = claimed[0].event_id;
+    let same_owner = store
+        .claim_job_outbox(&tenant, &product, claim("relay-01"))
+        .await
+        .unwrap();
+    assert_eq!(same_owner, claimed);
+    assert!(store
+        .claim_job_outbox(&tenant, &product, claim("relay-02"))
+        .await
+        .unwrap()
+        .is_empty());
+    assert_eq!(
+        store
+            .publish_job_outbox(
+                &TenantId::new("ten_OTHER").unwrap(),
+                &product,
+                event_id,
+                "relay-01",
+            )
+            .await
+            .unwrap(),
+        PublishJobOutboxOutcome::NotFound
+    );
+    assert_eq!(
+        store
+            .publish_job_outbox(&tenant, &product, event_id, "relay-02")
+            .await
+            .unwrap(),
+        PublishJobOutboxOutcome::LeaseLost
+    );
+    assert_eq!(
+        store
+            .publish_job_outbox(&tenant, &product, event_id, "relay-01")
+            .await
+            .unwrap(),
+        PublishJobOutboxOutcome::Published
+    );
+    assert_eq!(
+        store
+            .publish_job_outbox(&tenant, &product, event_id, "relay-01")
+            .await
+            .unwrap(),
+        PublishJobOutboxOutcome::Existing
+    );
+    assert!(store
+        .claim_job_outbox(&tenant, &product, claim("relay-02"))
+        .await
+        .unwrap()
+        .is_empty());
+
+    let exhausted_event: i64 = sqlx::query_scalar(
+        "insert into ocr_outbox (product_id, tenant_id, job_id, event_type, payload, \
+         delivery_attempts, delivery_lease_owner, delivery_lease_expires_at) values \
+         ('kora', 'ten_OUTBOX', 'job_OUTBOX', 'ocr.job.cancellation_requested.v1', \
+          jsonb_build_object('job_id', 'job_OUTBOX', 'status', 'cancelling'), 20, \
+          'dead-relay', now() - interval '1 second') returning event_id",
+    )
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert!(store
+        .claim_job_outbox(&tenant, &product, claim("relay-recovery"))
+        .await
+        .unwrap()
+        .is_empty());
+    let dead_lettered: bool = sqlx::query_scalar(
+        "select dead_lettered_at is not null from ocr_outbox where event_id = $1",
+    )
+    .bind(exhausted_event)
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert!(dead_lettered);
 }
 
 #[tokio::test]

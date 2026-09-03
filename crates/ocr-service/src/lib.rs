@@ -3,6 +3,7 @@
 mod document_reader;
 mod importer;
 mod malware;
+mod outbox_relay;
 mod parser_process;
 mod result_artifacts;
 mod source_promotion;
@@ -1023,5 +1024,9 @@ pub use importer::{
 pub use malware::{
     ClamdScanner, GcsUploadMalwareInspector, MalwareScanError, MalwareScanOutcome,
     UploadInspectionError, UploadInspectorConfigurationError,
+};
+pub use outbox_relay::{
+    JobOutboxRelay, RelayError, RelayOutcome, WorkflowAction, WorkflowDispatch,
+    WorkflowDispatchError, WorkflowDispatchOutcome, WorkflowStarter,
 };
 pub use source_promotion::{GcsSourcePromoter, PromotedSource, SourcePromotionError};

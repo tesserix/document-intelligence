@@ -1,0 +1,160 @@
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    Arc,
+};
+
+use ocr_domain::{IdempotencyKey, JobId, ProductId, RequestDigest, TenantId, UploadId};
+use ocr_service::{
+    JobOutboxRelay, RelayOutcome, WorkflowAction, WorkflowDispatch, WorkflowDispatchError,
+    WorkflowDispatchOutcome, WorkflowStarter,
+};
+use ocr_store::{CreateJob, PgJobStore};
+use sqlx::PgPool;
+use tokio::sync::Mutex;
+
+struct RecordingStarter {
+    dispatches: Mutex<Vec<WorkflowDispatch>>,
+}
+
+impl WorkflowStarter for RecordingStarter {
+    async fn dispatch(
+        &self,
+        dispatch: WorkflowDispatch,
+    ) -> Result<WorkflowDispatchOutcome, WorkflowDispatchError> {
+        self.dispatches.lock().await.push(dispatch);
+        Ok(WorkflowDispatchOutcome::Started)
+    }
+}
+
+struct FailOnceStarter {
+    fail: AtomicBool,
+    dispatches: Mutex<Vec<WorkflowDispatch>>,
+}
+
+impl WorkflowStarter for FailOnceStarter {
+    async fn dispatch(
+        &self,
+        dispatch: WorkflowDispatch,
+    ) -> Result<WorkflowDispatchOutcome, WorkflowDispatchError> {
+        self.dispatches.lock().await.push(dispatch);
+        if self.fail.swap(false, Ordering::SeqCst) {
+            Err(WorkflowDispatchError::Unavailable)
+        } else {
+            Ok(WorkflowDispatchOutcome::Existing)
+        }
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn relay_dispatches_a_deterministic_workflow_once_then_acknowledges() {
+    let application = PgPool::connect(&std::env::var("TEST_DATABASE_URL").unwrap())
+        .await
+        .unwrap();
+    let admin = PgPool::connect(&std::env::var("TEST_DATABASE_ADMIN_URL").unwrap())
+        .await
+        .unwrap();
+    sqlx::query("delete from ocr_outbox where job_id = 'job_RELAY'")
+        .execute(&admin)
+        .await
+        .unwrap();
+    sqlx::query("delete from ocr_jobs where job_id = 'job_RELAY'")
+        .execute(&admin)
+        .await
+        .unwrap();
+    sqlx::query("delete from ocr_uploads where upload_id = 'upl_RELAY'")
+        .execute(&admin)
+        .await
+        .unwrap();
+    sqlx::query(
+        "insert into ocr_uploads \
+         (upload_id, tenant_id, product_id, idempotency_key, request_digest, object_bucket, \
+          object_name, expected_content_type, expected_content_length, expected_digest, status, \
+          expires_at, object_generation, verified_content_type, verified_content_length, \
+          verified_digest, uploaded_at, source_bucket, source_object_name, \
+          source_object_generation, source_digest, source_content_length, accepted_at, \
+          inspection_attempts) values \
+         ('upl_RELAY', 'ten_RELAY', 'kora', 'relay-upload', $1, 'dev-kora-ocr-quarantine', \
+          'products/kora/tenants/ten_RELAY/quarantine/upl_RELAY', 'application/pdf', 8, $2, \
+          'accepted', now() + interval '10 minutes', 42, 'application/pdf', 8, $2, now(), \
+          'dev-kora-ocr-source', 'products/kora/tenants/ten_RELAY/documents/source', 43, $2, 8, \
+          now(), 1)",
+    )
+    .bind(format!("sha256:{}", "a".repeat(64)))
+    .bind(format!("sha256:{}", "b".repeat(64)))
+    .execute(&admin)
+    .await
+    .unwrap();
+    let store = PgJobStore::new(application.clone());
+    store
+        .create(CreateJob {
+            job_id: JobId::new("job_RELAY").unwrap(),
+            tenant_id: TenantId::new("ten_RELAY").unwrap(),
+            product_id: ProductId::new("kora").unwrap(),
+            idempotency_key: IdempotencyKey::new("relay-job").unwrap(),
+            request_digest: RequestDigest::new(&format!("sha256:{}", "c".repeat(64))).unwrap(),
+            upload_id: UploadId::new("upl_RELAY").unwrap(),
+        })
+        .await
+        .unwrap();
+    let starter = Arc::new(RecordingStarter {
+        dispatches: Mutex::new(Vec::new()),
+    });
+    let relay = JobOutboxRelay::new(store, Arc::clone(&starter));
+    let tenant = TenantId::new("ten_RELAY").unwrap();
+    let product = ProductId::new("kora").unwrap();
+
+    assert_eq!(
+        relay
+            .relay_scope(&tenant, &product, "relay-01", 10)
+            .await
+            .unwrap(),
+        RelayOutcome::Published(1)
+    );
+    assert_eq!(
+        relay
+            .relay_scope(&tenant, &product, "relay-01", 10)
+            .await
+            .unwrap(),
+        RelayOutcome::Idle
+    );
+    let dispatches = starter.dispatches.lock().await;
+    assert_eq!(dispatches.len(), 1);
+    assert_eq!(dispatches[0].workflow_id, "ocr-job-job_RELAY");
+    assert_eq!(dispatches[0].job_id, JobId::new("job_RELAY").unwrap());
+    assert_eq!(dispatches[0].action, WorkflowAction::Start);
+    drop(dispatches);
+
+    sqlx::query(
+        "insert into ocr_outbox (product_id, tenant_id, job_id, event_type, payload) values \
+         ('kora', 'ten_RELAY', 'job_RELAY', 'ocr.job.cancellation_requested.v1', \
+          jsonb_build_object('job_id', 'job_RELAY', 'status', 'cancelling'))",
+    )
+    .execute(&admin)
+    .await
+    .unwrap();
+    let fail_once = Arc::new(FailOnceStarter {
+        fail: AtomicBool::new(true),
+        dispatches: Mutex::new(Vec::new()),
+    });
+    let recovering_relay =
+        JobOutboxRelay::new(PgJobStore::new(application), Arc::clone(&fail_once));
+    assert_eq!(
+        recovering_relay
+            .relay_scope(&tenant, &product, "relay-02", 10)
+            .await
+            .unwrap(),
+        RelayOutcome::Retryable { published: 0 }
+    );
+    assert_eq!(
+        recovering_relay
+            .relay_scope(&tenant, &product, "relay-02", 10)
+            .await
+            .unwrap(),
+        RelayOutcome::Published(1)
+    );
+    let retried = fail_once.dispatches.lock().await;
+    assert_eq!(retried.len(), 2);
+    assert_eq!(retried[0].workflow_id, retried[1].workflow_id);
+    assert_eq!(retried[1].action, WorkflowAction::Cancel);
+}
