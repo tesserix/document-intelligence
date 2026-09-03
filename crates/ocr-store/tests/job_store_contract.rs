@@ -19,10 +19,6 @@ async fn store() -> (PgJobStore, PgPool, PgPool) {
         std::env::var("TEST_DATABASE_ADMIN_URL").expect("TEST_DATABASE_ADMIN_URL must be set");
     let pool = PgPool::connect(&url).await.unwrap();
     let admin_pool = PgPool::connect(&admin_url).await.unwrap();
-    sqlx::query("truncate table ocr_outbox, ocr_jobs")
-        .execute(&admin_pool)
-        .await
-        .unwrap();
     (PgJobStore::new(pool.clone()), admin_pool, pool)
 }
 
@@ -41,10 +37,11 @@ async fn create_is_atomic_and_idempotent_per_trusted_scope() {
         CreateOutcome::Existing(JobId::new("job_FIRST").unwrap())
     );
 
-    let outbox_count: i64 = sqlx::query_scalar("select count(*) from ocr_outbox")
-        .fetch_one(&admin_pool)
-        .await
-        .unwrap();
+    let outbox_count: i64 =
+        sqlx::query_scalar("select count(*) from ocr_outbox where job_id = 'job_FIRST'")
+            .fetch_one(&admin_pool)
+            .await
+            .unwrap();
     assert_eq!(outbox_count, 1);
 }
 
@@ -53,12 +50,22 @@ async fn create_is_atomic_and_idempotent_per_trusted_scope() {
 async fn idempotency_key_reuse_with_a_different_digest_conflicts() {
     let (store, _, _) = store().await;
     store
-        .create(request("job_FIRST", "ten_ALPHA", "request-1", 'a'))
+        .create(request(
+            "job_CONFLICT_FIRST",
+            "ten_CONFLICT",
+            "request-conflict",
+            'a',
+        ))
         .await
         .unwrap();
 
     let error = store
-        .create(request("job_SECOND", "ten_ALPHA", "request-1", 'b'))
+        .create(request(
+            "job_CONFLICT_SECOND",
+            "ten_CONFLICT",
+            "request-conflict",
+            'b',
+        ))
         .await
         .unwrap_err();
     assert!(matches!(error, Error::IdempotencyConflict));

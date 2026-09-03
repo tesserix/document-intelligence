@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ocr-domain", "crates/ocr-service", "crates/ocr-store"]
+members = ["crates/ocr-domain", "crates/ocr-engine", "crates/ocr-service", "crates/ocr-store"]
 resolver = "2"
 
 [workspace.package]
@@ -19,3 +19,4 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["limit", "request-id", "timeout", "trace"] }
 http-body-util = "0.1"
 uuid = { version = "1.18", features = ["v4"] }
+image = { version = "0.25", default-features = false, features = ["jpeg", "png", "pnm", "tiff", "webp"] }
