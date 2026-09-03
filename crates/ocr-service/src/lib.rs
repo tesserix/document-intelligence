@@ -16,6 +16,7 @@ mod source_promotion;
 mod upload_artifacts;
 mod upload_intents;
 mod webhook;
+mod webhook_relay;
 
 pub use document_finalizer::{DocumentFinalizeError, DocumentFinalizer};
 pub use page_artifacts::{
@@ -43,6 +44,10 @@ pub use upload_artifacts::{GcsUploadArtifactReader, UploadArtifactConfigurationE
 pub use upload_intents::{GcsUploadIssuer, UploadIntentConfigurationError};
 pub use webhook::{
     SignedWebhook, TerminalWebhookEvent, WebhookSignError, WebhookSigner, WebhookSigningSecret,
+};
+pub use webhook_relay::{
+    WebhookOutboxRelay, WebhookPublishError, WebhookPublishFuture, WebhookPublishOutcome,
+    WebhookPublisher, WebhookRelayError, WebhookRelayOutcome,
 };
 
 use std::{

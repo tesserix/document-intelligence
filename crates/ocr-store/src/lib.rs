@@ -118,6 +118,23 @@ pub struct StoredJobOutboxEvent {
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum WebhookOutboxEventType {
+    Completed,
+    Partial,
+    ReviewRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredWebhookOutboxEvent {
+    pub event_id: i64,
+    pub job_id: JobId,
+    pub event_type: WebhookOutboxEventType,
+    pub webhook_subscription_id: WebhookSubscriptionId,
+    pub document_version: DocumentVersion,
+    pub occurred_at: OffsetDateTime,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum PublishJobOutboxOutcome {
     Published,
     Existing,
@@ -561,6 +578,8 @@ impl PgJobStore {
         let rows = sqlx::query(
             "with candidates as ( \
                 select event_id from ocr_outbox where product_id = $1 and tenant_id = $2 \
+                and event_type in ('ocr.job.accepted.v1', \
+                    'ocr.job.cancellation_requested.v1') \
                 and published_at is null and dead_lettered_at is null and delivery_attempts < 20 \
                 and (delivery_lease_owner = $3 or delivery_lease_expires_at is null \
                     or delivery_lease_expires_at <= now()) \
@@ -590,6 +609,69 @@ impl PgJobStore {
         let events = rows
             .into_iter()
             .map(stored_job_outbox_event)
+            .collect::<Result<Vec<_>>>()?;
+        transaction.commit().await?;
+        Ok(events)
+    }
+
+    pub async fn claim_webhook_outbox(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        claim: ClaimJobOutbox,
+    ) -> Result<Vec<StoredWebhookOutboxEvent>> {
+        validate_lease_owner(&claim.lease_owner)?;
+        if !(1..=100).contains(&claim.limit) {
+            return Err(Error::InvalidOutboxEvent);
+        }
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        sqlx::query(
+            "update ocr_outbox set dead_lettered_at = now(), delivery_lease_owner = null, \
+             delivery_lease_expires_at = null where product_id = $1 and tenant_id = $2 \
+             and published_at is null and dead_lettered_at is null and delivery_attempts = 20 \
+             and delivery_lease_expires_at <= now()",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .execute(&mut *transaction)
+        .await?;
+        let rows = sqlx::query(
+            "with candidates as ( \
+                select event_id from ocr_outbox where product_id = $1 and tenant_id = $2 \
+                and event_type in ('ocr.job.completed.v1', 'ocr.job.partial.v1', \
+                    'ocr.job.review_required.v1') \
+                and published_at is null and dead_lettered_at is null and delivery_attempts < 20 \
+                and (delivery_lease_owner = $3 or delivery_lease_expires_at is null \
+                    or delivery_lease_expires_at <= now()) \
+                order by event_id for update skip locked limit $4 \
+             ), updated as (update ocr_outbox as events set \
+                delivery_attempts = case \
+                    when events.delivery_lease_owner = $3 \
+                        and events.delivery_lease_expires_at > now() \
+                    then events.delivery_attempts else events.delivery_attempts + 1 end, \
+                delivery_lease_owner = $3, \
+                delivery_lease_expires_at = now() + interval '5 minutes' \
+             from candidates where events.event_id = candidates.event_id \
+             returning events.event_id, events.job_id, events.event_type, events.product_id, \
+                 events.tenant_id, events.created_at) \
+             select updated.event_id, updated.job_id, updated.event_type, updated.created_at, \
+                 jobs.webhook_subscription_id, results.document_version \
+             from updated join ocr_jobs jobs on jobs.job_id = updated.job_id \
+                 and jobs.product_id = updated.product_id and jobs.tenant_id = updated.tenant_id \
+             join ocr_results results on results.job_id = jobs.job_id \
+                 and results.product_id = jobs.product_id and results.tenant_id = jobs.tenant_id \
+             where jobs.webhook_subscription_id is not null",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(&claim.lease_owner)
+        .bind(claim.limit)
+        .fetch_all(&mut *transaction)
+        .await?;
+        let events = rows
+            .into_iter()
+            .map(stored_webhook_outbox_event)
             .collect::<Result<Vec<_>>>()?;
         transaction.commit().await?;
         Ok(events)
@@ -1358,7 +1440,8 @@ impl PgJobStore {
         let mut transaction = self.pool.begin().await?;
         set_scope(&mut transaction, tenant_id, product_id).await?;
         let row = sqlx::query(
-            "select job_id, status::text as status, created_at from ocr_jobs \
+            "select job_id, status::text as status, created_at, webhook_subscription_id \
+             from ocr_jobs \
              where product_id = $1 and tenant_id = $2 and job_id = $3 for update",
         )
         .bind(product_id.as_str())
@@ -1370,6 +1453,7 @@ impl PgJobStore {
             transaction.commit().await?;
             return Ok(CommitResultOutcome::NotFound);
         };
+        let webhook_subscription_id: Option<String> = row.try_get("webhook_subscription_id")?;
         let job = stored_job(row)?;
         let existing = sqlx::query(
             "select document_id, document_version, object_bucket, object_name, \
@@ -1443,6 +1527,32 @@ impl PgJobStore {
         .await?
         .ok_or(Error::InvalidStoredResult)?;
         let completed = stored_job(completed)?;
+        if let Some(webhook_subscription_id) = webhook_subscription_id {
+            let event_type = match command.terminal_state {
+                JobState::Completed => "ocr.job.completed.v1",
+                JobState::Partial => "ocr.job.partial.v1",
+                JobState::ReviewRequired => "ocr.job.review_required.v1",
+                _ => return Err(Error::InvalidStoredResult),
+            };
+            sqlx::query(
+                "insert into ocr_outbox \
+                 (product_id, tenant_id, job_id, event_type, payload) values \
+                 ($1, $2, $3, $4, jsonb_build_object( \
+                    'job_id', $3::text, 'status', $5::text, \
+                    'document_version', $6::text, \
+                    'webhook_subscription_id', $7::text, \
+                    'content_trust', 'untrusted'))",
+            )
+            .bind(product_id.as_str())
+            .bind(tenant_id.as_str())
+            .bind(job_id.as_str())
+            .bind(event_type)
+            .bind(terminal_state)
+            .bind(String::from(command.locator.document_version.clone()))
+            .bind(webhook_subscription_id)
+            .execute(&mut *transaction)
+            .await?;
+        }
         transaction.commit().await?;
         Ok(CommitResultOutcome::Committed(completed))
     }
@@ -1570,6 +1680,31 @@ fn stored_job_outbox_event(row: sqlx::postgres::PgRow) -> Result<StoredJobOutbox
         job_id,
         event_type,
         page_count,
+    })
+}
+
+fn stored_webhook_outbox_event(row: sqlx::postgres::PgRow) -> Result<StoredWebhookOutboxEvent> {
+    let event_id: i64 = row.try_get("event_id")?;
+    if event_id <= 0 {
+        return Err(Error::InvalidOutboxEvent);
+    }
+    let event_type = match row.try_get::<&str, _>("event_type")? {
+        "ocr.job.completed.v1" => WebhookOutboxEventType::Completed,
+        "ocr.job.partial.v1" => WebhookOutboxEventType::Partial,
+        "ocr.job.review_required.v1" => WebhookOutboxEventType::ReviewRequired,
+        _ => return Err(Error::InvalidOutboxEvent),
+    };
+    Ok(StoredWebhookOutboxEvent {
+        event_id,
+        job_id: JobId::new(row.try_get("job_id")?).map_err(|_| Error::InvalidOutboxEvent)?,
+        event_type,
+        webhook_subscription_id: WebhookSubscriptionId::new(
+            row.try_get("webhook_subscription_id")?,
+        )
+        .map_err(|_| Error::InvalidOutboxEvent)?,
+        document_version: DocumentVersion::new(row.try_get("document_version")?)
+            .map_err(|_| Error::InvalidOutboxEvent)?,
+        occurred_at: row.try_get("created_at")?,
     })
 }
 

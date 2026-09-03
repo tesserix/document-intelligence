@@ -8,7 +8,7 @@ use ocr_store::{
     CreatePageWorkflowOutcome, CreateUpload, CreateUploadOutcome, Error, JobOutboxEventType,
     ParserInspectionMetadata, PgJobStore, PublishJobOutboxOutcome, RecordUpload,
     RecordUploadOutcome, RejectUploadOutcome, ResultLookup, SavePageWorkflowOutcome,
-    UploadRejectionReason,
+    UploadRejectionReason, WebhookOutboxEventType,
 };
 use sqlx::PgPool;
 
@@ -83,10 +83,9 @@ async fn result_commit_is_scoped_atomic_terminal_and_idempotent() {
     let foreign = TenantId::new("ten_RESULT_FOREIGN").unwrap();
     let product = ProductId::new("kora").unwrap();
     let job = JobId::new("job_RESULT_COMMIT").unwrap();
-    store
-        .create(request(job.as_str(), tenant.as_str(), "result-commit", 'a'))
-        .await
-        .unwrap();
+    let mut create = request(job.as_str(), tenant.as_str(), "result-commit", 'a');
+    create.webhook_subscription_id = Some(WebhookSubscriptionId::new("whs_RESULTCOMMIT").unwrap());
+    store.create(create).await.unwrap();
     store
         .create_page_workflow(
             &tenant,
@@ -137,6 +136,79 @@ async fn result_commit_is_scoped_atomic_terminal_and_idempotent() {
         store.find_result(&tenant, &product, &job).await.unwrap(),
         ResultLookup::Ready(found) if found == locator
     ));
+    let events: Vec<(String, String)> = sqlx::query_as(
+        "select event_type, payload::text from ocr_outbox \
+         where job_id = 'job_RESULT_COMMIT' and event_type = 'ocr.job.completed.v1'",
+    )
+    .fetch_all(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(events.len(), 1);
+    assert!(events[0].1.contains(r#""status": "completed""#));
+    assert!(events[0]
+        .1
+        .contains(r#""webhook_subscription_id": "whs_RESULTCOMMIT""#));
+    for forbidden in [
+        "text",
+        "field",
+        "bucket",
+        "object_name",
+        "url",
+        "secret",
+        "prompt",
+    ] {
+        assert!(
+            !events[0].1.contains(forbidden),
+            "payload contained {forbidden}"
+        );
+    }
+    let workflow_events = store
+        .claim_job_outbox(
+            &tenant,
+            &product,
+            ClaimJobOutbox {
+                lease_owner: "result-commit-relay".to_owned(),
+                limit: 10,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(workflow_events.len(), 1);
+    assert_eq!(workflow_events[0].event_type, JobOutboxEventType::Accepted);
+    let webhook_events = store
+        .claim_webhook_outbox(
+            &tenant,
+            &product,
+            ClaimJobOutbox {
+                lease_owner: "result-webhook-relay".to_owned(),
+                limit: 10,
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(webhook_events.len(), 1);
+    assert_eq!(
+        webhook_events[0].event_type,
+        WebhookOutboxEventType::Completed
+    );
+    assert_eq!(webhook_events[0].job_id, job);
+    assert_eq!(
+        webhook_events[0].webhook_subscription_id,
+        WebhookSubscriptionId::new("whs_RESULTCOMMIT").unwrap()
+    );
+    assert_eq!(webhook_events[0].document_version, locator.document_version);
+    assert!(store
+        .claim_webhook_outbox(
+            &foreign,
+            &product,
+            ClaimJobOutbox {
+                lease_owner: "foreign-webhook-relay".to_owned(),
+                limit: 10,
+            },
+        )
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 fn upload_id_for(tenant_id: &str) -> UploadId {

@@ -244,6 +244,16 @@ dead-lettered for alerting. Temporal start/cancel happens after claim commit.
 Only the live owner can mark an event published. The deterministic workflow ID
 is `ocr-job-{job_id}`, so replay after an ambiguous start is idempotent.
 
+Workflow and terminal-webhook consumers claim disjoint event types from the same
+transactional outbox. Result commit inserts the terminal event in the same
+transaction as its immutable locator and state transition. A webhook relay signs
+the typed event and acknowledges the outbox row only after the registered
+publisher reports delivered or already delivered; transient failure replays the
+identical event ID, body and signature. The network publisher and subscription
+resolver must still enforce tenant ownership, DNS/IP SSRF checks, redirect
+denial, TLS, response limits and bounded timeouts before external delivery is
+enabled.
+
 ## Australis tool
 
 `extract_document` accepts an authorized document/upload reference, type hint, output mode, registered schema reference, language hints, and evidence flag. It returns either a terminal normalized result or an opaque job/status resume contract. The tool cannot accept provider credentials, arbitrary callback URLs, tenant identity, system instructions, or tool permissions.
