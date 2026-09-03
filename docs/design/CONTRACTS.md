@@ -71,6 +71,16 @@ conditionally records `reserved → uploaded` and one `ocr.upload.received.v1`
 outbox event. A crash before commit is retried; a crash after commit replays the
 stored generation without duplicating the event.
 
+`uploaded` is a quarantine state and is not eligible for job creation. After
+bounded inspection succeeds, the importer promotes the exact verified
+generation to a create-only immutable source object. A short CNPG transaction
+then records `uploaded → accepted`, the source bucket/object/generation/digest,
+and one content-free `ocr.upload.accepted.v1` outbox event. Exact replays are
+successful without duplicating the event; a different source locator fails
+closed. A crash after object creation but before commit is recovered by
+verifying that the existing destination is the expected content-addressed
+object and replaying the database transition.
+
 ## Create job
 
 ```json

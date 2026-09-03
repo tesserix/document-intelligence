@@ -64,6 +64,9 @@ an opaque service-generated object. The caller must send the returned headers.
 `POST /v1/ocr/uploads/{upload_id}/complete` streams the object from its isolated
 bucket, pins its exact GCS generation, hashes outside the async executor, and
 checks byte length plus content-derived MIME before recording one durable
-outbox event. A job accepts only a reconciled upload owned by the same verified
-product and tenant. Malware, pixel/page, decompression, and parser checks remain
-the next quarantine stage before OCR processing.
+outbox event. Reconciliation leaves the object in `uploaded` quarantine state;
+it cannot start a job. The acceptance store records the immutable promoted
+source locator and a second content-free outbox event atomically, and only that
+`accepted` state can start a job for the same verified product and tenant.
+Malware, pixel/page, decompression, parser sandboxing, and the GCS promotion
+adapter remain the next quarantine stage before OCR processing.

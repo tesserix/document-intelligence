@@ -1,7 +1,7 @@
 use ocr_domain::{DocumentId, IdempotencyKey, JobId, ProductId, RequestDigest, TenantId, UploadId};
 use ocr_store::{
-    CancelOutcome, CreateJob, CreateOutcome, CreateUpload, CreateUploadOutcome, Error, PgJobStore,
-    RecordUpload, RecordUploadOutcome, ResultLookup,
+    AcceptUpload, AcceptUploadOutcome, CancelOutcome, CreateJob, CreateOutcome, CreateUpload,
+    CreateUploadOutcome, Error, PgJobStore, RecordUpload, RecordUploadOutcome, ResultLookup,
 };
 use sqlx::PgPool;
 
@@ -52,6 +52,29 @@ async fn seed_uploaded_upload(admin_pool: &PgPool, tenant_id: &str) {
     .unwrap();
 }
 
+async fn set_upload_state(admin_pool: &PgPool, tenant_id: &str, state: &str) {
+    sqlx::query(
+        "update ocr_uploads set status = $2::ocr_upload_status, \
+         source_bucket = case when $2 = 'accepted' then 'dev-kora-ocr-source' end, \
+         source_object_name = case when $2 = 'accepted' then object_name || '/accepted' end, \
+         source_object_generation = case when $2 = 'accepted' then 2 end, \
+         source_digest = case when $2 = 'accepted' then verified_digest end, \
+         source_content_length = case when $2 = 'accepted' then verified_content_length end, \
+         accepted_at = case when $2 = 'accepted' then now() end \
+         where tenant_id = $1",
+    )
+    .bind(tenant_id)
+    .bind(state)
+    .execute(admin_pool)
+    .await
+    .unwrap();
+}
+
+async fn seed_accepted_upload(admin_pool: &PgPool, tenant_id: &str) {
+    seed_uploaded_upload(admin_pool, tenant_id).await;
+    set_upload_state(admin_pool, tenant_id, "accepted").await;
+}
+
 async fn store() -> (PgJobStore, PgPool, PgPool) {
     let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL must be set");
     let admin_url =
@@ -86,7 +109,7 @@ async fn clear_fixture(admin_pool: &PgPool, job_ids: &[&str]) {
 async fn create_is_atomic_and_idempotent_per_trusted_scope() {
     let (store, admin_pool, _) = store().await;
     clear_fixture(&admin_pool, &["job_FIRST", "job_RETRY"]).await;
-    seed_uploaded_upload(&admin_pool, "ten_ALPHA").await;
+    seed_accepted_upload(&admin_pool, "ten_ALPHA").await;
     let first = request("job_FIRST", "ten_ALPHA", "request-1", 'a');
 
     let created = store.create(first).await.unwrap();
@@ -111,10 +134,49 @@ async fn create_is_atomic_and_idempotent_per_trusted_scope() {
 
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL"]
+async fn create_requires_an_accepted_source_instead_of_an_uploaded_quarantine_object() {
+    let (store, admin_pool, _) = store().await;
+    clear_fixture(&admin_pool, &["job_QUARANTINED", "job_ACCEPTED_SOURCE"]).await;
+    sqlx::query("delete from ocr_upload_outbox where upload_id = 'upl_SOURCE_GATE'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from ocr_uploads where upload_id = 'upl_SOURCE_GATE'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    seed_uploaded_upload(&admin_pool, "ten_SOURCE_GATE").await;
+
+    let quarantined = store
+        .create(request(
+            "job_QUARANTINED",
+            "ten_SOURCE_GATE",
+            "quarantined-source",
+            'a',
+        ))
+        .await
+        .unwrap_err();
+    assert!(matches!(quarantined, Error::UploadSourceUnavailable));
+
+    set_upload_state(&admin_pool, "ten_SOURCE_GATE", "accepted").await;
+    let accepted = store
+        .create(request(
+            "job_ACCEPTED_SOURCE",
+            "ten_SOURCE_GATE",
+            "accepted-source",
+            'b',
+        ))
+        .await
+        .unwrap();
+    assert!(matches!(accepted, CreateOutcome::Created(_)));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
 async fn idempotency_key_reuse_with_a_different_digest_conflicts() {
     let (store, admin_pool, _) = store().await;
     clear_fixture(&admin_pool, &["job_CONFLICT_FIRST", "job_CONFLICT_SECOND"]).await;
-    seed_uploaded_upload(&admin_pool, "ten_CONFLICT").await;
+    seed_accepted_upload(&admin_pool, "ten_CONFLICT").await;
     store
         .create(request(
             "job_CONFLICT_FIRST",
@@ -142,7 +204,7 @@ async fn idempotency_key_reuse_with_a_different_digest_conflicts() {
 async fn a_different_tenant_cannot_read_a_job() {
     let (store, admin_pool, _) = store().await;
     clear_fixture(&admin_pool, &["job_PRIVATE"]).await;
-    seed_uploaded_upload(&admin_pool, "ten_PRIVATE").await;
+    seed_accepted_upload(&admin_pool, "ten_PRIVATE").await;
     store
         .create(request(
             "job_PRIVATE",
@@ -306,10 +368,136 @@ async fn verified_upload_generation_and_event_are_recorded_exactly_once() {
 
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL"]
+async fn accepted_source_and_event_are_recorded_exactly_once() {
+    let (store, admin_pool, _) = store().await;
+    sqlx::query("delete from ocr_upload_outbox where upload_id = 'upl_ACCEPT_SOURCE'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from ocr_uploads where upload_id = 'upl_ACCEPT_SOURCE'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    let tenant_id = TenantId::new("ten_ACCEPT_SOURCE").unwrap();
+    let product_id = ProductId::new("kora").unwrap();
+    let digest = format!("sha256:{}", "b".repeat(64));
+    store
+        .create_upload(CreateUpload {
+            upload_id: UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
+            tenant_id: tenant_id.clone(),
+            product_id: product_id.clone(),
+            idempotency_key: IdempotencyKey::new("upload-accept-source-1").unwrap(),
+            request_digest: RequestDigest::new(&format!("sha256:{}", "a".repeat(64))).unwrap(),
+            object_bucket: "dev-kora-ocr-quarantine".to_owned(),
+            object_name: "products/kora/tenants/ten_ACCEPT_SOURCE/quarantine/upl_ACCEPT_SOURCE"
+                .to_owned(),
+            expected_content_type: "application/pdf".to_owned(),
+            expected_content_length: 1024,
+            expected_digest: digest.clone(),
+            expires_at: time::OffsetDateTime::now_utc() + time::Duration::minutes(10),
+        })
+        .await
+        .unwrap();
+    store
+        .record_uploaded(
+            &tenant_id,
+            &product_id,
+            &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
+            RecordUpload {
+                object_generation: 42,
+                verified_content_type: "application/pdf".to_owned(),
+                verified_content_length: 1024,
+                verified_digest: digest.clone(),
+            },
+        )
+        .await
+        .unwrap();
+    let acceptance = || AcceptUpload {
+        source_bucket: "dev-kora-ocr-source".to_owned(),
+        source_object_name: "products/kora/tenants/ten_ACCEPT_SOURCE/documents/sha256/source"
+            .to_owned(),
+        source_object_generation: 73,
+        source_digest: digest.clone(),
+        source_content_length: 1024,
+    };
+
+    let foreign = store
+        .accept_upload(
+            &TenantId::new("ten_OTHER").unwrap(),
+            &product_id,
+            &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
+            acceptance(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(foreign, AcceptUploadOutcome::NotFound);
+
+    let accepted = store
+        .accept_upload(
+            &tenant_id,
+            &product_id,
+            &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
+            acceptance(),
+        )
+        .await
+        .unwrap();
+    let replayed = store
+        .accept_upload(
+            &tenant_id,
+            &product_id,
+            &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
+            acceptance(),
+        )
+        .await
+        .unwrap();
+    let mismatched = store
+        .accept_upload(
+            &tenant_id,
+            &product_id,
+            &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
+            AcceptUpload {
+                source_object_generation: 74,
+                ..acceptance()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(accepted, AcceptUploadOutcome::Accepted);
+    assert_eq!(replayed, AcceptUploadOutcome::Existing);
+    assert_eq!(mismatched, AcceptUploadOutcome::SourceMismatch);
+
+    let row: (String, String, i64, String, i64) = sqlx::query_as(
+        "select source_bucket, source_object_name, source_object_generation, source_digest, \
+         source_content_length from ocr_uploads where upload_id = 'upl_ACCEPT_SOURCE'",
+    )
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(row.0, "dev-kora-ocr-source");
+    assert_eq!(
+        row.1,
+        "products/kora/tenants/ten_ACCEPT_SOURCE/documents/sha256/source"
+    );
+    assert_eq!(row.2, 73);
+    assert_eq!(row.3, digest);
+    assert_eq!(row.4, 1024);
+
+    let events: i64 = sqlx::query_scalar(
+        "select count(*) from ocr_upload_outbox where upload_id = 'upl_ACCEPT_SOURCE' \
+         and event_type = 'ocr.upload.accepted.v1'",
+    )
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(events, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
 async fn cancellation_is_atomic_and_idempotent() {
     let (store, admin_pool, _) = store().await;
     clear_fixture(&admin_pool, &["job_CANCEL"]).await;
-    seed_uploaded_upload(&admin_pool, "ten_CANCEL").await;
+    seed_accepted_upload(&admin_pool, "ten_CANCEL").await;
     let job_id = JobId::new("job_CANCEL").unwrap();
     store
         .create(request(
@@ -348,7 +536,7 @@ async fn cancellation_is_atomic_and_idempotent() {
 async fn result_locator_is_immutable_and_hidden_across_tenant_boundaries() {
     let (store, admin_pool, _) = store().await;
     clear_fixture(&admin_pool, &["job_RESULT"]).await;
-    seed_uploaded_upload(&admin_pool, "ten_RESULT").await;
+    seed_accepted_upload(&admin_pool, "ten_RESULT").await;
     let job_id = JobId::new("job_RESULT").unwrap();
     store
         .create(request(

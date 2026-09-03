@@ -107,6 +107,24 @@ pub enum RecordUploadOutcome {
     NotFound,
 }
 
+#[derive(Debug)]
+pub struct AcceptUpload {
+    pub source_bucket: String,
+    pub source_object_name: String,
+    pub source_object_generation: i64,
+    pub source_digest: String,
+    pub source_content_length: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum AcceptUploadOutcome {
+    Accepted,
+    Existing,
+    SourceMismatch,
+    NotAcceptable,
+    NotFound,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum UploadState {
     Reserved,
@@ -323,6 +341,89 @@ impl PgJobStore {
         Ok(outcome)
     }
 
+    pub async fn accept_upload(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        upload_id: &UploadId,
+        source: AcceptUpload,
+    ) -> Result<AcceptUploadOutcome> {
+        validate_accepted_source(&source)?;
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let updated = sqlx::query(
+            "update ocr_uploads set status = 'accepted', source_bucket = $4, \
+             source_object_name = $5, source_object_generation = $6, source_digest = $7, \
+             source_content_length = $8, accepted_at = now(), updated_at = now() \
+             where product_id = $1 and tenant_id = $2 and upload_id = $3 \
+             and status = 'uploaded' and verified_digest = $7 and verified_content_length = $8 \
+             returning upload_id",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(upload_id.as_str())
+        .bind(&source.source_bucket)
+        .bind(&source.source_object_name)
+        .bind(source.source_object_generation)
+        .bind(&source.source_digest)
+        .bind(source.source_content_length)
+        .fetch_optional(&mut *transaction)
+        .await?;
+
+        if updated.is_some() {
+            sqlx::query(
+                "insert into ocr_upload_outbox \
+                 (product_id, tenant_id, upload_id, event_type, payload) \
+                 values ($1, $2, $3, 'ocr.upload.accepted.v1', \
+                 jsonb_build_object('upload_id', $3::text, 'status', 'accepted'))",
+            )
+            .bind(product_id.as_str())
+            .bind(tenant_id.as_str())
+            .bind(upload_id.as_str())
+            .execute(&mut *transaction)
+            .await?;
+            transaction.commit().await?;
+            return Ok(AcceptUploadOutcome::Accepted);
+        }
+
+        let existing = sqlx::query(
+            "select status::text as status, source_bucket, source_object_name, \
+             source_object_generation, source_digest, source_content_length \
+             from ocr_uploads where product_id = $1 and tenant_id = $2 and upload_id = $3",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(upload_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(existing) = existing else {
+            transaction.commit().await?;
+            return Ok(AcceptUploadOutcome::NotFound);
+        };
+        let state = parse_upload_state(existing.try_get("status")?)?;
+        let outcome = if state == UploadState::Accepted {
+            if existing.try_get::<Option<&str>, _>("source_bucket")?
+                == Some(source.source_bucket.as_str())
+                && existing.try_get::<Option<&str>, _>("source_object_name")?
+                    == Some(source.source_object_name.as_str())
+                && existing.try_get::<Option<i64>, _>("source_object_generation")?
+                    == Some(source.source_object_generation)
+                && existing.try_get::<Option<&str>, _>("source_digest")?
+                    == Some(source.source_digest.as_str())
+                && existing.try_get::<Option<i64>, _>("source_content_length")?
+                    == Some(source.source_content_length)
+            {
+                AcceptUploadOutcome::Existing
+            } else {
+                AcceptUploadOutcome::SourceMismatch
+            }
+        } else {
+            AcceptUploadOutcome::NotAcceptable
+        };
+        transaction.commit().await?;
+        Ok(outcome)
+    }
+
     pub async fn create(&self, request: CreateJob) -> Result<CreateOutcome> {
         let mut transaction = self.pool.begin().await?;
         set_scope(&mut transaction, &request.tenant_id, &request.product_id).await?;
@@ -331,7 +432,7 @@ impl PgJobStore {
             "insert into ocr_jobs \
              (job_id, tenant_id, product_id, idempotency_key, request_digest, upload_id) \
              select $1, $2, $3, $4, $5, $6 from ocr_uploads \
-             where product_id = $3 and tenant_id = $2 and upload_id = $6 and status = 'uploaded' \
+             where product_id = $3 and tenant_id = $2 and upload_id = $6 and status = 'accepted' \
              on conflict (product_id, tenant_id, idempotency_key) do nothing \
              returning job_id, status::text as status, created_at",
         )
@@ -600,6 +701,26 @@ fn validate_record(record: &RecordUpload) -> Result<()> {
         || !(1..=104_857_600).contains(&record.verified_content_length)
         || !valid_digest
         || !valid_content_type
+    {
+        return Err(Error::InvalidStoredUpload);
+    }
+    Ok(())
+}
+
+fn validate_accepted_source(source: &AcceptUpload) -> Result<()> {
+    let digest = source.source_digest.strip_prefix("sha256:");
+    let valid_digest = digest.is_some_and(|value| {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    if !(3..=63).contains(&source.source_bucket.len())
+        || source.source_object_name.is_empty()
+        || source.source_object_name.len() > 1024
+        || source.source_object_generation <= 0
+        || !(1..=104_857_600).contains(&source.source_content_length)
+        || !valid_digest
     {
         return Err(Error::InvalidStoredUpload);
     }
