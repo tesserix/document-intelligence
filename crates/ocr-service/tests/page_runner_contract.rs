@@ -8,13 +8,19 @@ use std::{
 
 use futures_util::FutureExt;
 use ocr_domain::{
-    IdempotencyKey, JobId, PageTask, PageWorkflow, PageWorkflowStatus, ProductId, RequestDigest,
-    TenantId, UploadId,
+    DocumentId, DocumentResult, DocumentResultPayload, DocumentVersion, IdempotencyKey, JobId,
+    JobState, PageTask, PageWorkflow, PageWorkflowStatus, ProductId, RequestDigest, TenantId,
+    UploadId,
 };
 use ocr_service::{
     CheckpointedPageRunner, PageProcessError, PageProcessFuture, PageProcessor, PageRunnerOutcome,
+    PublishResultError, ResultArtifactWriteError, ResultArtifactWriteFuture, ResultArtifactWriter,
+    ResultPublisher,
 };
-use ocr_store::{CreateJob, CreateOutcome, CreatePageWorkflowOutcome, PgJobStore};
+use ocr_store::{
+    CommitResultOutcome, CreateJob, CreateOutcome, CreatePageWorkflowOutcome, PgJobStore,
+    ResultLookup, StoredResultLocator,
+};
 use sqlx::PgPool;
 
 #[derive(Clone, Default)]
@@ -107,6 +113,34 @@ impl PageProcessor for CancelOnProcess<'_> {
     }
 }
 
+struct FailingResultWriter;
+
+impl ResultArtifactWriter for FailingResultWriter {
+    fn write<'a>(
+        &'a self,
+        _product_id: &'a ProductId,
+        _tenant_id: &'a TenantId,
+        _job_id: &'a JobId,
+        _result: &'a DocumentResult,
+    ) -> ResultArtifactWriteFuture<'a> {
+        Box::pin(async { Err(ResultArtifactWriteError::Unavailable) })
+    }
+}
+
+struct StaticResultWriter(StoredResultLocator);
+
+impl ResultArtifactWriter for StaticResultWriter {
+    fn write<'a>(
+        &'a self,
+        _product_id: &'a ProductId,
+        _tenant_id: &'a TenantId,
+        _job_id: &'a JobId,
+        _result: &'a DocumentResult,
+    ) -> ResultArtifactWriteFuture<'a> {
+        Box::pin(async { Ok(self.0.clone()) })
+    }
+}
+
 async fn store() -> (PgJobStore, PgPool) {
     let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL must be set");
     let admin_url =
@@ -119,6 +153,11 @@ async fn store() -> (PgJobStore, PgPool) {
 async fn seed_job(store: &PgJobStore, admin_pool: &PgPool, job_id: &str, tenant_id: &str) {
     let upload_id =
         UploadId::new(&format!("upl_{}", tenant_id.trim_start_matches("ten_"))).unwrap();
+    sqlx::query("delete from ocr_results where job_id = $1")
+        .bind(job_id)
+        .execute(admin_pool)
+        .await
+        .unwrap();
     sqlx::query("delete from ocr_page_workflows where job_id = $1")
         .bind(job_id)
         .execute(admin_pool)
@@ -291,5 +330,83 @@ async fn concurrent_cancellation_wins_and_rejects_stale_page_result() {
     assert_eq!(
         runner.run_once(&tenant, &product, &job).await.unwrap(),
         PageRunnerOutcome::Idle(PageWorkflowStatus::Cancelled)
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn result_storage_failure_cannot_create_a_terminal_job_or_locator() {
+    let (store, admin_pool) = store().await;
+    let tenant = TenantId::new("ten_RESULT_PUBLISH_FAIL").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let job = JobId::new("job_RESULT_PUBLISH_FAIL").unwrap();
+    seed_job(&store, &admin_pool, job.as_str(), tenant.as_str()).await;
+    store
+        .create_page_workflow(
+            &tenant,
+            &product,
+            &job,
+            PageWorkflow::new(job.clone(), 1, 3).unwrap(),
+        )
+        .await
+        .unwrap();
+    let result = DocumentResult::new(
+        DocumentId::new("doc_RESULT_PUBLISH_FAIL").unwrap(),
+        DocumentVersion::new(&format!("sha256:{}", "a".repeat(64))).unwrap(),
+        DocumentResultPayload::default(),
+    )
+    .unwrap();
+    let publisher = ResultPublisher::new(store.clone(), Arc::new(FailingResultWriter));
+
+    assert!(matches!(
+        publisher
+            .publish(&tenant, &product, &job, JobState::Completed, &result)
+            .await,
+        Err(PublishResultError::Artifact(
+            ResultArtifactWriteError::Unavailable
+        ))
+    ));
+    assert_eq!(
+        store
+            .find(&tenant, &product, &job)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Processing
+    );
+    assert_eq!(
+        store.find_result(&tenant, &product, &job).await.unwrap(),
+        ResultLookup::NotReady(JobState::Processing)
+    );
+
+    let locator = StoredResultLocator {
+        document_id: result.document_id.clone(),
+        document_version: result.document_version.clone(),
+        object_bucket: "dev-kora-ocr-results".to_owned(),
+        object_name: "products/kora/tenants/ten_RESULT_PUBLISH_FAIL/results/job_RESULT_PUBLISH_FAIL/result.json".to_owned(),
+        object_generation: 9,
+        object_digest: format!("sha256:{}", "b".repeat(64)),
+        content_length: 256,
+    };
+    let publisher =
+        ResultPublisher::new(store.clone(), Arc::new(StaticResultWriter(locator.clone())));
+    assert!(matches!(
+        publisher
+            .publish(&tenant, &product, &job, JobState::Completed, &result)
+            .await
+            .unwrap(),
+        CommitResultOutcome::Committed(_)
+    ));
+    assert!(matches!(
+        publisher
+            .publish(&tenant, &product, &job, JobState::Completed, &result)
+            .await
+            .unwrap(),
+        CommitResultOutcome::Existing(_)
+    ));
+    assert_eq!(
+        store.find_result(&tenant, &product, &job).await.unwrap(),
+        ResultLookup::Ready(locator)
     );
 }

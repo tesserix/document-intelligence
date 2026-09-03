@@ -8,6 +8,7 @@ mod page_runner;
 mod parser_process;
 mod result_artifacts;
 mod result_assembly;
+mod result_publisher;
 mod source_promotion;
 mod upload_artifacts;
 mod upload_intents;
@@ -21,8 +22,10 @@ pub use parser_process::{
 };
 pub use result_artifacts::{
     GcsResultReader, GcsResultWriter, ResultArtifactConfigurationError, ResultArtifactWriteError,
+    ResultArtifactWriteFuture, ResultArtifactWriter,
 };
 pub use result_assembly::{assemble_document_result, ResultAssemblyError};
+pub use result_publisher::{PublishResultError, ResultPublisher};
 pub use upload_artifacts::{GcsUploadArtifactReader, UploadArtifactConfigurationError};
 pub use upload_intents::{GcsUploadIssuer, UploadIntentConfigurationError};
 

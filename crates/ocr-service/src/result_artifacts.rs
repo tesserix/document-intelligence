@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, future::Future, pin::Pin, time::Duration};
 
 use object_store::{
     gcp::{GoogleCloudStorage, GoogleCloudStorageBuilder},
@@ -35,6 +35,20 @@ pub enum ResultArtifactWriteError {
     Conflict,
     #[error("result artifact storage is unavailable")]
     Unavailable,
+}
+
+pub type ResultArtifactWriteFuture<'a> = Pin<
+    Box<dyn Future<Output = Result<StoredResultLocator, ResultArtifactWriteError>> + Send + 'a>,
+>;
+
+pub trait ResultArtifactWriter: Send + Sync {
+    fn write<'a>(
+        &'a self,
+        product_id: &'a ProductId,
+        tenant_id: &'a TenantId,
+        job_id: &'a JobId,
+        result: &'a DocumentResult,
+    ) -> ResultArtifactWriteFuture<'a>;
 }
 
 struct ResultWriteRoute {
@@ -154,6 +168,18 @@ impl GcsResultWriter {
             content_length: i64::try_from(prepared.bytes.len())
                 .map_err(|_| ResultArtifactWriteError::Invalid)?,
         })
+    }
+}
+
+impl ResultArtifactWriter for GcsResultWriter {
+    fn write<'a>(
+        &'a self,
+        product_id: &'a ProductId,
+        tenant_id: &'a TenantId,
+        job_id: &'a JobId,
+        result: &'a DocumentResult,
+    ) -> ResultArtifactWriteFuture<'a> {
+        Box::pin(async move { self.write(product_id, tenant_id, job_id, result).await })
     }
 }
 
