@@ -94,6 +94,13 @@ events, errors, logs or traces. The GCS adapter requests the exact stored
 generation and rejects generation, bucket or length drift before interpreting a
 clean response.
 
+Source promotion calls the GCS rewrite API with the recorded source generation
+and destination `ifGenerationMatch=0`. The destination name is derived from the
+verified product, tenant and SHA-256 digest. A pre-existing destination is
+accepted only after its size and streamed SHA-256 digest match; its exact
+generation is then persisted. Storage errors and malformed rewrite responses
+are unavailable outcomes rather than evidence of success.
+
 ## Create job
 
 ```json
@@ -114,11 +121,11 @@ clean response.
 The source is exactly one service-issued `upload_id`, approved tenant-storage reference, or batch-manifest entry. It is never an arbitrary URL. Inline custom schemas are deferred until schema-size, keyword, ownership and versioning rules are approved; production requests should prefer a registered immutable schema ID/version.
 
 For the implemented upload path, job creation performs a scoped database join
-and succeeds only when the referenced upload is already `uploaded` for the same
+and succeeds only when the referenced upload is already `accepted` for the same
 verified product and tenant. A guessed, foreign, missing, expired-before-upload,
-or still-reserved identifier returns `404 upload_not_found`. Subsequent malware
-and parser inspection remains part of the job workflow and can still reject the
-document before OCR.
+still-reserved, uploaded-but-uninspected, or rejected identifier returns `404
+upload_not_found`. Malware and parser inspection plus immutable source promotion
+precede upload acceptance and job creation.
 
 The response is `200` only when `Prefer: wait=N` completed within the bounded server wait; otherwise it is `202`:
 

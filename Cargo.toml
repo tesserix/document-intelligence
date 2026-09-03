@@ -28,3 +28,5 @@ tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 sha2 = "0.10"
 time = { version = "0.3", features = ["formatting", "serde"] }
 object_store = { version = "0.14.1", default-features = false, features = ["gcp"] }
+reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
+url = "2.5"

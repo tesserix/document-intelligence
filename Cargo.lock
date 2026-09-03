@@ -1354,6 +1354,7 @@ dependencies = [
  "object_store",
  "ocr-domain",
  "ocr-store",
+ "reqwest",
  "serde",
  "serde_json",
  "sha2 0.10.9",
@@ -1365,6 +1366,7 @@ dependencies = [
  "tower-http",
  "tracing",
  "tracing-subscriber",
+ "url",
  "uuid",
 ]
 
@@ -1646,6 +1648,8 @@ dependencies = [
  "rustls",
  "rustls-pki-types",
  "rustls-platform-verifier",
+ "serde",
+ "serde_json",
  "sync_wrapper",
  "tokio",
  "tokio-rustls",

@@ -71,12 +71,19 @@ source locator and a second content-free outbox event atomically, and only that
 Inspection uses a five-minute, tenant-scoped CNPG lease: duplicate delivery by
 the same worker renews it, another worker is excluded, an expired lease is
 reclaimable, and ten exhausted attempts atomically reject the upload and emit a
-content-free event. Malware, pixel/page, decompression, parser sandboxing, and
-the GCS promotion adapter remain the next quarantine stage before OCR processing.
+content-free event. Pixel/page, decompression, parser sandboxing, and importer
+orchestration remain the next quarantine stages before OCR processing.
 
 The malware adapter implements the bounded ClamAV `INSTREAM` protocol over a
 loopback-only TCP connection to a separately sandboxed sidecar. It streams only
 the recorded GCS generation, rechecks generation and length, caps chunks,
 response bytes, total bytes and wall time, and treats unknown replies or scanner
 failure as unavailable rather than clean. It is not yet started by a production
-importer; outbox consumption and source promotion remain required before rollout.
+importer; outbox consumption remains required before rollout.
+
+The source-promotion adapter uses GCS rewrite with the exact quarantined source
+generation and destination `ifGenerationMatch=0`. Its destination is a
+tenant/product-scoped SHA-256 path. A replay after an ambiguous successful copy
+streams and hashes the existing destination before returning its pinned
+generation; mismatched bytes fail closed. The adapter is not yet wired to a
+production importer.

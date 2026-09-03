@@ -2,6 +2,7 @@
 
 mod malware;
 mod result_artifacts;
+mod source_promotion;
 mod upload_artifacts;
 mod upload_intents;
 
@@ -1012,3 +1013,4 @@ pub use malware::{
     ClamdScanner, GcsUploadMalwareInspector, MalwareScanError, MalwareScanOutcome,
     UploadInspectionError, UploadInspectorConfigurationError,
 };
+pub use source_promotion::{GcsSourcePromoter, PromotedSource, SourcePromotionError};
