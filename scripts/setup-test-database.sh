@@ -50,7 +50,7 @@ psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0012_page_workflow_c
 psql "$database_admin_url" -v ON_ERROR_STOP=1 <<SQL >/dev/null
 grant usage on schema public to ${application_role};
 grant select, insert, update, delete on ocr_jobs, ocr_outbox to ${application_role};
-grant select on ocr_results to ${application_role};
+grant select, insert on ocr_results to ${application_role};
 grant select, insert, update, delete on ocr_uploads to ${application_role};
 grant select, insert, update, delete on ocr_upload_outbox to ${application_role};
 grant select, insert, update, delete on ocr_page_workflows to ${application_role};

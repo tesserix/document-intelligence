@@ -3,10 +3,11 @@ use ocr_domain::{
 };
 use ocr_store::{
     AcceptUpload, AcceptUploadOutcome, CancelOutcome, ClaimJobOutbox, ClaimUploadInspection,
-    ClaimUploadInspectionOutcome, CreateJob, CreateOutcome, CreatePageWorkflowOutcome,
-    CreateUpload, CreateUploadOutcome, Error, JobOutboxEventType, ParserInspectionMetadata,
-    PgJobStore, PublishJobOutboxOutcome, RecordUpload, RecordUploadOutcome, RejectUploadOutcome,
-    ResultLookup, SavePageWorkflowOutcome, UploadRejectionReason,
+    ClaimUploadInspectionOutcome, CommitResult, CommitResultOutcome, CreateJob, CreateOutcome,
+    CreatePageWorkflowOutcome, CreateUpload, CreateUploadOutcome, Error, JobOutboxEventType,
+    ParserInspectionMetadata, PgJobStore, PublishJobOutboxOutcome, RecordUpload,
+    RecordUploadOutcome, RejectUploadOutcome, ResultLookup, SavePageWorkflowOutcome,
+    UploadRejectionReason,
 };
 use sqlx::PgPool;
 
@@ -20,6 +21,72 @@ fn request(job_id: &str, tenant_id: &str, key: &str, digest: char) -> CreateJob 
             .unwrap(),
         upload_id: upload_id_for(tenant_id),
     }
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn result_commit_is_scoped_atomic_terminal_and_idempotent() {
+    let (store, admin_pool, _) = store().await;
+    clear_fixture(&admin_pool, &["job_RESULT_COMMIT"]).await;
+    seed_accepted_upload(&admin_pool, "ten_RESULT_COMMIT").await;
+    let tenant = TenantId::new("ten_RESULT_COMMIT").unwrap();
+    let foreign = TenantId::new("ten_RESULT_FOREIGN").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let job = JobId::new("job_RESULT_COMMIT").unwrap();
+    store
+        .create(request(job.as_str(), tenant.as_str(), "result-commit", 'a'))
+        .await
+        .unwrap();
+    store
+        .create_page_workflow(
+            &tenant,
+            &product,
+            &job,
+            PageWorkflow::new(job.clone(), 1, 3).unwrap(),
+        )
+        .await
+        .unwrap();
+    let locator = ocr_store::StoredResultLocator {
+        document_id: DocumentId::new("doc_RESULT_COMMIT").unwrap(),
+        document_version: ocr_domain::DocumentVersion::new(&format!("sha256:{}", "c".repeat(64)))
+            .unwrap(),
+        object_bucket: "dev-kora-ocr-results".to_owned(),
+        object_name: "products/kora/tenants/ten_RESULT_COMMIT/results/job_RESULT_COMMIT/v1.json"
+            .to_owned(),
+        object_generation: 7,
+        object_digest: format!("sha256:{}", "d".repeat(64)),
+        content_length: 512,
+    };
+    let command = || CommitResult {
+        terminal_state: ocr_domain::JobState::Completed,
+        locator: locator.clone(),
+    };
+
+    assert!(matches!(
+        store
+            .commit_result(&tenant, &product, &job, command())
+            .await
+            .unwrap(),
+        CommitResultOutcome::Committed(_)
+    ));
+    assert!(matches!(
+        store
+            .commit_result(&tenant, &product, &job, command())
+            .await
+            .unwrap(),
+        CommitResultOutcome::Existing(_)
+    ));
+    assert_eq!(
+        store
+            .commit_result(&foreign, &product, &job, command())
+            .await
+            .unwrap(),
+        CommitResultOutcome::NotFound
+    );
+    assert!(matches!(
+        store.find_result(&tenant, &product, &job).await.unwrap(),
+        ResultLookup::Ready(found) if found == locator
+    ));
 }
 
 fn upload_id_for(tenant_id: &str) -> UploadId {
@@ -151,6 +218,15 @@ async fn page_workflow_checkpoints_are_scoped_idempotent_and_compare_and_swap() 
         .await
         .unwrap();
     assert!(matches!(created, CreatePageWorkflowOutcome::Created(_)));
+    assert_eq!(
+        store
+            .find(&tenant, &product, &job)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        ocr_domain::JobState::Processing
+    );
     let replayed = store
         .create_page_workflow(&tenant, &product, &job, workflow.clone())
         .await

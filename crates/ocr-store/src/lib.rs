@@ -110,7 +110,7 @@ pub enum PublishJobOutboxOutcome {
     NotFound,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredResultLocator {
     pub document_id: DocumentId,
     pub document_version: DocumentVersion,
@@ -119,6 +119,21 @@ pub struct StoredResultLocator {
     pub object_generation: i64,
     pub object_digest: String,
     pub content_length: i64,
+}
+
+#[derive(Debug)]
+pub struct CommitResult {
+    pub terminal_state: JobState,
+    pub locator: StoredResultLocator,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum CommitResultOutcome {
+    Committed(StoredJob),
+    Existing(StoredJob),
+    Conflict,
+    NotCommittable,
+    NotFound,
 }
 
 #[derive(Debug)]
@@ -312,6 +327,19 @@ impl PgJobStore {
         .await?;
         if let Some(row) = inserted {
             let stored = stored_page_workflow(row)?;
+            let transitioned = sqlx::query(
+                "update ocr_jobs set status = 'processing', updated_at = now() \
+                 where job_id = $1 and product_id = $2 and tenant_id = $3 \
+                 and status in ('accepted', 'processing') returning job_id",
+            )
+            .bind(job_id.as_str())
+            .bind(product_id.as_str())
+            .bind(tenant_id.as_str())
+            .fetch_optional(&mut *transaction)
+            .await?;
+            if transitioned.is_none() {
+                return Err(Error::InvalidStoredPageWorkflow);
+            }
             transaction.commit().await?;
             return Ok(CreatePageWorkflowOutcome::Created(stored));
         }
@@ -1178,6 +1206,112 @@ impl PgJobStore {
         validate_locator(&locator)?;
         Ok(ResultLookup::Ready(locator))
     }
+
+    pub async fn commit_result(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        job_id: &JobId,
+        command: CommitResult,
+    ) -> Result<CommitResultOutcome> {
+        validate_locator(&command.locator)?;
+        if !matches!(
+            command.terminal_state,
+            JobState::Partial | JobState::ReviewRequired | JobState::Completed
+        ) {
+            return Err(Error::InvalidStoredResult);
+        }
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let row = sqlx::query(
+            "select job_id, status::text as status, created_at from ocr_jobs \
+             where product_id = $1 and tenant_id = $2 and job_id = $3 for update",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(job_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(row) = row else {
+            transaction.commit().await?;
+            return Ok(CommitResultOutcome::NotFound);
+        };
+        let job = stored_job(row)?;
+        let existing = sqlx::query(
+            "select document_id, document_version, object_bucket, object_name, \
+             object_generation, object_digest, content_length from ocr_results \
+             where product_id = $1 and tenant_id = $2 and job_id = $3",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(job_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        if let Some(existing) = existing {
+            let locator = stored_result_locator(existing)?;
+            transaction.commit().await?;
+            return Ok(
+                if locator == command.locator && job.state == command.terminal_state {
+                    CommitResultOutcome::Existing(job)
+                } else {
+                    CommitResultOutcome::Conflict
+                },
+            );
+        }
+        if !matches!(job.state, JobState::Processing | JobState::Validating) {
+            transaction.commit().await?;
+            return Ok(CommitResultOutcome::NotCommittable);
+        }
+        if job.state == JobState::Processing {
+            sqlx::query(
+                "update ocr_jobs set status = 'validating', updated_at = now() \
+                 where product_id = $1 and tenant_id = $2 and job_id = $3",
+            )
+            .bind(product_id.as_str())
+            .bind(tenant_id.as_str())
+            .bind(job_id.as_str())
+            .execute(&mut *transaction)
+            .await?;
+        }
+        sqlx::query(
+            "insert into ocr_results (job_id, product_id, tenant_id, document_id, \
+             document_version, object_bucket, object_name, object_generation, object_digest, \
+             content_length) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
+        )
+        .bind(job_id.as_str())
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(String::from(command.locator.document_id.clone()))
+        .bind(String::from(command.locator.document_version.clone()))
+        .bind(&command.locator.object_bucket)
+        .bind(&command.locator.object_name)
+        .bind(command.locator.object_generation)
+        .bind(&command.locator.object_digest)
+        .bind(command.locator.content_length)
+        .execute(&mut *transaction)
+        .await?;
+        let terminal_state = match command.terminal_state {
+            JobState::Partial => "partial",
+            JobState::ReviewRequired => "review_required",
+            JobState::Completed => "completed",
+            _ => return Err(Error::InvalidStoredResult),
+        };
+        let completed = sqlx::query(
+            "update ocr_jobs set status = $4::ocr_job_status, updated_at = now() \
+             where product_id = $1 and tenant_id = $2 and job_id = $3 and status = 'validating' \
+             returning job_id, status::text as status, created_at",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(job_id.as_str())
+        .bind(terminal_state)
+        .fetch_optional(&mut *transaction)
+        .await?
+        .ok_or(Error::InvalidStoredResult)?;
+        let completed = stored_job(completed)?;
+        transaction.commit().await?;
+        Ok(CommitResultOutcome::Committed(completed))
+    }
 }
 
 async fn set_scope(
@@ -1233,6 +1367,22 @@ fn stored_page_workflow(row: sqlx::postgres::PgRow) -> Result<StoredPageWorkflow
     let workflow =
         serde_json::from_str(checkpoint).map_err(|_| Error::InvalidStoredPageWorkflow)?;
     Ok(StoredPageWorkflow { workflow, revision })
+}
+
+fn stored_result_locator(row: sqlx::postgres::PgRow) -> Result<StoredResultLocator> {
+    let locator = StoredResultLocator {
+        document_id: DocumentId::new(row.try_get("document_id")?)
+            .map_err(|_| Error::InvalidStoredResult)?,
+        document_version: DocumentVersion::new(row.try_get("document_version")?)
+            .map_err(|_| Error::InvalidStoredResult)?,
+        object_bucket: row.try_get("object_bucket")?,
+        object_name: row.try_get("object_name")?,
+        object_generation: row.try_get("object_generation")?,
+        object_digest: row.try_get("object_digest")?,
+        content_length: row.try_get("content_length")?,
+    };
+    validate_locator(&locator)?;
+    Ok(locator)
 }
 
 fn stored_job(row: sqlx::postgres::PgRow) -> Result<StoredJob> {
