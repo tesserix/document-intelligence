@@ -254,6 +254,22 @@ resolver must still enforce tenant ownership, DNS/IP SSRF checks, redirect
 denial, TLS, response limits and bounded timeouts before external delivery is
 enabled.
 
+## Trace boundary
+
+HTTP spans continue a valid W3C `traceparent` and use the stable
+`document.api.request` name. The request span records only method, generated or
+accepted request ID, and product/tenant identifiers obtained from verified
+runtime identity. It never records the URI, query, headers, body, filename,
+object locator, signed URL, OCR content, field values, prompt, password, or
+credential. Tests inject secret-shaped values through each available HTTP
+surface and inspect both JSON events and exported span attributes.
+
+The shared service exports without OTLP headers to an internal telemetry
+gateway. Direct Langfuse endpoints and exporter credentials are rejected at
+startup. Product-specific routing and Langfuse authentication happen behind
+the gateway owned by that product environment. An unset exporter degrades to
+local structured logs; telemetry failure never changes document truth in CNPG.
+
 ## Australis tool
 
 `extract_document` accepts an authorized document/upload reference, type hint, output mode, registered schema reference, language hints, and evidence flag. It returns either a terminal normalized result or an opaque job/status resume contract. The tool cannot accept provider credentials, arbitrary callback URLs, tenant identity, system instructions, or tool permissions.

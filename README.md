@@ -58,6 +58,15 @@ service-account key files are not accepted as application configuration. A
 missing adapter leaves liveness available for diagnostics but keeps readiness
 at `503`.
 
+Tracing is JSON-only when `OTEL_EXPORTER_OTLP_ENDPOINT` is absent. When set, the
+endpoint must be a loopback collector or a fully qualified Kubernetes
+`*.svc.cluster.local` gateway and `DEPLOYMENT_ENVIRONMENT` must be canonical.
+The service refuses `OTEL_EXPORTER_OTLP_HEADERS` and
+`OTEL_EXPORTER_OTLP_TRACES_HEADERS`: product-specific Langfuse credentials
+belong only behind the product's telemetry gateway, never in this shared OCR
+workload. The exporter uses OTLP/gRPC with bounded connect/export timeouts and
+flushes on graceful shutdown.
+
 `POST /v1/ocr/uploads` accepts only declared MIME, byte length, and canonical
 SHA-256 plus `Idempotency-Key`. It issues a ten-minute HTTPS PUT capability for
 an opaque service-generated object. The caller must send the returned headers.
