@@ -47,6 +47,20 @@ pub enum PageArtifactWriteError {
     Unavailable,
 }
 
+pub type PageArtifactWriteFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<StoredPageArtifact, PageArtifactWriteError>> + Send + 'a>>;
+
+pub trait PageArtifactWriter: Send + Sync {
+    fn write<'a>(
+        &'a self,
+        product_id: &'a ProductId,
+        tenant_id: &'a TenantId,
+        job_id: &'a JobId,
+        task: &'a PageTask,
+        page: &'a DocumentPage,
+    ) -> PageArtifactWriteFuture<'a>;
+}
+
 pub type PageArtifactReadFuture<'a> =
     Pin<Box<dyn Future<Output = Result<Vec<u8>, PageArtifactReadError>> + Send + 'a>>;
 
@@ -192,6 +206,19 @@ impl GcsPageArtifactWriter {
             content_length: i64::try_from(bytes.len())
                 .map_err(|_| PageArtifactWriteError::Invalid)?,
         })
+    }
+}
+
+impl PageArtifactWriter for GcsPageArtifactWriter {
+    fn write<'a>(
+        &'a self,
+        product_id: &'a ProductId,
+        tenant_id: &'a TenantId,
+        job_id: &'a JobId,
+        task: &'a PageTask,
+        page: &'a DocumentPage,
+    ) -> PageArtifactWriteFuture<'a> {
+        Box::pin(async move { self.write(product_id, tenant_id, job_id, task, page).await })
     }
 }
 

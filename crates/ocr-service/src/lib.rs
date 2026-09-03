@@ -6,6 +6,7 @@ mod importer;
 mod malware;
 mod outbox_relay;
 mod page_artifacts;
+mod page_processor;
 mod page_runner;
 mod parser_process;
 mod result_artifacts;
@@ -19,6 +20,10 @@ pub use document_finalizer::{DocumentFinalizeError, DocumentFinalizer};
 pub use page_artifacts::{
     GcsPageArtifactReader, GcsPageArtifactWriter, PageArtifactConfigurationError,
     PageArtifactReadError, PageArtifactReadFuture, PageArtifactReader, PageArtifactWriteError,
+    PageArtifactWriteFuture, PageArtifactWriter,
+};
+pub use page_processor::{
+    ArtifactPageProcessor, PageRecognitionError, PageRecognitionFuture, PageRecognizer,
 };
 pub use page_runner::{
     CheckpointedPageRunner, PageProcessError, PageProcessFuture, PageProcessor, PageRunnerError,
