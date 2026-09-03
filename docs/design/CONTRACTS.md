@@ -229,6 +229,13 @@ Full page observations are immutable and content-addressed. Every structured val
 
 Events contain no OCR text, field values, object URLs, filenames, passwords, prompts, or signed result URLs. Delivery is at least once. Consumers deduplicate `event_id`. Webhooks sign timestamp + event ID + body digest and reject stale timestamps.
 
+Terminal events serialize a deterministic content-free body with
+`content_trust=untrusted`. The delivery headers carry the Unix timestamp,
+deterministic `evt_` outbox ID, and `v1=` HMAC-SHA-256 signature over
+`timestamp.event_id.sha256(body)`. Signing keys are at least 256 bits, redacted
+from debug output, zeroized on drop, and resolved only from the registered
+subscription after authorization.
+
 The job outbox relay polls explicit product/tenant scopes through RLS; it has no
 cross-tenant bypass role. Claims use `FOR UPDATE SKIP LOCKED`, at most 100 rows,
 a five-minute lease and 20 delivery attempts. The same owner renews without

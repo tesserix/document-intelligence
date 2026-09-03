@@ -15,6 +15,7 @@ mod result_publisher;
 mod source_promotion;
 mod upload_artifacts;
 mod upload_intents;
+mod webhook;
 
 pub use document_finalizer::{DocumentFinalizeError, DocumentFinalizer};
 pub use page_artifacts::{
@@ -40,6 +41,9 @@ pub use result_assembly::{assemble_document_result, ResultAssemblyError};
 pub use result_publisher::{PublishResultError, ResultPublisher};
 pub use upload_artifacts::{GcsUploadArtifactReader, UploadArtifactConfigurationError};
 pub use upload_intents::{GcsUploadIssuer, UploadIntentConfigurationError};
+pub use webhook::{
+    SignedWebhook, TerminalWebhookEvent, WebhookSignError, WebhookSigner, WebhookSigningSecret,
+};
 
 use std::{
     collections::{BTreeMap, HashMap},
