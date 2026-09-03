@@ -1,17 +1,22 @@
 //! Temporal qualification adapter for OCR workflow dispatch.
 
-use std::{future::Future, net::SocketAddr, ops::RangeInclusive, sync::Arc, time::Duration};
+use std::{
+    future::Future, net::SocketAddr, ops::RangeInclusive, pin::Pin, sync::Arc, time::Duration,
+};
 
 use ocr_domain::{JobId, ProductId, TenantId};
 use ocr_service::{
-    scoped_workflow_id, WorkflowAction, WorkflowDispatch, WorkflowDispatchError,
-    WorkflowDispatchOutcome, WorkflowStarter,
+    scoped_workflow_id, CheckpointedPageRunner, PageProcessor, PageRunnerError, PageRunnerOutcome,
+    WorkflowAction, WorkflowDispatch, WorkflowDispatchError, WorkflowDispatchOutcome,
+    WorkflowStarter,
 };
+use ocr_store::PgJobStore;
 use serde::{Deserialize, Deserializer, Serialize};
 use temporalio_client::{
     errors::{WorkflowInteractionError, WorkflowStartError},
     Client, RpcOptions, UntypedWorkflow, WorkflowCancelOptions, WorkflowStartOptions,
 };
+use temporalio_common::error::ApplicationFailure;
 use temporalio_common::worker::WorkerDeploymentOptions;
 use temporalio_common::{protos::temporal::api::enums::v1::WorkflowIdReusePolicy, RetryPolicy};
 use temporalio_macros::{activities, workflow, workflow_methods};
@@ -332,6 +337,261 @@ pub enum GatewayOutcome {
 pub enum GatewayError {
     #[error("workflow gateway is unavailable")]
     Unavailable,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct DurableActivityInput {
+    schema_version: &'static str,
+    product_id: ProductId,
+    tenant_id: TenantId,
+    job_id: JobId,
+}
+
+impl DurableActivityInput {
+    pub fn new(product_id: ProductId, tenant_id: TenantId, job_id: JobId) -> Self {
+        Self {
+            schema_version: WORKFLOW_SCHEMA_VERSION,
+            product_id,
+            tenant_id,
+            job_id,
+        }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireDurableActivityInput {
+    schema_version: String,
+    product_id: ProductId,
+    tenant_id: TenantId,
+    job_id: JobId,
+}
+
+impl<'de> Deserialize<'de> for DurableActivityInput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = WireDurableActivityInput::deserialize(deserializer)?;
+        if wire.schema_version != WORKFLOW_SCHEMA_VERSION {
+            return Err(serde::de::Error::custom("invalid durable activity input"));
+        }
+        Ok(Self {
+            schema_version: WORKFLOW_SCHEMA_VERSION,
+            product_id: wire.product_id,
+            tenant_id: wire.tenant_id,
+            job_id: wire.job_id,
+        })
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum DurableActivityStatus {
+    Running,
+    Completed,
+    Partial,
+    Cancelled,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct DurableActivityOutput {
+    status: DurableActivityStatus,
+}
+
+impl DurableActivityOutput {
+    pub fn new(status: DurableActivityStatus) -> Self {
+        Self { status }
+    }
+
+    pub fn status(&self) -> DurableActivityStatus {
+        self.status
+    }
+}
+
+impl From<PageRunnerOutcome> for DurableActivityOutput {
+    fn from(value: PageRunnerOutcome) -> Self {
+        let status = match value {
+            PageRunnerOutcome::Idle(status) | PageRunnerOutcome::Progressed(status) => match status
+            {
+                ocr_domain::PageWorkflowStatus::Running => DurableActivityStatus::Running,
+                ocr_domain::PageWorkflowStatus::Completed => DurableActivityStatus::Completed,
+                ocr_domain::PageWorkflowStatus::Partial => DurableActivityStatus::Partial,
+                ocr_domain::PageWorkflowStatus::Cancelled => DurableActivityStatus::Cancelled,
+            },
+        };
+        Self::new(status)
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum DurableExecutionErrorKind {
+    DependencyUnavailable,
+    RevisionConflict,
+    InvalidInput,
+    ScopeNotFound,
+}
+
+#[derive(Debug, Copy, Clone, Error, PartialEq, Eq)]
+#[error("durable activity execution failed")]
+pub struct DurableExecutionError {
+    kind: DurableExecutionErrorKind,
+}
+
+impl DurableExecutionError {
+    pub fn new(kind: DurableExecutionErrorKind) -> Self {
+        Self { kind }
+    }
+
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self.kind,
+            DurableExecutionErrorKind::DependencyUnavailable
+                | DurableExecutionErrorKind::RevisionConflict
+        )
+    }
+
+    pub fn kind(&self) -> DurableExecutionErrorKind {
+        self.kind
+    }
+
+    pub fn into_activity_error(self) -> ActivityError {
+        if self.is_retryable() {
+            ApplicationFailure::new(self).into()
+        } else {
+            ApplicationFailure::non_retryable(self).into()
+        }
+    }
+}
+
+impl From<PageRunnerError> for DurableExecutionError {
+    fn from(value: PageRunnerError) -> Self {
+        let kind = match value {
+            PageRunnerError::RetryableConflict => DurableExecutionErrorKind::RevisionConflict,
+            PageRunnerError::NotFound => DurableExecutionErrorKind::ScopeNotFound,
+            PageRunnerError::InvalidConfiguration | PageRunnerError::Domain(_) => {
+                DurableExecutionErrorKind::InvalidInput
+            }
+            PageRunnerError::Store(_) => DurableExecutionErrorKind::DependencyUnavailable,
+        };
+        Self::new(kind)
+    }
+}
+
+pub type DurablePageExecutionFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<DurableActivityOutput, DurableExecutionError>> + Send + 'a>>;
+
+pub trait DurablePageExecution: Send + Sync {
+    fn execute<'a>(&'a self, input: DurableActivityInput) -> DurablePageExecutionFuture<'a>;
+}
+
+pub struct CheckpointedPageExecutor<P> {
+    store: PgJobStore,
+    processor: P,
+    batch_size: usize,
+    concurrency: usize,
+}
+
+impl<P> CheckpointedPageExecutor<P>
+where
+    P: PageProcessor,
+{
+    pub fn new(
+        store: PgJobStore,
+        processor: P,
+        batch_size: usize,
+        concurrency: usize,
+    ) -> Result<Self, DurableExecutionError> {
+        CheckpointedPageRunner::new(&store, &processor, batch_size, concurrency)
+            .map_err(DurableExecutionError::from)?;
+        Ok(Self {
+            store,
+            processor,
+            batch_size,
+            concurrency,
+        })
+    }
+
+    pub async fn run(
+        &self,
+        input: &DurableActivityInput,
+    ) -> Result<DurableActivityOutput, DurableExecutionError> {
+        let runner = CheckpointedPageRunner::new(
+            &self.store,
+            &self.processor,
+            self.batch_size,
+            self.concurrency,
+        )
+        .map_err(DurableExecutionError::from)?;
+        runner
+            .run_once(&input.tenant_id, &input.product_id, &input.job_id)
+            .await
+            .map(DurableActivityOutput::from)
+            .map_err(DurableExecutionError::from)
+    }
+}
+
+impl<P> DurablePageExecution for CheckpointedPageExecutor<P>
+where
+    P: PageProcessor,
+{
+    fn execute<'a>(&'a self, input: DurableActivityInput) -> DurablePageExecutionFuture<'a> {
+        Box::pin(async move { self.run(&input).await })
+    }
+}
+
+pub fn durable_activity_options(iteration: u32) -> Option<ActivityOptions> {
+    if !(1..=MAX_PAGE_COUNT * 3).contains(&iteration) {
+        return None;
+    }
+    let policy = ActivityPolicy::page_ocr();
+    let retry_policy = RetryPolicy::builder()
+        .initial_interval(policy.initial_backoff())
+        .maximum_interval(policy.maximum_backoff())
+        .maximum_attempts(policy.maximum_attempts())
+        .build();
+    Some(
+        ActivityOptions::with_start_to_close_timeout(policy.start_to_close_timeout())
+            .activity_id(format!("ocr-runner-{iteration:04}"))
+            .heartbeat_timeout(policy.heartbeat_timeout())
+            .cancellation_type(ActivityCancellationType::WaitCancellationCompleted)
+            .retry_policy(retry_policy)
+            .build(),
+    )
+}
+
+pub struct DurablePageActivities {
+    execution: Arc<dyn DurablePageExecution>,
+}
+
+impl DurablePageActivities {
+    pub fn new(execution: Arc<dyn DurablePageExecution>) -> Self {
+        Self { execution }
+    }
+}
+
+#[activities]
+impl DurablePageActivities {
+    #[activity(name = "run_checkpointed_pages_v1")]
+    pub async fn run_checkpointed_pages(
+        self: Arc<Self>,
+        ctx: ActivityContext,
+        input: DurableActivityInput,
+    ) -> Result<DurableActivityOutput, ActivityError> {
+        let execution = self.execution.execute(input);
+        tokio::pin!(execution);
+        let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
+        loop {
+            tokio::select! {
+                result = &mut execution => {
+                    return result.map_err(DurableExecutionError::into_activity_error);
+                }
+                _ = ctx.cancelled() => return Err(ActivityError::cancelled()),
+                _ = heartbeat.tick() => ctx.record_heartbeat(()).await?,
+            }
+        }
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
