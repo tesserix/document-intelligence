@@ -8,8 +8,9 @@ use std::{
 use ocr_domain::{JobId, ProductId, TenantId};
 use ocr_service::{WorkflowAction, WorkflowDispatch};
 use ocr_temporal::{
-    qualification_deployment_options, OcrDocumentWorkflow, QualificationPageActivities,
-    WorkflowInput, WorkflowResultMetadata, WorkflowRunInput,
+    qualification_deployment_options, GatewayOutcome, OcrDocumentWorkflow, OfficialTemporalGateway,
+    QualificationPageActivities, TemporalCommand, TemporalGateway, WorkflowInput,
+    WorkflowResultMetadata, WorkflowRunInput,
 };
 use temporalio_client::{
     errors::WorkflowGetResultError, WorkflowCancelOptions, WorkflowFetchHistoryOptions,
@@ -347,6 +348,195 @@ async fn activity_worker_process_loss_retries_only_the_incomplete_page() {
 
             shutdown();
             workflow_worker_task.await.unwrap().unwrap();
+            env.shutdown().await.unwrap();
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires scripts/test-temporal-qualification.sh"]
+async fn cancellation_before_start_and_after_completion_is_idempotent() {
+    let Ok(cli) = std::env::var("TEMPORAL_CLI_PATH") else {
+        return;
+    };
+    let env = WorkflowEnvironment::start_local(
+        LocalWorkflowEnvironmentOptions::builder()
+            .server_executable(EphemeralExe::ExistingPath(cli))
+            .log_level(DevServerLogLevel::Never)
+            .build(),
+    )
+    .await
+    .unwrap();
+    let runtime = Runtime::new_assume_tokio(Default::default()).unwrap();
+    let task_queue = "ocr-temporal-cancel-boundaries";
+    let workflow_id = "ocr-temporal-qualification-cancel-boundaries";
+    let worker_options = WorkerOptions::new(task_queue)
+        .register_workflow::<OcrDocumentWorkflow>()
+        .unwrap()
+        .register_activities(QualificationPageActivities::default())
+        .build();
+    let mut worker = Worker::new(&runtime, env.client().clone(), worker_options).unwrap();
+    let shutdown = worker.shutdown_handle();
+
+    tokio::task::LocalSet::new()
+        .run_until(async move {
+            let worker_task = tokio::task::spawn_local(async move { worker.run().await });
+            let gateway = OfficialTemporalGateway::new(env.client().clone());
+            assert_eq!(
+                gateway
+                    .execute(TemporalCommand::Cancel {
+                        workflow_id: workflow_id.to_owned(),
+                        request_id: "ocr-outbox-before-start".to_owned(),
+                    })
+                    .await
+                    .unwrap(),
+                GatewayOutcome::AlreadyExists
+            );
+
+            let handle = env
+                .client()
+                .start_workflow(
+                    OcrDocumentWorkflow::run,
+                    workflow_input(1),
+                    WorkflowStartOptions::new(task_queue, workflow_id).build(),
+                )
+                .await
+                .unwrap();
+            let result: WorkflowResultMetadata = handle
+                .get_result(WorkflowGetResultOptions::default())
+                .await
+                .unwrap();
+            assert_eq!(result.pages_processed, 1);
+
+            for request_id in [
+                "ocr-outbox-after-completion-1",
+                "ocr-outbox-after-completion-2",
+            ] {
+                assert_eq!(
+                    gateway
+                        .execute(TemporalCommand::Cancel {
+                            workflow_id: workflow_id.to_owned(),
+                            request_id: request_id.to_owned(),
+                        })
+                        .await
+                        .unwrap(),
+                    GatewayOutcome::Accepted
+                );
+            }
+
+            shutdown();
+            worker_task.await.unwrap().unwrap();
+            env.shutdown().await.unwrap();
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires scripts/test-temporal-qualification.sh"]
+async fn cancellation_after_continue_as_new_stops_the_second_run() {
+    let Ok(cli) = std::env::var("TEMPORAL_CLI_PATH") else {
+        return;
+    };
+    let env = WorkflowEnvironment::start_local(
+        LocalWorkflowEnvironmentOptions::builder()
+            .server_executable(EphemeralExe::ExistingPath(cli))
+            .log_level(DevServerLogLevel::Never)
+            .build(),
+    )
+    .await
+    .unwrap();
+    let runtime = Runtime::new_assume_tokio(Default::default()).unwrap();
+    let task_queue = "ocr-temporal-cancel-second-run";
+    let workflow_id = "ocr-temporal-qualification-cancel-second-run";
+    let page_51_started = Arc::new(tokio::sync::Notify::new());
+    let activities =
+        QualificationPageActivities::with_page_started_notifier(51, Arc::clone(&page_51_started))
+            .unwrap();
+    let worker_options = WorkerOptions::new(task_queue)
+        .register_workflow::<OcrDocumentWorkflow>()
+        .unwrap()
+        .register_activities(activities)
+        .build();
+    let mut worker = Worker::new(&runtime, env.client().clone(), worker_options).unwrap();
+    let shutdown = worker.shutdown_handle();
+
+    tokio::task::LocalSet::new()
+        .run_until(async move {
+            let worker_task = tokio::task::spawn_local(async move { worker.run().await });
+            let initial = env
+                .client()
+                .start_workflow(
+                    OcrDocumentWorkflow::run,
+                    workflow_input(300),
+                    WorkflowStartOptions::new(task_queue, workflow_id).build(),
+                )
+                .await
+                .unwrap();
+            tokio::time::timeout(Duration::from_secs(30), page_51_started.notified())
+                .await
+                .expect("page 51 did not start");
+
+            let current = env
+                .client()
+                .get_workflow_handle::<OcrDocumentWorkflow>(workflow_id);
+            current
+                .cancel(
+                    WorkflowCancelOptions::builder()
+                        .request_id("ocr-outbox-second-run-cancel")
+                        .reason("qualification")
+                        .build(),
+                )
+                .await
+                .unwrap();
+            assert!(matches!(
+                initial
+                    .get_result(WorkflowGetResultOptions::default())
+                    .await,
+                Err(WorkflowGetResultError::Cancelled { .. })
+            ));
+
+            let first_run_events = initial
+                .fetch_history(WorkflowFetchHistoryOptions::default())
+                .into_events()
+                .await
+                .unwrap();
+            assert_eq!(
+                first_run_events
+                    .iter()
+                    .filter(|event| {
+                        EventType::try_from(event.event_type)
+                            == Ok(EventType::ActivityTaskCompleted)
+                    })
+                    .count(),
+                50
+            );
+            assert_eq!(
+                EventType::try_from(first_run_events.last().unwrap().event_type).unwrap(),
+                EventType::WorkflowExecutionContinuedAsNew
+            );
+
+            let second_run_events = current
+                .fetch_history(WorkflowFetchHistoryOptions::default())
+                .into_events()
+                .await
+                .unwrap();
+            assert_eq!(
+                second_run_events
+                    .iter()
+                    .filter(|event| {
+                        EventType::try_from(event.event_type)
+                            == Ok(EventType::ActivityTaskScheduled)
+                    })
+                    .count(),
+                1
+            );
+            assert_eq!(
+                EventType::try_from(second_run_events.last().unwrap().event_type).unwrap(),
+                EventType::WorkflowExecutionCanceled
+            );
+
+            shutdown();
+            worker_task.await.unwrap().unwrap();
             env.shutdown().await.unwrap();
         })
         .await;

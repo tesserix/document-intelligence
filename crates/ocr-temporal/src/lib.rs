@@ -382,6 +382,7 @@ impl WorkflowRunInput {
 
 pub struct QualificationPageActivities {
     started: Option<Arc<tokio::sync::Notify>>,
+    started_page: Option<u32>,
     started_endpoint: Option<SocketAddr>,
     heartbeat_steps: u32,
 }
@@ -390,6 +391,7 @@ impl Default for QualificationPageActivities {
     fn default() -> Self {
         Self {
             started: None,
+            started_page: None,
             started_endpoint: None,
             heartbeat_steps: 1,
         }
@@ -400,14 +402,28 @@ impl QualificationPageActivities {
     pub fn with_started_notifier(started: Arc<tokio::sync::Notify>) -> Self {
         Self {
             started: Some(started),
+            started_page: Some(1),
             started_endpoint: None,
             heartbeat_steps: 100,
         }
     }
 
+    pub fn with_page_started_notifier(
+        page: u32,
+        started: Arc<tokio::sync::Notify>,
+    ) -> Option<Self> {
+        (1..=MAX_PAGE_COUNT).contains(&page).then_some(Self {
+            started: Some(started),
+            started_page: Some(page),
+            started_endpoint: None,
+            heartbeat_steps: 100,
+        })
+    }
+
     pub fn held_for_process_loss(started_endpoint: SocketAddr) -> Self {
         Self {
             started: None,
+            started_page: None,
             started_endpoint: Some(started_endpoint),
             heartbeat_steps: 1_000,
         }
@@ -426,7 +442,8 @@ impl QualificationPageActivities {
         ctx: ActivityContext,
         input: PageActivityInput,
     ) -> Result<u32, ActivityError> {
-        if let Some(started) = &self.started {
+        let is_observed_page = self.started_page == Some(input.page);
+        if let Some(started) = self.started.as_ref().filter(|_| is_observed_page) {
             started.notify_one();
         }
         if let Some(started_endpoint) = self.started_endpoint {
@@ -437,7 +454,12 @@ impl QualificationPageActivities {
         if ctx.is_cancelled() {
             return Err(ActivityError::cancelled());
         }
-        for progress in 1..=self.heartbeat_steps {
+        let heartbeat_steps = if is_observed_page || self.started_endpoint.is_some() {
+            self.heartbeat_steps
+        } else {
+            1
+        };
+        for progress in 1..=heartbeat_steps {
             ctx.record_heartbeat((input.page, progress)).await?;
             tokio::time::sleep(Duration::from_millis(10)).await;
             if ctx.is_cancelled() {

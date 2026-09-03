@@ -1,10 +1,10 @@
-use std::time::Duration;
+use std::{sync::Arc, time::Duration};
 
 use ocr_domain::{JobId, ProductId, TenantId};
 use ocr_service::{WorkflowAction, WorkflowDispatch};
 use ocr_temporal::{
-    page_activity_options, ActivityPolicy, PageActivityInput, WorkflowInput, WorkflowPlan,
-    WorkflowRunInput,
+    page_activity_options, ActivityPolicy, PageActivityInput, QualificationPageActivities,
+    WorkflowInput, WorkflowPlan, WorkflowRunInput,
 };
 use temporalio_sdk::{ActivityCancellationType, ActivityCloseTimeouts};
 
@@ -134,4 +134,17 @@ fn page_activity_input_rejects_out_of_range_or_injected_values() {
             "{json}"
         );
     }
+}
+
+#[test]
+fn qualification_observer_accepts_only_a_real_page() {
+    let started = Arc::new(tokio::sync::Notify::new());
+    assert!(
+        QualificationPageActivities::with_page_started_notifier(0, Arc::clone(&started)).is_none()
+    );
+    assert!(
+        QualificationPageActivities::with_page_started_notifier(301, Arc::clone(&started))
+            .is_none()
+    );
+    assert!(QualificationPageActivities::with_page_started_notifier(51, started).is_some());
 }
