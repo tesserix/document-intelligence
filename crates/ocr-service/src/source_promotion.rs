@@ -442,11 +442,13 @@ mod tests {
         });
         let source = GoogleCloudStorageBuilder::new()
             .with_bucket_name("dev-kora-ocr-quarantine")
+            .with_bearer_token("")
             .with_skip_signature(true)
             .build()
             .unwrap();
         let destination = GoogleCloudStorageBuilder::new()
             .with_bucket_name("dev-kora-ocr-source")
+            .with_bearer_token("")
             .with_skip_signature(true)
             .build()
             .unwrap();
@@ -522,12 +524,14 @@ mod tests {
         });
         let source = GoogleCloudStorageBuilder::new()
             .with_bucket_name("dev-kora-ocr-quarantine")
+            .with_bearer_token("")
             .with_skip_signature(true)
             .build()
             .unwrap();
         let destination = GoogleCloudStorageBuilder::new()
             .with_bucket_name("dev-kora-ocr-source")
             .with_base_url(&format!("http://{address}"))
+            .with_bearer_token("")
             .with_skip_signature(true)
             .build()
             .unwrap();
