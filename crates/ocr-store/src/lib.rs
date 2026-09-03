@@ -3,6 +3,7 @@
 use ocr_domain::{IdempotencyKey, JobId, JobState, ProductId, RequestDigest, TenantId};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use thiserror::Error;
+use time::OffsetDateTime;
 
 #[derive(Debug, Error)]
 pub enum Error {
@@ -27,14 +28,15 @@ pub struct CreateJob {
 
 #[derive(Debug, PartialEq, Eq)]
 pub enum CreateOutcome {
-    Created,
-    Existing(JobId),
+    Created(StoredJob),
+    Existing(StoredJob),
 }
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct StoredJob {
     pub job_id: JobId,
     pub state: JobState,
+    pub created_at: OffsetDateTime,
 }
 
 #[derive(Debug, Clone)]
@@ -56,7 +58,7 @@ impl PgJobStore {
              (job_id, tenant_id, product_id, idempotency_key, request_digest) \
              values ($1, $2, $3, $4, $5) \
              on conflict (product_id, tenant_id, idempotency_key) do nothing \
-             returning job_id",
+             returning job_id, status::text as status, created_at",
         )
         .bind(request.job_id.as_str())
         .bind(request.tenant_id.as_str())
@@ -66,7 +68,7 @@ impl PgJobStore {
         .fetch_optional(&mut *transaction)
         .await?;
 
-        if inserted.is_some() {
+        if let Some(inserted) = inserted {
             sqlx::query(
                 "insert into ocr_outbox \
                  (product_id, tenant_id, job_id, event_type, payload) \
@@ -78,12 +80,13 @@ impl PgJobStore {
             .bind(request.job_id.as_str())
             .execute(&mut *transaction)
             .await?;
+            let job = stored_job(inserted)?;
             transaction.commit().await?;
-            return Ok(CreateOutcome::Created);
+            return Ok(CreateOutcome::Created(job));
         }
 
         let existing = sqlx::query(
-            "select job_id, request_digest from ocr_jobs \
+            "select job_id, status::text as status, created_at, request_digest from ocr_jobs \
              where product_id = $1 and tenant_id = $2 and idempotency_key = $3",
         )
         .bind(request.product_id.as_str())
@@ -97,10 +100,9 @@ impl PgJobStore {
             return Err(Error::IdempotencyConflict);
         }
 
-        let existing_id: &str = existing.try_get("job_id")?;
-        let job_id = JobId::new(existing_id).map_err(|_| Error::InvalidStoredJob)?;
+        let job = stored_job(existing)?;
         transaction.commit().await?;
-        Ok(CreateOutcome::Existing(job_id))
+        Ok(CreateOutcome::Existing(job))
     }
 
     pub async fn find(
@@ -112,7 +114,7 @@ impl PgJobStore {
         let mut transaction = self.pool.begin().await?;
         set_scope(&mut transaction, tenant_id, product_id).await?;
         let row = sqlx::query(
-            "select job_id, status::text as status from ocr_jobs \
+            "select job_id, status::text as status, created_at from ocr_jobs \
              where product_id = $1 and tenant_id = $2 and job_id = $3",
         )
         .bind(product_id.as_str())
@@ -157,5 +159,10 @@ fn stored_job(row: sqlx::postgres::PgRow) -> Result<StoredJob> {
         "completed" => JobState::Completed,
         _ => return Err(Error::InvalidStoredJob),
     };
-    Ok(StoredJob { job_id, state })
+    let created_at = row.try_get("created_at")?;
+    Ok(StoredJob {
+        job_id,
+        state,
+        created_at,
+    })
 }

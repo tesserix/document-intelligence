@@ -9,7 +9,7 @@ rust-version.workspace = true
 ocr-domain = { path = "../ocr-domain" }
 sqlx.workspace = true
 thiserror.workspace = true
+time.workspace = true
 
 [dev-dependencies]
 tokio.workspace = true
-

@@ -3,15 +3,16 @@
 use std::time::Duration;
 
 use axum::{
-    extract::{FromRequestParts, Path, State},
-    http::{request::Parts, HeaderName, HeaderValue, StatusCode},
+    extract::{rejection::JsonRejection, FromRequestParts, Path, State},
+    http::{request::Parts, HeaderMap, HeaderName, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
-    routing::get,
+    routing::{get, post},
     Json, Router,
 };
-use ocr_domain::{JobId, JobState, ProductId, TenantId};
-use ocr_store::PgJobStore;
-use serde::Serialize;
+use ocr_domain::{IdempotencyKey, JobId, JobState, ProductId, RequestDigest, TenantId};
+use ocr_store::{CreateJob, CreateOutcome, PgJobStore};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use tower_http::{
     limit::RequestBodyLimitLayer,
     request_id::{MakeRequestId, PropagateRequestIdLayer, RequestId, SetRequestIdLayer},
@@ -101,6 +102,28 @@ impl ApiError {
             },
         }
     }
+
+    fn bad_request(code: &'static str, message: &'static str, request_id: String) -> Self {
+        Self {
+            status: StatusCode::BAD_REQUEST,
+            body: ErrorBody {
+                code,
+                message,
+                request_id,
+            },
+        }
+    }
+
+    fn conflict(request_id: String) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            body: ErrorBody {
+                code: "idempotency_conflict",
+                message: "idempotency key was reused with different input",
+                request_id,
+            },
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -113,6 +136,75 @@ impl IntoResponse for ApiError {
 struct JobResponse {
     job_id: JobId,
     status: JobState,
+    #[serde(with = "time::serde::rfc3339")]
+    created_at: time::OffsetDateTime,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    status_url: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    result_url: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct CreateJobRequest {
+    source: Source,
+    document_type: DocumentType,
+    #[serde(default)]
+    output: Option<OutputOptions>,
+    #[serde(default)]
+    extraction: Option<Extraction>,
+    #[serde(default)]
+    language_hints: Vec<String>,
+    #[serde(default)]
+    processing_class: Option<ProcessingClass>,
+    #[serde(default)]
+    webhook_subscription_id: Option<String>,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Source {
+    upload_id: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum DocumentType {
+    Auto,
+    General,
+    Invoice,
+    Receipt,
+    PurchaseOrder,
+    IdentityDocument,
+    Contract,
+    BankStatement,
+    MedicalForm,
+    ApplicationForm,
+    Resume,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct OutputOptions {
+    text: bool,
+    markdown: bool,
+    layout: bool,
+    evidence: bool,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct Extraction {
+    schema_id: String,
+    schema_version: String,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+enum ProcessingClass {
+    Interactive,
+    Priority,
+    Batch,
 }
 
 #[derive(Debug, Clone)]
@@ -130,6 +222,7 @@ pub fn router(store: PgJobStore) -> Router {
     let request_id_header = HeaderName::from_static(REQUEST_ID_HEADER);
     Router::new()
         .route("/healthz", get(|| async { StatusCode::OK }))
+        .route("/v1/ocr/jobs", post(create_job))
         .route("/v1/ocr/jobs/{job_id}", get(get_job))
         .with_state(store)
         .layer(TraceLayer::new_for_http())
@@ -140,6 +233,93 @@ pub fn router(store: PgJobStore) -> Router {
         .layer(RequestBodyLimitLayer::new(64 * 1024))
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(SetRequestIdLayer::new(request_id_header, RequestIdFactory))
+}
+
+async fn create_job(
+    State(store): State<PgJobStore>,
+    identity: VerifiedIdentity,
+    headers: HeaderMap,
+    payload: Result<Json<CreateJobRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<JobResponse>), ApiError> {
+    let request_id = request_id_from_headers(&headers);
+    let idempotency_value = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "idempotency_key_required",
+                "Idempotency-Key is required",
+                request_id.clone(),
+            )
+        })?;
+    let idempotency_key = IdempotencyKey::new(idempotency_value).map_err(|_| {
+        ApiError::bad_request(
+            "invalid_idempotency_key",
+            "Idempotency-Key is invalid",
+            request_id.clone(),
+        )
+    })?;
+    let command = payload.map_err(|_| {
+        ApiError::bad_request(
+            "invalid_request",
+            "request body is invalid",
+            request_id.clone(),
+        )
+    })?;
+    if !is_upload_id(&command.source.upload_id) {
+        return Err(ApiError::bad_request(
+            "invalid_request",
+            "request body is invalid",
+            request_id,
+        ));
+    }
+
+    let canonical = serde_json::to_vec(&command.0).map_err(|_| {
+        ApiError::bad_request(
+            "invalid_request",
+            "request body is invalid",
+            request_id.clone(),
+        )
+    })?;
+    let request_digest = RequestDigest::new(&format!("sha256:{:x}", Sha256::digest(canonical)))
+        .map_err(|_| {
+            ApiError::bad_request(
+                "invalid_request",
+                "request body is invalid",
+                request_id.clone(),
+            )
+        })?;
+    let generated_id = JobId::new(&format!("job_{}", Uuid::new_v4().simple()))
+        .map_err(|_| ApiError::unavailable(request_id.clone()))?;
+    let outcome = store
+        .create(CreateJob {
+            job_id: generated_id.clone(),
+            tenant_id: identity.0.tenant_id,
+            product_id: identity.0.product_id,
+            idempotency_key,
+            request_digest,
+        })
+        .await
+        .map_err(|error| match error {
+            ocr_store::Error::IdempotencyConflict => ApiError::conflict(request_id.clone()),
+            _ => ApiError::unavailable(request_id.clone()),
+        })?;
+    let job = match outcome {
+        CreateOutcome::Created(job) | CreateOutcome::Existing(job) => job,
+    };
+    let status_url = format!("/v1/ocr/jobs/{}", job.job_id.as_str());
+    let result_url = format!("{status_url}/result");
+
+    Ok((
+        StatusCode::ACCEPTED,
+        Json(JobResponse {
+            job_id: job.job_id,
+            status: job.state,
+            created_at: job.created_at,
+            status_url: Some(status_url),
+            result_url: Some(result_url),
+        }),
+    ))
 }
 
 async fn get_job(
@@ -158,6 +338,9 @@ async fn get_job(
     Ok(Json(JobResponse {
         job_id: job.job_id,
         status: job.state,
+        created_at: job.created_at,
+        status_url: None,
+        result_url: None,
     }))
 }
 
@@ -171,4 +354,21 @@ fn request_id_from_extensions(extensions: &axum::http::Extensions) -> String {
         .and_then(|request_id| request_id.header_value().to_str().ok())
         .map(str::to_owned)
         .unwrap_or_else(|| Uuid::new_v4().to_string())
+}
+
+fn request_id_from_headers(headers: &HeaderMap) -> String {
+    headers
+        .get(REQUEST_ID_HEADER)
+        .and_then(|value| value.to_str().ok())
+        .map(str::to_owned)
+        .unwrap_or_else(|| Uuid::new_v4().to_string())
+}
+
+fn is_upload_id(value: &str) -> bool {
+    let suffix = value.strip_prefix("upl_").unwrap_or_default();
+    !suffix.is_empty()
+        && suffix.len() <= 64
+        && suffix
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_')
 }

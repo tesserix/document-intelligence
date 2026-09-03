@@ -28,14 +28,17 @@ async fn create_is_atomic_and_idempotent_per_trusted_scope() {
     let (store, admin_pool, _) = store().await;
     let first = request("job_FIRST", "ten_ALPHA", "request-1", 'a');
 
-    assert_eq!(store.create(first).await.unwrap(), CreateOutcome::Created);
-    assert_eq!(
-        store
-            .create(request("job_RETRY", "ten_ALPHA", "request-1", 'a'))
-            .await
-            .unwrap(),
-        CreateOutcome::Existing(JobId::new("job_FIRST").unwrap())
-    );
+    let created = store.create(first).await.unwrap();
+    let replayed = store
+        .create(request("job_RETRY", "ten_ALPHA", "request-1", 'a'))
+        .await
+        .unwrap();
+    let (CreateOutcome::Created(created), CreateOutcome::Existing(replayed)) = (created, replayed)
+    else {
+        panic!("expected a created job followed by its existing replay")
+    };
+    assert_eq!(replayed.job_id, JobId::new("job_FIRST").unwrap());
+    assert_eq!(replayed.created_at, created.created_at);
 
     let outbox_count: i64 =
         sqlx::query_scalar("select count(*) from ocr_outbox where job_id = 'job_FIRST'")
