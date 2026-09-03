@@ -76,7 +76,12 @@ async fn idempotency_key_reuse_with_a_different_digest_conflicts() {
 async fn a_different_tenant_cannot_read_a_job() {
     let (store, _, _) = store().await;
     store
-        .create(request("job_PRIVATE", "ten_ALPHA", "request-1", 'a'))
+        .create(request(
+            "job_PRIVATE",
+            "ten_PRIVATE",
+            "private-request",
+            'a',
+        ))
         .await
         .unwrap();
 
