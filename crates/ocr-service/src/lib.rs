@@ -7,6 +7,7 @@ mod outbox_relay;
 mod page_runner;
 mod parser_process;
 mod result_artifacts;
+mod result_assembly;
 mod source_promotion;
 mod upload_artifacts;
 mod upload_intents;
@@ -19,6 +20,7 @@ pub use parser_process::{
     ParserInspectionReport, ParserProcess, ParserProcessError, PARSER_PROFILE, PARSER_VERSION,
 };
 pub use result_artifacts::{GcsResultReader, ResultArtifactConfigurationError};
+pub use result_assembly::{assemble_document_result, ResultAssemblyError};
 pub use upload_artifacts::{GcsUploadArtifactReader, UploadArtifactConfigurationError};
 pub use upload_intents::{GcsUploadIssuer, UploadIntentConfigurationError};
 
