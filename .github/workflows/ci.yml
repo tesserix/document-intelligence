@@ -18,6 +18,8 @@ jobs:
     with:
       toolchain: 1.85.0
       coverage_min_lines: 70
+      database_enabled: true
+      database_setup_script: scripts/setup-test-database.sh
 
   secret-scan:
     uses: tesserix/tesserix-workflows/.github/workflows/secret-scan.yml@62f7f663a98d5ef92567850dd03c8c2513c9068e

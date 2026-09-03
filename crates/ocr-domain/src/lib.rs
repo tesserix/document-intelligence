@@ -156,6 +156,10 @@ impl TenantId {
     pub fn new(value: &str) -> Result<Self> {
         validated_id(value, "ten_", Error::InvalidTenantId).map(Self)
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl TryFrom<String> for TenantId {
@@ -196,6 +200,10 @@ impl ProductId {
             Err(Error::InvalidProductId)
         }
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl TryFrom<String> for ProductId {
@@ -219,6 +227,10 @@ pub struct JobId(String);
 impl JobId {
     pub fn new(value: &str) -> Result<Self> {
         validated_id(value, "job_", Error::InvalidJobId).map(Self)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
@@ -251,6 +263,10 @@ impl IdempotencyKey {
             Err(Error::InvalidIdempotencyKey)
         }
     }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
 }
 
 impl TryFrom<String> for IdempotencyKey {
@@ -278,6 +294,10 @@ impl RequestDigest {
         } else {
             Err(Error::InvalidRequestDigest)
         }
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
     }
 }
 
