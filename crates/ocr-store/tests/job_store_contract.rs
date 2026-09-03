@@ -1,5 +1,8 @@
-use ocr_domain::{DocumentId, IdempotencyKey, JobId, ProductId, RequestDigest, TenantId};
-use ocr_store::{CancelOutcome, CreateJob, CreateOutcome, Error, PgJobStore, ResultLookup};
+use ocr_domain::{DocumentId, IdempotencyKey, JobId, ProductId, RequestDigest, TenantId, UploadId};
+use ocr_store::{
+    CancelOutcome, CreateJob, CreateOutcome, CreateUpload, CreateUploadOutcome, Error, PgJobStore,
+    ResultLookup,
+};
 use sqlx::PgPool;
 
 fn request(job_id: &str, tenant_id: &str, key: &str, digest: char) -> CreateJob {
@@ -132,6 +135,56 @@ async fn row_level_security_fails_closed_without_a_trusted_scope() {
         .await
         .unwrap();
     assert_eq!(visible, 0);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn upload_intent_is_idempotent_and_scoped_to_the_verified_tenant() {
+    let (store, admin_pool, _) = store().await;
+    sqlx::query("delete from ocr_uploads where upload_id in ('upl_FIRST', 'upl_RETRY')")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    let create = |upload_id: &str, tenant_id: &str| CreateUpload {
+        upload_id: UploadId::new(upload_id).unwrap(),
+        tenant_id: TenantId::new(tenant_id).unwrap(),
+        product_id: ProductId::new("kora").unwrap(),
+        idempotency_key: IdempotencyKey::new("upload-request-1").unwrap(),
+        request_digest: RequestDigest::new(&format!("sha256:{}", "e".repeat(64))).unwrap(),
+        object_bucket: "dev-kora-ocr-quarantine".to_owned(),
+        object_name: format!("products/kora/tenants/{tenant_id}/uploads/{upload_id}"),
+        expected_content_type: "application/pdf".to_owned(),
+        expected_content_length: 1024,
+        expected_digest: format!("sha256:{}", "f".repeat(64)),
+        expires_at: time::OffsetDateTime::now_utc() + time::Duration::minutes(10),
+    };
+
+    let created = store
+        .create_upload(create("upl_FIRST", "ten_UPLOAD"))
+        .await
+        .unwrap();
+    let replayed = store
+        .create_upload(create("upl_RETRY", "ten_UPLOAD"))
+        .await
+        .unwrap();
+    let (CreateUploadOutcome::Created(created), CreateUploadOutcome::Existing(replayed)) =
+        (created, replayed)
+    else {
+        panic!("expected a created upload followed by its existing replay")
+    };
+    assert_eq!(created.upload_id, UploadId::new("upl_FIRST").unwrap());
+    assert_eq!(replayed.upload_id, created.upload_id);
+    assert_eq!(replayed.object_name, created.object_name);
+
+    let foreign = store
+        .find_upload(
+            &TenantId::new("ten_OTHER").unwrap(),
+            &ProductId::new("kora").unwrap(),
+            &created.upload_id,
+        )
+        .await
+        .unwrap();
+    assert!(foreign.is_none());
 }
 
 #[tokio::test]

@@ -1,23 +1,33 @@
 //! HTTP boundary for the document intelligence service.
 
 mod result_artifacts;
+mod upload_intents;
 
 pub use result_artifacts::{GcsResultReader, ResultArtifactConfigurationError};
+pub use upload_intents::{GcsUploadIssuer, UploadIntentConfigurationError};
 
-use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    future::Future,
+    pin::Pin,
+    sync::Arc,
+    time::Duration,
+};
 
 use axum::{
     extract::{rejection::JsonRejection, FromRequestParts, Path, State},
-    http::{request::Parts, HeaderMap, HeaderName, HeaderValue, StatusCode},
+    http::{request::Parts, HeaderMap, HeaderName, HeaderValue, StatusCode, Uri},
     response::{IntoResponse, Response},
     routing::{get, post},
     Json, Router,
 };
 use ocr_domain::{
-    DocumentResult, IdempotencyKey, JobId, JobState, ProductId, RequestDigest, TenantId,
+    DocumentResult, IdempotencyKey, JobId, JobState, ProductId, RequestDigest, TenantId, UploadId,
 };
+pub use ocr_store::StoredUpload;
 use ocr_store::{
-    CancelOutcome, CreateJob, CreateOutcome, PgJobStore, ResultLookup, StoredResultLocator,
+    CancelOutcome, CreateJob, CreateOutcome, CreateUpload, CreateUploadOutcome, PgJobStore,
+    ResultLookup, StoredResultLocator,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -31,6 +41,8 @@ use uuid::Uuid;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const MAXIMUM_RESULT_BYTES: usize = 16 * 1024 * 1024;
+const MAXIMUM_UPLOAD_BYTES: i64 = 100 * 1024 * 1024;
+const UPLOAD_INTENT_TTL_MINUTES: i64 = 10;
 
 #[derive(Debug)]
 pub struct ResultArtifactError;
@@ -44,6 +56,30 @@ pub trait ResultArtifactReader: Send + Sync {
         locator: &'a StoredResultLocator,
         maximum_bytes: usize,
     ) -> ResultReadFuture<'a>;
+}
+
+#[derive(Debug)]
+pub struct UploadIssueError;
+
+#[derive(Debug, Serialize)]
+pub struct IssuedUpload {
+    pub upload_url: String,
+    pub required_headers: BTreeMap<String, String>,
+}
+
+pub type UploadIssueFuture<'a> =
+    Pin<Box<dyn Future<Output = std::result::Result<IssuedUpload, UploadIssueError>> + Send + 'a>>;
+
+pub trait UploadIntentIssuer: Send + Sync {
+    fn issue<'a>(&'a self, upload: &'a StoredUpload) -> UploadIssueFuture<'a>;
+}
+
+struct UnavailableUploadIssuer;
+
+impl UploadIntentIssuer for UnavailableUploadIssuer {
+    fn issue<'a>(&'a self, _upload: &'a StoredUpload) -> UploadIssueFuture<'a> {
+        Box::pin(async { Err(UploadIssueError) })
+    }
 }
 
 struct UnavailableResultReader;
@@ -63,6 +99,9 @@ struct AppState {
     jobs: PgJobStore,
     results: Arc<dyn ResultArtifactReader>,
     result_artifacts_configured: bool,
+    uploads: Arc<dyn UploadIntentIssuer>,
+    upload_buckets: HashMap<String, String>,
+    upload_intents_configured: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -238,6 +277,24 @@ struct CreateJobRequest {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+struct CreateUploadRequest {
+    content_type: String,
+    content_length: i64,
+    sha256: String,
+}
+
+#[derive(Debug, Serialize)]
+struct UploadIntentResponse {
+    upload_id: UploadId,
+    method: &'static str,
+    upload_url: String,
+    required_headers: BTreeMap<String, String>,
+    #[serde(with = "time::serde::rfc3339")]
+    expires_at: time::OffsetDateTime,
+}
+
+#[derive(Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 struct Source {
     upload_id: String,
 }
@@ -294,25 +351,67 @@ impl MakeRequestId for RequestIdFactory {
 }
 
 pub fn router(store: PgJobStore) -> Router {
-    build_router(store, Arc::new(UnavailableResultReader), false)
+    build_router(
+        store,
+        Arc::new(UnavailableResultReader),
+        false,
+        Arc::new(UnavailableUploadIssuer),
+        HashMap::new(),
+        false,
+    )
 }
 
 pub fn router_with_result_reader(
     store: PgJobStore,
     results: Arc<dyn ResultArtifactReader>,
 ) -> Router {
-    build_router(store, results, true)
+    build_router(
+        store,
+        results,
+        true,
+        Arc::new(UnavailableUploadIssuer),
+        HashMap::new(),
+        false,
+    )
+}
+
+pub fn router_with_upload_issuer(
+    store: PgJobStore,
+    upload_buckets: HashMap<String, String>,
+    uploads: Arc<dyn UploadIntentIssuer>,
+) -> Router {
+    build_router(
+        store,
+        Arc::new(UnavailableResultReader),
+        false,
+        uploads,
+        upload_buckets,
+        true,
+    )
+}
+
+pub fn router_with_dependencies(
+    store: PgJobStore,
+    results: Arc<dyn ResultArtifactReader>,
+    upload_buckets: HashMap<String, String>,
+    uploads: Arc<dyn UploadIntentIssuer>,
+) -> Router {
+    build_router(store, results, true, uploads, upload_buckets, true)
 }
 
 fn build_router(
     store: PgJobStore,
     results: Arc<dyn ResultArtifactReader>,
     result_artifacts_configured: bool,
+    uploads: Arc<dyn UploadIntentIssuer>,
+    upload_buckets: HashMap<String, String>,
+    upload_intents_configured: bool,
 ) -> Router {
     let request_id_header = HeaderName::from_static(REQUEST_ID_HEADER);
     Router::new()
         .route("/healthz", get(|| async { StatusCode::OK }))
         .route("/readyz", get(readiness))
+        .route("/v1/ocr/uploads", post(create_upload))
         .route("/v1/ocr/jobs", post(create_job))
         .route("/v1/ocr/jobs/{job_id}", get(get_job))
         .route("/v1/ocr/jobs/{job_id}/result", get(get_result))
@@ -321,6 +420,9 @@ fn build_router(
             jobs: store,
             results,
             result_artifacts_configured,
+            uploads,
+            upload_buckets,
+            upload_intents_configured,
         })
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
@@ -337,7 +439,7 @@ async fn readiness(
     request: axum::extract::Request,
 ) -> Result<StatusCode, ApiError> {
     let request_id = request_id_from_extensions(request.extensions());
-    if !state.result_artifacts_configured {
+    if !state.result_artifacts_configured || !state.upload_intents_configured {
         return Err(ApiError::unavailable(request_id));
     }
     state
@@ -346,6 +448,133 @@ async fn readiness(
         .await
         .map_err(|_| ApiError::unavailable(request_id))?;
     Ok(StatusCode::OK)
+}
+
+async fn create_upload(
+    State(state): State<AppState>,
+    identity: VerifiedIdentity,
+    headers: HeaderMap,
+    payload: Result<Json<CreateUploadRequest>, JsonRejection>,
+) -> Result<(StatusCode, Json<UploadIntentResponse>), ApiError> {
+    let request_id = request_id_from_headers(&headers);
+    let idempotency_value = headers
+        .get("idempotency-key")
+        .and_then(|value| value.to_str().ok())
+        .ok_or_else(|| {
+            ApiError::bad_request(
+                "idempotency_key_required",
+                "Idempotency-Key is required",
+                request_id.clone(),
+            )
+        })?;
+    let idempotency_key = IdempotencyKey::new(idempotency_value).map_err(|_| {
+        ApiError::bad_request(
+            "invalid_idempotency_key",
+            "Idempotency-Key is invalid",
+            request_id.clone(),
+        )
+    })?;
+    let command = payload.map_err(|_| invalid_upload_request(&request_id))?.0;
+    if !is_supported_content_type(&command.content_type)
+        || !(1..=MAXIMUM_UPLOAD_BYTES).contains(&command.content_length)
+        || RequestDigest::new(&command.sha256).is_err()
+    {
+        return Err(invalid_upload_request(&request_id));
+    }
+    let bucket = state
+        .upload_buckets
+        .get(identity.0.product_id.as_str())
+        .ok_or_else(|| ApiError::unavailable(request_id.clone()))?
+        .clone();
+    let canonical =
+        serde_json::to_vec(&command).map_err(|_| invalid_upload_request(&request_id))?;
+    let request_digest = RequestDigest::new(&format!("sha256:{:x}", Sha256::digest(canonical)))
+        .map_err(|_| invalid_upload_request(&request_id))?;
+    let upload_id = UploadId::new(&format!("upl_{}", Uuid::new_v4().simple()))
+        .map_err(|_| ApiError::unavailable(request_id.clone()))?;
+    let object_name = format!(
+        "products/{}/tenants/{}/quarantine/{}",
+        identity.0.product_id.as_str(),
+        identity.0.tenant_id.as_str(),
+        upload_id.as_str()
+    );
+    let expires_at =
+        time::OffsetDateTime::now_utc() + time::Duration::minutes(UPLOAD_INTENT_TTL_MINUTES);
+    let outcome = state
+        .jobs
+        .create_upload(CreateUpload {
+            upload_id,
+            tenant_id: identity.0.tenant_id,
+            product_id: identity.0.product_id,
+            idempotency_key,
+            request_digest,
+            object_bucket: bucket,
+            object_name,
+            expected_content_type: command.content_type,
+            expected_content_length: command.content_length,
+            expected_digest: command.sha256,
+            expires_at,
+        })
+        .await
+        .map_err(|error| match error {
+            ocr_store::Error::IdempotencyConflict => ApiError::conflict(request_id.clone()),
+            _ => ApiError::unavailable(request_id.clone()),
+        })?;
+    let (status, upload) = match outcome {
+        CreateUploadOutcome::Created(upload) => (StatusCode::CREATED, upload),
+        CreateUploadOutcome::Existing(upload) => (StatusCode::OK, upload),
+    };
+    let issued = state
+        .uploads
+        .issue(&upload)
+        .await
+        .map_err(|_| ApiError::unavailable(request_id.clone()))?;
+    validate_issued_upload(&issued, &upload)
+        .map_err(|_| ApiError::unavailable(request_id.clone()))?;
+    Ok((
+        status,
+        Json(UploadIntentResponse {
+            upload_id: upload.upload_id,
+            method: "PUT",
+            upload_url: issued.upload_url,
+            required_headers: issued.required_headers,
+            expires_at: upload.expires_at,
+        }),
+    ))
+}
+
+fn invalid_upload_request(request_id: &str) -> ApiError {
+    ApiError::bad_request(
+        "invalid_upload_request",
+        "upload request is invalid",
+        request_id.to_owned(),
+    )
+}
+
+fn is_supported_content_type(value: &str) -> bool {
+    matches!(
+        value,
+        "application/pdf" | "image/jpeg" | "image/png" | "image/tiff" | "image/webp"
+    )
+}
+
+fn validate_issued_upload(
+    issued: &IssuedUpload,
+    upload: &StoredUpload,
+) -> std::result::Result<(), UploadIssueError> {
+    let uri: Uri = issued.upload_url.parse().map_err(|_| UploadIssueError)?;
+    let valid_url = uri.scheme_str() == Some("https") && uri.authority().is_some();
+    let expected_headers = BTreeMap::from([
+        (
+            "content-type".to_owned(),
+            upload.expected_content_type.clone(),
+        ),
+        ("x-goog-if-generation-match".to_owned(), "0".to_owned()),
+    ]);
+    if !valid_url || issued.required_headers != expected_headers {
+        return Err(UploadIssueError);
+    }
+    Ok(())
 }
 
 async fn create_job(

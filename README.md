@@ -51,8 +51,16 @@ Before implementation, reviewers must confirm the launch scale, residency region
 ## Current runtime configuration
 
 `DATABASE_URL` is required. `RESULT_BUCKETS` is a comma-separated allowlist of
-product/environment result buckets and enables the generation-pinned GCS result
-reader through Application Default Credentials. When the allowlist is absent,
-the process remains live for diagnostics but `/readyz` returns `503`; no result
-traffic is served. Workload Identity, rather than service-account key files, is
-the production credential source.
+product/environment result buckets. `QUARANTINE_BUCKETS` maps verified product
+IDs to isolated upload buckets as comma-separated `product=bucket` entries.
+Both adapters use Application Default Credentials and GKE Workload Identity;
+service-account key files are not accepted as application configuration. A
+missing adapter leaves liveness available for diagnostics but keeps readiness
+at `503`.
+
+`POST /v1/ocr/uploads` accepts only declared MIME, byte length, and canonical
+SHA-256 plus `Idempotency-Key`. It issues a ten-minute HTTPS PUT capability for
+an opaque service-generated object. The caller must send the returned headers.
+The declaration is never trusted as inspection: MIME, digest, size, malware,
+pixel/page, decompression, and parser limits are independently enforced before
+the upload can become an accepted document source.

@@ -5,7 +5,9 @@ use axum::{
 };
 use http_body_util::BodyExt;
 use ocr_service::{
-    router, router_with_result_reader, ResultArtifactReader, ResultReadFuture, TrustedIdentity,
+    router, router_with_result_reader, router_with_upload_issuer, IssuedUpload,
+    ResultArtifactReader, ResultReadFuture, StoredUpload, TrustedIdentity, UploadIntentIssuer,
+    UploadIssueFuture,
 };
 use ocr_store::{PgJobStore, StoredResultLocator};
 use serde_json::Value;
@@ -32,6 +34,25 @@ impl ResultArtifactReader for StaticResultReader {
     ) -> ResultReadFuture<'a> {
         let bytes = self.0.clone();
         Box::pin(async move { Ok(bytes) })
+    }
+}
+
+struct StaticUploadIssuer;
+
+impl UploadIntentIssuer for StaticUploadIssuer {
+    fn issue<'a>(&'a self, upload: &'a StoredUpload) -> UploadIssueFuture<'a> {
+        let content_type = upload.expected_content_type.clone();
+        Box::pin(async move {
+            Ok(IssuedUpload {
+                upload_url: "https://storage.googleapis.test/signed-upload".to_owned(),
+                required_headers: [
+                    ("content-type".to_owned(), content_type),
+                    ("x-goog-if-generation-match".to_owned(), "0".to_owned()),
+                ]
+                .into_iter()
+                .collect(),
+            })
+        })
     }
 }
 
@@ -392,4 +413,121 @@ async fn create_rejects_unknown_command_fields() {
     let body: Value =
         serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
     assert_eq!(body["code"], "invalid_request");
+}
+
+#[tokio::test]
+async fn upload_intent_rejects_unbounded_or_unsupported_input_before_database_work() {
+    for body in [
+        r#"{"content_type":"text/html","content_length":1024,"sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+        r#"{"content_type":"application/pdf","content_length":104857601,"sha256":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}"#,
+        r#"{"content_type":"application/pdf","content_length":1024,"sha256":"not-a-digest"}"#,
+    ] {
+        let response = router_with_upload_issuer(
+            store_without_connection(),
+            [("kora".to_owned(), "dev-kora-ocr-quarantine".to_owned())]
+                .into_iter()
+                .collect(),
+            Arc::new(StaticUploadIssuer),
+        )
+        .layer(Extension(
+            TrustedIdentity::new("kora", "ten_UPLOAD").unwrap(),
+        ))
+        .oneshot(
+            Request::post("/v1/ocr/uploads")
+                .header("content-type", "application/json")
+                .header("idempotency-key", "upload-http-invalid")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+        assert_eq!(
+            response.status(),
+            StatusCode::BAD_REQUEST,
+            "accepted {body}"
+        );
+    }
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn upload_intent_is_created_for_the_verified_scope_without_exposing_storage_names() {
+    let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL must be set");
+    let admin_url =
+        std::env::var("TEST_DATABASE_ADMIN_URL").expect("TEST_DATABASE_ADMIN_URL must be set");
+    let admin_pool = PgPoolOptions::new().connect(&admin_url).await.unwrap();
+    sqlx::query(
+        "delete from ocr_uploads where product_id = 'kora' and tenant_id = 'ten_HTTPUPLOAD' \
+         and idempotency_key = 'upload-http-1'",
+    )
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+    let pool = PgPoolOptions::new().connect(&url).await.unwrap();
+    let application = router_with_upload_issuer(
+        PgJobStore::new(pool),
+        [("kora".to_owned(), "dev-kora-ocr-quarantine".to_owned())]
+            .into_iter()
+            .collect(),
+        Arc::new(StaticUploadIssuer),
+    );
+    let body = format!(
+        r#"{{"content_type":"application/pdf","content_length":1024,"sha256":"sha256:{}"}}"#,
+        "a".repeat(64)
+    );
+
+    let response = application
+        .clone()
+        .layer(Extension(
+            TrustedIdentity::new("kora", "ten_HTTPUPLOAD").unwrap(),
+        ))
+        .oneshot(
+            Request::post("/v1/ocr/uploads")
+                .header("content-type", "application/json")
+                .header("idempotency-key", "upload-http-1")
+                .body(Body::from(body.clone()))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::CREATED);
+    let created: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert!(created["upload_id"]
+        .as_str()
+        .is_some_and(|id| id.starts_with("upl_")));
+    assert_eq!(created["method"], "PUT");
+    assert_eq!(
+        created["upload_url"],
+        "https://storage.googleapis.test/signed-upload"
+    );
+    assert_eq!(
+        created["required_headers"]["content-type"],
+        "application/pdf"
+    );
+    assert_eq!(
+        created["required_headers"]["x-goog-if-generation-match"],
+        "0"
+    );
+    assert!(created.get("object_bucket").is_none());
+    assert!(created.get("object_name").is_none());
+
+    let replay = application
+        .clone()
+        .layer(Extension(
+            TrustedIdentity::new("kora", "ten_HTTPUPLOAD").unwrap(),
+        ))
+        .oneshot(
+            Request::post("/v1/ocr/uploads")
+                .header("content-type", "application/json")
+                .header("idempotency-key", "upload-http-1")
+                .body(Body::from(body))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(replay.status(), StatusCode::OK);
+    let replayed: Value =
+        serde_json::from_slice(&replay.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(replayed["upload_id"], created["upload_id"]);
 }

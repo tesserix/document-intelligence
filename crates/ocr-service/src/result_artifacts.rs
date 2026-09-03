@@ -82,7 +82,7 @@ impl ResultArtifactReader for GcsResultReader {
     }
 }
 
-fn is_bucket_name(value: &str) -> bool {
+pub(crate) fn is_bucket_name(value: &str) -> bool {
     let bytes = value.as_bytes();
     (3..=63).contains(&bytes.len())
         && bytes.first().is_some_and(u8::is_ascii_alphanumeric)

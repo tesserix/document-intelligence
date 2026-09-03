@@ -36,6 +36,8 @@ pub enum Error {
     InvalidProductId,
     #[error("job id is invalid")]
     InvalidJobId,
+    #[error("upload id is invalid")]
+    InvalidUploadId,
     #[error("idempotency key is invalid")]
     InvalidIdempotencyKey,
     #[error("request digest must be a lowercase sha256 digest")]
@@ -246,6 +248,34 @@ impl TryFrom<String> for JobId {
 
 impl From<JobId> for String {
     fn from(value: JobId) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct UploadId(String);
+
+impl UploadId {
+    pub fn new(value: &str) -> Result<Self> {
+        validated_id(value, "upl_", Error::InvalidUploadId).map(Self)
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl TryFrom<String> for UploadId {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self> {
+        Self::new(&value)
+    }
+}
+
+impl From<UploadId> for String {
+    fn from(value: UploadId) -> Self {
         value.0
     }
 }

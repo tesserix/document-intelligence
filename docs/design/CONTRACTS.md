@@ -29,6 +29,33 @@ suite before the reusable integration is considered proven.
 - Opaque IDs are non-sequential. Cross-tenant and missing objects both return 404.
 - Times are RFC 3339 UTC. Money/cost is `{currency, decimal}` or `{currency, minor_units}`.
 
+## Create upload intent
+
+`POST /v1/ocr/uploads` requires `Idempotency-Key` and accepts no filename,
+object path, bucket, URL, tenant, product, provider, or credential:
+
+```json
+{
+  "content_type": "application/pdf",
+  "content_length": 1048576,
+  "sha256": "sha256:..."
+}
+```
+
+The hard size ceiling is 100 MiB. Declared content type is restricted to the
+P0 formats but remains untrusted until content sniffing. The response contains
+an opaque `upload_id`, `PUT`, a ten-minute HTTPS capability, its expiry, and the
+exact required request headers. Product-to-quarantine-bucket selection comes
+only from trusted runtime configuration. Bucket and object names never appear
+in the response. Replaying an identical request returns the same reservation;
+reusing the key for different input returns `409 idempotency_conflict`.
+
+The upload object name is generated from validated product/tenant/opaque IDs.
+The expected digest and length are authoritative admission conditions during
+reconciliation, even if a caller omits an advisory storage header. Inspection
+pins the exact observed object generation before promotion, so later writes
+cannot change the bytes being processed.
+
 ## Create job
 
 ```json
