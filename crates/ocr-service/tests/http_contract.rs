@@ -772,3 +772,141 @@ async fn job_creation_rejects_missing_reserved_and_foreign_uploads_as_not_found(
         assert_eq!(body["code"], "upload_not_found", "case {case}");
     }
 }
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn a_second_product_uses_the_same_contract_without_cross_product_visibility() {
+    let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL must be set");
+    let admin_url =
+        std::env::var("TEST_DATABASE_ADMIN_URL").expect("TEST_DATABASE_ADMIN_URL must be set");
+    let admin_pool = PgPoolOptions::new().connect(&admin_url).await.unwrap();
+    sqlx::query(
+        "delete from ocr_outbox where job_id in \
+         (select job_id from ocr_jobs where tenant_id = 'ten_COMPAT')",
+    )
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+    sqlx::query("delete from ocr_jobs where tenant_id = 'ten_COMPAT'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    sqlx::query(
+        "delete from ocr_upload_outbox where upload_id in \
+         (select upload_id from ocr_uploads where tenant_id = 'ten_COMPAT')",
+    )
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+    sqlx::query("delete from ocr_uploads where tenant_id = 'ten_COMPAT'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+
+    let bytes = b"%PDF-1.7";
+    let digest = format!("sha256:{:x}", Sha256::digest(bytes));
+    let calls = Arc::new(AtomicUsize::new(0));
+    let application = router_with_upload_services(
+        PgJobStore::new(PgPoolOptions::new().connect(&url).await.unwrap()),
+        [
+            ("kora".to_owned(), "dev-kora-ocr-quarantine".to_owned()),
+            ("atlas".to_owned(), "dev-atlas-ocr-quarantine".to_owned()),
+        ]
+        .into_iter()
+        .collect(),
+        Arc::new(StaticUploadIssuer),
+        Arc::new(StaticUploadArtifactReader {
+            artifact: VerifiedUploadArtifact {
+                object_generation: 81,
+                content_type: "application/pdf".to_owned(),
+                content_length: i64::try_from(bytes.len()).unwrap(),
+                digest: digest.clone(),
+            },
+            calls: Arc::clone(&calls),
+        }),
+    );
+    let request_body = format!(
+        r#"{{"content_type":"application/pdf","content_length":{},"sha256":"{digest}"}}"#,
+        bytes.len()
+    );
+    let mut upload_ids = std::collections::BTreeMap::new();
+    for product in ["kora", "atlas"] {
+        let response = application
+            .clone()
+            .layer(Extension(
+                TrustedIdentity::new(product, "ten_COMPAT").unwrap(),
+            ))
+            .oneshot(
+                Request::post("/v1/ocr/uploads")
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", format!("compat-upload-{product}"))
+                    .body(Body::from(request_body.clone()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::CREATED, "product {product}");
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert!(body.get("object_bucket").is_none());
+        upload_ids.insert(product, body["upload_id"].as_str().unwrap().to_owned());
+    }
+    assert_ne!(upload_ids["kora"], upload_ids["atlas"]);
+
+    for (caller, foreign_product) in [("kora", "atlas"), ("atlas", "kora")] {
+        let response = application
+            .clone()
+            .layer(Extension(
+                TrustedIdentity::new(caller, "ten_COMPAT").unwrap(),
+            ))
+            .oneshot(
+                Request::post(format!(
+                    "/v1/ocr/uploads/{}/complete",
+                    upload_ids[foreign_product]
+                ))
+                .body(Body::empty())
+                .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::NOT_FOUND, "caller {caller}");
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 0);
+
+    for product in ["kora", "atlas"] {
+        let upload_id = &upload_ids[product];
+        let completion = application
+            .clone()
+            .layer(Extension(
+                TrustedIdentity::new(product, "ten_COMPAT").unwrap(),
+            ))
+            .oneshot(
+                Request::post(format!("/v1/ocr/uploads/{upload_id}/complete"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(completion.status(), StatusCode::OK, "product {product}");
+
+        let job = application
+            .clone()
+            .layer(Extension(
+                TrustedIdentity::new(product, "ten_COMPAT").unwrap(),
+            ))
+            .oneshot(
+                Request::post("/v1/ocr/jobs")
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", format!("compat-job-{product}"))
+                    .body(Body::from(format!(
+                        r#"{{"source":{{"upload_id":"{upload_id}"}},"document_type":"auto"}}"#
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(job.status(), StatusCode::ACCEPTED, "product {product}");
+    }
+    assert_eq!(calls.load(Ordering::SeqCst), 2);
+}
