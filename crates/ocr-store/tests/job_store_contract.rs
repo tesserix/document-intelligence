@@ -622,6 +622,71 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
 
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL"]
+async fn claimed_upload_reload_requires_the_live_scoped_lease() {
+    let (store, admin_pool, _) = store().await;
+    sqlx::query("delete from ocr_upload_outbox where upload_id = 'upl_RELOAD'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from ocr_uploads where upload_id = 'upl_RELOAD'")
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    seed_uploaded_upload(&admin_pool, "ten_RELOAD").await;
+    let tenant_id = TenantId::new("ten_RELOAD").unwrap();
+    let product_id = ProductId::new("kora").unwrap();
+    let upload_id = UploadId::new("upl_RELOAD").unwrap();
+    store
+        .claim_upload_inspection(
+            &tenant_id,
+            &product_id,
+            &upload_id,
+            ClaimUploadInspection {
+                lease_owner: "importer-reload".to_owned(),
+            },
+        )
+        .await
+        .unwrap();
+
+    let upload = store
+        .load_claimed_upload(&tenant_id, &product_id, &upload_id, "importer-reload")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(upload.upload_id, upload_id);
+    assert_eq!(upload.state, ocr_store::UploadState::Inspecting);
+    assert!(store
+        .load_claimed_upload(&tenant_id, &product_id, &upload_id, "other-importer")
+        .await
+        .unwrap()
+        .is_none());
+    assert!(store
+        .load_claimed_upload(
+            &TenantId::new("ten_OTHER").unwrap(),
+            &product_id,
+            &upload_id,
+            "importer-reload",
+        )
+        .await
+        .unwrap()
+        .is_none());
+
+    sqlx::query(
+        "update ocr_uploads set inspection_lease_expires_at = now() - interval '1 second' \
+         where upload_id = 'upl_RELOAD'",
+    )
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+    assert!(store
+        .load_claimed_upload(&tenant_id, &product_id, &upload_id, "importer-reload",)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
 async fn exhausted_inspection_attempts_reject_the_upload_once() {
     let (store, admin_pool, _) = store().await;
     sqlx::query("delete from ocr_upload_outbox where upload_id = 'upl_EXHAUSTED'")

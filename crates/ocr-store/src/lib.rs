@@ -156,6 +156,8 @@ pub enum UploadRejectionReason {
     MalwareDetected,
     InvalidDocument,
     ParserLimitsExceeded,
+    PasswordRequired,
+    SourceConflict,
 }
 
 impl UploadRejectionReason {
@@ -164,6 +166,8 @@ impl UploadRejectionReason {
             Self::MalwareDetected => "malware_detected",
             Self::InvalidDocument => "invalid_document",
             Self::ParserLimitsExceeded => "parser_limits_exceeded",
+            Self::PasswordRequired => "password_required",
+            Self::SourceConflict => "source_conflict",
         }
     }
 }
@@ -295,6 +299,34 @@ impl PgJobStore {
         .bind(product_id.as_str())
         .bind(tenant_id.as_str())
         .bind(upload_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        row.map(stored_upload).transpose()
+    }
+
+    pub async fn load_claimed_upload(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        upload_id: &UploadId,
+        lease_owner: &str,
+    ) -> Result<Option<StoredUpload>> {
+        validate_lease_owner(lease_owner)?;
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let row = sqlx::query(
+            "select upload_id, object_bucket, object_name, expected_content_type, \
+             expected_content_length, expected_digest, expires_at, created_at, \
+             status::text as status, object_generation, uploaded_at from ocr_uploads \
+             where product_id = $1 and tenant_id = $2 and upload_id = $3 \
+             and status = 'inspecting' and inspection_lease_owner = $4 \
+             and inspection_lease_expires_at > now()",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(upload_id.as_str())
+        .bind(lease_owner)
         .fetch_optional(&mut *transaction)
         .await?;
         transaction.commit().await?;

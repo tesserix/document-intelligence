@@ -99,3 +99,10 @@ The importer-side process adapter now adds a bounded stdin/stdout protocol, a
 two-minute hard ceiling on its configurable deadline, kill-on-timeout, strict
 metadata decoding, and stable invalid/limit/password/unavailable outcomes.
 Production use still requires the reviewed disposable runtime profile.
+
+The importer coordinator now composes the short CNPG lease transaction with
+exact-generation scanning and reading, bounded parsing, create-only promotion,
+and a final atomic acceptance or permanent rejection. Dependency outages leave
+the lease recoverable for bounded retry; foreign scope, stale ownership, source
+conflicts, password requirements, and hard parser limits fail closed without
+placing document content in database events.

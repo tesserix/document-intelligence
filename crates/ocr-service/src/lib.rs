@@ -1,5 +1,7 @@
 //! HTTP boundary for the document intelligence service.
 
+mod document_reader;
+mod importer;
 mod malware;
 mod parser_process;
 mod result_artifacts;
@@ -1013,6 +1015,11 @@ fn request_id_from_headers(headers: &HeaderMap) -> String {
         .map(str::to_owned)
         .unwrap_or_else(|| Uuid::new_v4().to_string())
 }
+pub use document_reader::{GcsDocumentReaderConfigurationError, GcsUploadDocumentReader};
+pub use importer::{
+    DocumentParseError, DocumentParser, DocumentReadError, ImportError, ImportOutcome, Importer,
+    MalwareInspector, SourcePromoter, UploadDocumentReader,
+};
 pub use malware::{
     ClamdScanner, GcsUploadMalwareInspector, MalwareScanError, MalwareScanOutcome,
     UploadInspectionError, UploadInspectorConfigurationError,

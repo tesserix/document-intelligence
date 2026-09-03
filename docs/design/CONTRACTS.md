@@ -114,6 +114,15 @@ stdout at 4 KiB, discards stderr, applies one deadline to write/read/process
 completion, and kills the child on timeout. Unknown exits, malformed metadata,
 and out-of-contract success metadata are unavailable rather than successful.
 
+The importer reloads the upload through product/tenant RLS and requires the
+same unexpired lease owner before external I/O. Scanner, GCS reader, parser and
+promotion calls run after the claim transaction commits. The reader requests
+the recorded GCS generation, bounds bytes to the recorded length and 100 MiB,
+and revalidates SHA-256 before parsing. Unavailable dependencies preserve a
+recoverable lease; malware, invalid content, resource limits, password-required
+and immutable-source conflicts atomically reject with stable content-free
+reason codes. Acceptance/rejection fails closed if ownership expires mid-flow.
+
 ## Create job
 
 ```json
