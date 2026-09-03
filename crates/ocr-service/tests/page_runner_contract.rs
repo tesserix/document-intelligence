@@ -19,7 +19,7 @@ use ocr_service::{
 };
 use ocr_store::{
     CommitResultOutcome, CreateJob, CreateOutcome, CreatePageWorkflowOutcome, PgJobStore,
-    ResultLookup, StoredResultLocator,
+    ResultLookup, StoredPageArtifact, StoredResultLocator,
 };
 use sqlx::PgPool;
 
@@ -27,6 +27,19 @@ use sqlx::PgPool;
 struct RecordingProcessor {
     calls: Arc<Mutex<Vec<PageTask>>>,
     failures_remaining: Arc<Mutex<HashMap<u32, usize>>>,
+}
+
+fn page_artifact(task: &PageTask) -> StoredPageArtifact {
+    StoredPageArtifact {
+        page: task.page,
+        attempt: task.attempt,
+        activity_key: task.activity_key.clone(),
+        object_bucket: "dev-kora-ocr-pages".to_owned(),
+        object_name: format!("page-artifacts/{}.json", task.activity_key),
+        object_generation: i64::from(task.attempt),
+        object_digest: format!("sha256:{}", "a".repeat(64)),
+        content_length: 256,
+    }
 }
 
 impl RecordingProcessor {
@@ -57,7 +70,7 @@ impl PageProcessor for RecordingProcessor {
                 *remaining -= 1;
                 Err(PageProcessError::Retryable)
             } else {
-                Ok(())
+                Ok(page_artifact(&task))
             }
         })
     }
@@ -76,7 +89,7 @@ impl PageProcessor for CrashOnceProcessor {
             if task.page == 2 && !self.crashed.swap(true, Ordering::SeqCst) {
                 panic!("injected worker crash");
             }
-            Ok(())
+            Ok(page_artifact(&task))
         })
     }
 }
@@ -89,7 +102,7 @@ struct CancelOnProcess<'a> {
 }
 
 impl PageProcessor for CancelOnProcess<'_> {
-    fn process<'a>(&'a self, _task: PageTask) -> PageProcessFuture<'a> {
+    fn process<'a>(&'a self, task: PageTask) -> PageProcessFuture<'a> {
         Box::pin(async move {
             let mut stored = self
                 .store
@@ -108,7 +121,7 @@ impl PageProcessor for CancelOnProcess<'_> {
                 )
                 .await
                 .unwrap();
-            Ok(())
+            Ok(page_artifact(&task))
         })
     }
 }
@@ -154,6 +167,11 @@ async fn seed_job(store: &PgJobStore, admin_pool: &PgPool, job_id: &str, tenant_
     let upload_id =
         UploadId::new(&format!("upl_{}", tenant_id.trim_start_matches("ten_"))).unwrap();
     sqlx::query("delete from ocr_results where job_id = $1")
+        .bind(job_id)
+        .execute(admin_pool)
+        .await
+        .unwrap();
+    sqlx::query("delete from ocr_page_artifacts where job_id = $1")
         .bind(job_id)
         .execute(admin_pool)
         .await
@@ -248,6 +266,17 @@ async fn retries_only_failed_page_and_preserves_stable_activity_key() {
         PageRunnerOutcome::Progressed(PageWorkflowStatus::Completed)
     );
     assert_eq!(processor.pages(), vec![1, 2, 3, 2]);
+    let artifacts = store
+        .load_page_artifacts(&tenant, &product, &job)
+        .await
+        .unwrap();
+    assert_eq!(
+        artifacts
+            .iter()
+            .map(|artifact| artifact.page)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
 
     let calls = processor.calls.lock().unwrap();
     assert_eq!(
@@ -331,6 +360,11 @@ async fn concurrent_cancellation_wins_and_rejects_stale_page_result() {
         runner.run_once(&tenant, &product, &job).await.unwrap(),
         PageRunnerOutcome::Idle(PageWorkflowStatus::Cancelled)
     );
+    assert!(store
+        .load_page_artifacts(&tenant, &product, &job)
+        .await
+        .unwrap()
+        .is_empty());
 }
 
 #[tokio::test]

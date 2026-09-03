@@ -1,8 +1,8 @@
 //! PostgreSQL persistence for document jobs.
 
 use ocr_domain::{
-    DocumentId, DocumentVersion, IdempotencyKey, JobId, JobState, PageWorkflow, ProductId,
-    RequestDigest, TenantId, UploadId,
+    DocumentId, DocumentVersion, IdempotencyKey, JobId, JobState, PageTask, PageWorkflow,
+    ProductId, RequestDigest, TenantId, UploadId,
 };
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use thiserror::Error;
@@ -26,6 +26,8 @@ pub enum Error {
     InvalidOutboxEvent,
     #[error("stored page workflow is invalid")]
     InvalidStoredPageWorkflow,
+    #[error("stored page artifact is invalid")]
+    InvalidStoredPageArtifact,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -65,6 +67,18 @@ pub struct StoredJob {
 pub struct StoredPageWorkflow {
     pub workflow: PageWorkflow,
     pub revision: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredPageArtifact {
+    pub page: u32,
+    pub attempt: u8,
+    pub activity_key: String,
+    pub object_bucket: String,
+    pub object_name: String,
+    pub object_generation: i64,
+    pub object_digest: String,
+    pub content_length: i64,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -369,6 +383,31 @@ impl PgJobStore {
         Ok(stored)
     }
 
+    pub async fn load_page_artifacts(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        job_id: &JobId,
+    ) -> Result<Vec<StoredPageArtifact>> {
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let artifacts = sqlx::query(
+            "select page_number, attempt, activity_key, object_bucket, object_name, \
+             object_generation, object_digest, content_length from ocr_page_artifacts \
+             where job_id = $1 and product_id = $2 and tenant_id = $3 order by page_number",
+        )
+        .bind(job_id.as_str())
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .fetch_all(&mut *transaction)
+        .await?
+        .into_iter()
+        .map(stored_page_artifact)
+        .collect::<Result<Vec<_>>>()?;
+        transaction.commit().await?;
+        Ok(artifacts)
+    }
+
     pub async fn save_page_workflow(
         &self,
         tenant_id: &TenantId,
@@ -377,12 +416,105 @@ impl PgJobStore {
         expected_revision: i64,
         workflow: PageWorkflow,
     ) -> Result<SavePageWorkflowOutcome> {
+        self.save_page_workflow_with_artifacts(
+            tenant_id,
+            product_id,
+            job_id,
+            expected_revision,
+            workflow,
+            Vec::new(),
+        )
+        .await
+    }
+
+    pub async fn save_page_workflow_with_artifacts(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        job_id: &JobId,
+        expected_revision: i64,
+        workflow: PageWorkflow,
+        artifacts: Vec<StoredPageArtifact>,
+    ) -> Result<SavePageWorkflowOutcome> {
         if expected_revision < 0 || workflow.job_id() != job_id {
             return Err(Error::InvalidStoredPageWorkflow);
         }
+        validate_page_artifact_batch(job_id, &workflow, &artifacts)?;
         let checkpoint = serialize_page_workflow(&workflow)?;
         let mut transaction = self.pool.begin().await?;
         set_scope(&mut transaction, tenant_id, product_id).await?;
+        let revision = sqlx::query_scalar::<_, i64>(
+            "select revision from ocr_page_workflows where job_id = $1 and product_id = $2 \
+             and tenant_id = $3 for update",
+        )
+        .bind(job_id.as_str())
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(revision) = revision else {
+            transaction.commit().await?;
+            return Ok(SavePageWorkflowOutcome::NotFound);
+        };
+        if revision != expected_revision {
+            transaction.commit().await?;
+            return Ok(SavePageWorkflowOutcome::Conflict);
+        }
+        if !artifacts.is_empty() {
+            let pages = artifacts
+                .iter()
+                .map(|artifact| i32::try_from(artifact.page))
+                .collect::<std::result::Result<Vec<_>, _>>()
+                .map_err(|_| Error::InvalidStoredPageArtifact)?;
+            let attempts = artifacts
+                .iter()
+                .map(|artifact| i16::from(artifact.attempt))
+                .collect::<Vec<_>>();
+            let activity_keys = artifacts
+                .iter()
+                .map(|artifact| artifact.activity_key.clone())
+                .collect::<Vec<_>>();
+            let buckets = artifacts
+                .iter()
+                .map(|artifact| artifact.object_bucket.clone())
+                .collect::<Vec<_>>();
+            let names = artifacts
+                .iter()
+                .map(|artifact| artifact.object_name.clone())
+                .collect::<Vec<_>>();
+            let generations = artifacts
+                .iter()
+                .map(|artifact| artifact.object_generation)
+                .collect::<Vec<_>>();
+            let digests = artifacts
+                .iter()
+                .map(|artifact| artifact.object_digest.clone())
+                .collect::<Vec<_>>();
+            let lengths = artifacts
+                .iter()
+                .map(|artifact| artifact.content_length)
+                .collect::<Vec<_>>();
+            sqlx::query(
+                "insert into ocr_page_artifacts (job_id, product_id, tenant_id, page_number, \
+                 attempt, activity_key, object_bucket, object_name, object_generation, \
+                 object_digest, content_length) select $1, $2, $3, batch.* from unnest( \
+                 $4::integer[], $5::smallint[], $6::text[], $7::text[], $8::text[], \
+                 $9::bigint[], $10::text[], $11::bigint[]) as batch",
+            )
+            .bind(job_id.as_str())
+            .bind(product_id.as_str())
+            .bind(tenant_id.as_str())
+            .bind(pages)
+            .bind(attempts)
+            .bind(activity_keys)
+            .bind(buckets)
+            .bind(names)
+            .bind(generations)
+            .bind(digests)
+            .bind(lengths)
+            .execute(&mut *transaction)
+            .await?;
+        }
         let updated = sqlx::query(
             "update ocr_page_workflows set checkpoint = $5::jsonb, revision = revision + 1, \
              updated_at = now() where job_id = $1 and product_id = $2 and tenant_id = $3 \
@@ -400,21 +532,7 @@ impl PgJobStore {
             transaction.commit().await?;
             return Ok(SavePageWorkflowOutcome::Saved(stored));
         }
-        let exists = sqlx::query_scalar::<_, bool>(
-            "select exists(select 1 from ocr_page_workflows where job_id = $1 \
-             and product_id = $2 and tenant_id = $3)",
-        )
-        .bind(job_id.as_str())
-        .bind(product_id.as_str())
-        .bind(tenant_id.as_str())
-        .fetch_one(&mut *transaction)
-        .await?;
-        transaction.commit().await?;
-        Ok(if exists {
-            SavePageWorkflowOutcome::Conflict
-        } else {
-            SavePageWorkflowOutcome::NotFound
-        })
+        Err(Error::InvalidStoredPageWorkflow)
     }
 
     pub async fn claim_job_outbox(
@@ -1369,6 +1487,25 @@ fn stored_page_workflow(row: sqlx::postgres::PgRow) -> Result<StoredPageWorkflow
     Ok(StoredPageWorkflow { workflow, revision })
 }
 
+fn stored_page_artifact(row: sqlx::postgres::PgRow) -> Result<StoredPageArtifact> {
+    let page = u32::try_from(row.try_get::<i32, _>("page_number")?)
+        .map_err(|_| Error::InvalidStoredPageArtifact)?;
+    let attempt = u8::try_from(row.try_get::<i16, _>("attempt")?)
+        .map_err(|_| Error::InvalidStoredPageArtifact)?;
+    let artifact = StoredPageArtifact {
+        page,
+        attempt,
+        activity_key: row.try_get("activity_key")?,
+        object_bucket: row.try_get("object_bucket")?,
+        object_name: row.try_get("object_name")?,
+        object_generation: row.try_get("object_generation")?,
+        object_digest: row.try_get("object_digest")?,
+        content_length: row.try_get("content_length")?,
+    };
+    validate_page_artifact(&artifact)?;
+    Ok(artifact)
+}
+
 fn stored_result_locator(row: sqlx::postgres::PgRow) -> Result<StoredResultLocator> {
     let locator = StoredResultLocator {
         document_id: DocumentId::new(row.try_get("document_id")?)
@@ -1585,6 +1722,67 @@ fn validate_locator(locator: &StoredResultLocator) -> Result<()> {
         || !digest_is_valid
     {
         return Err(Error::InvalidStoredResult);
+    }
+    Ok(())
+}
+
+fn validate_page_artifact(artifact: &StoredPageArtifact) -> Result<()> {
+    let digest = artifact.object_digest.strip_prefix("sha256:");
+    let digest_is_valid = digest.is_some_and(|value| {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    if !(1..=300).contains(&artifact.page)
+        || !(1..=10).contains(&artifact.attempt)
+        || artifact.activity_key.is_empty()
+        || artifact.activity_key.len() > 160
+        || artifact.object_bucket.len() < 3
+        || artifact.object_bucket.len() > 222
+        || artifact.object_name.is_empty()
+        || artifact.object_name.len() > 1024
+        || artifact.object_generation <= 0
+        || !(1..=16_777_216).contains(&artifact.content_length)
+        || !digest_is_valid
+    {
+        return Err(Error::InvalidStoredPageArtifact);
+    }
+    Ok(())
+}
+
+fn validate_page_artifact_batch(
+    job_id: &JobId,
+    workflow: &PageWorkflow,
+    artifacts: &[StoredPageArtifact],
+) -> Result<()> {
+    if artifacts.len() > 64 {
+        return Err(Error::InvalidStoredPageArtifact);
+    }
+    let mut pages = Vec::with_capacity(artifacts.len());
+    for artifact in artifacts {
+        validate_page_artifact(artifact)?;
+        let expected_key = format!(
+            "ocr-job-{}-page-{}-attempt-{}",
+            job_id.as_str(),
+            artifact.page,
+            artifact.attempt
+        );
+        if artifact.activity_key != expected_key {
+            return Err(Error::InvalidStoredPageArtifact);
+        }
+        if !workflow.is_successful_task(&PageTask {
+            page: artifact.page,
+            attempt: artifact.attempt,
+            activity_key: artifact.activity_key.clone(),
+        }) {
+            return Err(Error::InvalidStoredPageArtifact);
+        }
+        pages.push(artifact.page);
+    }
+    pages.sort_unstable();
+    if pages.windows(2).any(|pages| pages[0] == pages[1]) {
+        return Err(Error::InvalidStoredPageArtifact);
     }
     Ok(())
 }

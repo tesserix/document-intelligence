@@ -165,6 +165,11 @@ async fn store() -> (PgJobStore, PgPool, PgPool) {
 
 async fn clear_fixture(admin_pool: &PgPool, job_ids: &[&str]) {
     for job_id in job_ids {
+        sqlx::query("delete from ocr_page_artifacts where job_id = $1")
+            .bind(job_id)
+            .execute(admin_pool)
+            .await
+            .unwrap();
         sqlx::query("delete from ocr_page_workflows where job_id = $1")
             .bind(job_id)
             .execute(admin_pool)

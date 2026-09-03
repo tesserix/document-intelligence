@@ -2,7 +2,7 @@ use std::{future::Future, pin::Pin};
 
 use futures_util::{stream, StreamExt};
 use ocr_domain::{JobId, PageTask, PageWorkflowStatus, ProductId, TenantId};
-use ocr_store::{PgJobStore, SavePageWorkflowOutcome};
+use ocr_store::{PgJobStore, SavePageWorkflowOutcome, StoredPageArtifact};
 use thiserror::Error;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -12,7 +12,7 @@ pub enum PageProcessError {
 }
 
 pub type PageProcessFuture<'a> =
-    Pin<Box<dyn Future<Output = Result<(), PageProcessError>> + Send + 'a>>;
+    Pin<Box<dyn Future<Output = Result<StoredPageArtifact, PageProcessError>> + Send + 'a>>;
 
 pub trait PageProcessor: Send + Sync {
     fn process<'a>(&'a self, task: PageTask) -> PageProcessFuture<'a>;
@@ -106,9 +106,13 @@ where
         .collect::<Vec<_>>()
         .await;
 
+        let mut artifacts = Vec::new();
         for (task, outcome) in outcomes {
             match outcome {
-                Ok(()) => stored.workflow.record_success(&task)?,
+                Ok(artifact) => {
+                    stored.workflow.record_success(&task)?;
+                    artifacts.push(artifact);
+                }
                 Err(PageProcessError::Retryable) => {
                     stored.workflow.record_retryable_failure(&task)?;
                 }
@@ -120,12 +124,13 @@ where
         let status = stored.workflow.status();
         match self
             .store
-            .save_page_workflow(
+            .save_page_workflow_with_artifacts(
                 tenant_id,
                 product_id,
                 job_id,
                 stored.revision,
                 stored.workflow,
+                artifacts,
             )
             .await?
         {

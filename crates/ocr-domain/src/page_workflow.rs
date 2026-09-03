@@ -22,7 +22,7 @@ pub struct PageTask {
 enum PageProgress {
     Pending { failures: u8 },
     Running { attempt: u8 },
-    Succeeded,
+    Succeeded { attempt: u8 },
     Exhausted { attempts: u8 },
     PermanentlyFailed { attempt: u8 },
 }
@@ -56,7 +56,9 @@ impl TryFrom<RawPageWorkflow> for PageWorkflow {
             || value.pages.iter().any(|page| match page {
                 PageProgress::Pending { failures } => *failures >= value.max_attempts,
                 PageProgress::Running { attempt } => *attempt == 0 || *attempt > value.max_attempts,
-                PageProgress::Succeeded => false,
+                PageProgress::Succeeded { attempt } => {
+                    *attempt == 0 || *attempt > value.max_attempts
+                }
                 PageProgress::Exhausted { attempts } => *attempts != value.max_attempts,
                 PageProgress::PermanentlyFailed { attempt } => {
                     *attempt == 0 || *attempt > value.max_attempts
@@ -94,13 +96,13 @@ impl PageWorkflow {
         } else if self
             .pages
             .iter()
-            .all(|page| matches!(page, PageProgress::Succeeded))
+            .all(|page| matches!(page, PageProgress::Succeeded { .. }))
         {
             PageWorkflowStatus::Completed
         } else if self.pages.iter().all(|page| {
             matches!(
                 page,
-                PageProgress::Succeeded
+                PageProgress::Succeeded { .. }
                     | PageProgress::Exhausted { .. }
                     | PageProgress::PermanentlyFailed { .. }
             )
@@ -135,7 +137,7 @@ impl PageWorkflow {
                     *progress = PageProgress::Running { attempt };
                     attempt
                 }
-                PageProgress::Succeeded
+                PageProgress::Succeeded { .. }
                 | PageProgress::Exhausted { .. }
                 | PageProgress::PermanentlyFailed { .. } => continue,
             };
@@ -151,8 +153,22 @@ impl PageWorkflow {
 
     pub fn record_success(&mut self, task: &PageTask) -> Result<()> {
         let progress = self.active_progress(task)?;
-        *progress = PageProgress::Succeeded;
+        *progress = PageProgress::Succeeded {
+            attempt: task.attempt,
+        };
         Ok(())
+    }
+
+    pub fn is_successful_task(&self, task: &PageTask) -> bool {
+        if task.page == 0 || task.activity_key != self.activity_key(task.page, task.attempt) {
+            return false;
+        }
+        usize::try_from(task.page - 1)
+            .ok()
+            .and_then(|index| self.pages.get(index))
+            .is_some_and(
+                |progress| matches!(progress, PageProgress::Succeeded { attempt } if *attempt == task.attempt),
+            )
     }
 
     pub fn record_retryable_failure(&mut self, task: &PageTask) -> Result<()> {
