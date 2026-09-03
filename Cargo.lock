@@ -1466,6 +1466,7 @@ name = "ocr-engine"
 version = "0.1.0"
 dependencies = [
  "image",
+ "ocr-domain",
  "serde",
  "serde_json",
  "thiserror",

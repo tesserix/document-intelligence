@@ -1,9 +1,10 @@
 use std::collections::BTreeMap;
 
 use ocr_domain::{
-    Confidence, ConfidenceDimensions, Cost, DocumentId, DocumentResult, DocumentResultPayload,
-    DocumentTable, DocumentVersion, Evidence, ExtractedValue, NormalizedPoint, PageNumber, Polygon,
-    ProcessingProvenance, StableCode, TableCell, TableId, ValidationFailure, ValidationSeverity,
+    Confidence, ConfidenceDimensions, Cost, DocumentId, DocumentPage, DocumentResult,
+    DocumentResultPayload, DocumentTable, DocumentVersion, Evidence, ExtractedValue,
+    NormalizedPoint, ObservationLevel, PageNumber, Polygon, ProcessingProvenance, StableCode,
+    TableCell, TableId, TextObservation, ValidationFailure, ValidationSeverity,
 };
 use serde_json::json;
 
@@ -122,12 +123,29 @@ fn deserialization_cannot_bypass_domain_invariants() {
 #[test]
 fn result_serializes_the_complete_provider_neutral_contract() {
     let source = evidence();
+    let observation = TextObservation::new(
+        source.observation_id.clone(),
+        ObservationLevel::Line,
+        "Invoice INV-1048",
+        Confidence::new(0.96).unwrap(),
+        source.polygon.clone(),
+        0,
+        None,
+    )
+    .unwrap();
     let result = DocumentResult::new(
         DocumentId::new("doc_01JCOMPLETE").unwrap(),
         DocumentVersion::new(&format!("sha256:{}", "b".repeat(64))).unwrap(),
         DocumentResultPayload {
             text: "Invoice INV-1048".to_owned(),
             markdown: "# Invoice INV-1048".to_owned(),
+            pages: vec![DocumentPage::new(
+                PageNumber::new(1).unwrap(),
+                1000,
+                1400,
+                vec![observation],
+            )
+            .unwrap()],
             fields: BTreeMap::new(),
             tables: vec![DocumentTable::new(
                 TableId::new("tbl_TOTALS").unwrap(),
@@ -164,6 +182,8 @@ fn result_serializes_the_complete_provider_neutral_contract() {
 
     let encoded = serde_json::to_value(result).unwrap();
     assert_eq!(encoded["text"], "Invoice INV-1048");
+    assert_eq!(encoded["pages"][0]["observations"][0]["level"], "line");
+    assert_eq!(encoded["pages"][0]["observations"][0]["reading_order"], 0);
     assert_eq!(encoded["tables"][0]["cells"][0]["text"], "Total");
     assert_eq!(encoded["confidence"]["overall"], 0.96);
     assert_eq!(encoded["validation_failures"][0]["severity"], "warning");
@@ -189,4 +209,40 @@ fn complete_result_rejects_uncited_content_and_invalid_metadata() {
     assert!(Cost::new("usd", "NaN").is_err());
     assert!(ProcessingProvenance::new("", "model", "profile", 1).is_err());
     assert!(TableCell::new(0, 0, "Total", Confidence::new(0.9).unwrap(), vec![]).is_err());
+}
+
+#[test]
+fn page_observations_require_bounded_geometry_and_unique_reading_order() {
+    let source = evidence();
+    let observation = || {
+        TextObservation::new(
+            source.observation_id.clone(),
+            ObservationLevel::Word,
+            "Invoice",
+            Confidence::new(0.98).unwrap(),
+            source.polygon.clone(),
+            0,
+            None,
+        )
+        .unwrap()
+    };
+
+    assert!(DocumentPage::new(PageNumber::new(1).unwrap(), 0, 1400, vec![]).is_err());
+    assert!(DocumentPage::new(
+        PageNumber::new(1).unwrap(),
+        1000,
+        1400,
+        vec![observation(), observation()],
+    )
+    .is_err());
+    assert!(TextObservation::new(
+        source.observation_id,
+        ObservationLevel::Line,
+        "   ",
+        Confidence::new(0.9).unwrap(),
+        source.polygon,
+        0,
+        None,
+    )
+    .is_err());
 }

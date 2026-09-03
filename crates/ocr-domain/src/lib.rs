@@ -58,6 +58,10 @@ pub enum Error {
     InvalidProcessingProvenance,
     #[error("cost is invalid")]
     InvalidCost,
+    #[error("text observation is invalid")]
+    InvalidTextObservation,
+    #[error("document page is invalid")]
+    InvalidDocumentPage,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -546,7 +550,7 @@ fn is_canonical_sha256(value: &str) -> bool {
             .all(|byte| byte.is_ascii_hexdigit() && !byte.is_ascii_uppercase())
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
 #[serde(try_from = "String", into = "String")]
 pub struct ObservationId(String);
 
@@ -600,6 +604,143 @@ impl Evidence {
             polygon,
             observation_id,
         }
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ObservationLevel {
+    Page,
+    Paragraph,
+    Line,
+    Word,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawTextObservation")]
+pub struct TextObservation {
+    pub observation_id: ObservationId,
+    pub level: ObservationLevel,
+    pub text: String,
+    pub confidence: Confidence,
+    pub polygon: Polygon,
+    pub reading_order: u32,
+    pub parent_observation_id: Option<ObservationId>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTextObservation {
+    observation_id: ObservationId,
+    level: ObservationLevel,
+    text: String,
+    confidence: Confidence,
+    polygon: Polygon,
+    reading_order: u32,
+    parent_observation_id: Option<ObservationId>,
+}
+
+impl TryFrom<RawTextObservation> for TextObservation {
+    type Error = Error;
+
+    fn try_from(value: RawTextObservation) -> Result<Self> {
+        Self::new(
+            value.observation_id,
+            value.level,
+            value.text,
+            value.confidence,
+            value.polygon,
+            value.reading_order,
+            value.parent_observation_id,
+        )
+    }
+}
+
+impl TextObservation {
+    pub fn new(
+        observation_id: ObservationId,
+        level: ObservationLevel,
+        text: impl Into<String>,
+        confidence: Confidence,
+        polygon: Polygon,
+        reading_order: u32,
+        parent_observation_id: Option<ObservationId>,
+    ) -> Result<Self> {
+        let text = text.into();
+        if text.trim().is_empty() || text.len() > 65_536 {
+            return Err(Error::InvalidTextObservation);
+        }
+        if parent_observation_id.as_ref() == Some(&observation_id) {
+            return Err(Error::InvalidTextObservation);
+        }
+        Ok(Self {
+            observation_id,
+            level,
+            text,
+            confidence,
+            polygon,
+            reading_order,
+            parent_observation_id,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawDocumentPage")]
+pub struct DocumentPage {
+    pub page: PageNumber,
+    pub width: u32,
+    pub height: u32,
+    pub observations: Vec<TextObservation>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDocumentPage {
+    page: PageNumber,
+    width: u32,
+    height: u32,
+    observations: Vec<TextObservation>,
+}
+
+impl TryFrom<RawDocumentPage> for DocumentPage {
+    type Error = Error;
+
+    fn try_from(value: RawDocumentPage) -> Result<Self> {
+        Self::new(value.page, value.width, value.height, value.observations)
+    }
+}
+
+impl DocumentPage {
+    pub fn new(
+        page: PageNumber,
+        width: u32,
+        height: u32,
+        mut observations: Vec<TextObservation>,
+    ) -> Result<Self> {
+        if width == 0 || height == 0 || observations.len() > 100_000 {
+            return Err(Error::InvalidDocumentPage);
+        }
+        observations.sort_by_key(|observation| observation.reading_order);
+        let mut seen_ids = std::collections::BTreeSet::new();
+        let mut seen_orders = std::collections::BTreeSet::new();
+        for observation in &observations {
+            if !seen_orders.insert(observation.reading_order)
+                || observation
+                    .parent_observation_id
+                    .as_ref()
+                    .is_some_and(|parent| !seen_ids.contains(parent))
+                || !seen_ids.insert(observation.observation_id.clone())
+            {
+                return Err(Error::InvalidDocumentPage);
+            }
+        }
+        Ok(Self {
+            page,
+            width,
+            height,
+            observations,
+        })
     }
 }
 
@@ -946,6 +1087,7 @@ impl Cost {
 pub struct DocumentResultPayload {
     pub text: String,
     pub markdown: String,
+    pub pages: Vec<DocumentPage>,
     pub fields: BTreeMap<String, ExtractedValue>,
     pub tables: Vec<DocumentTable>,
     pub confidence: Option<ConfidenceDimensions>,
@@ -971,6 +1113,7 @@ pub struct DocumentResult {
     content_trust: ContentTrust,
     pub text: String,
     pub markdown: String,
+    pub pages: Vec<DocumentPage>,
     pub fields: BTreeMap<String, ExtractedValue>,
     pub tables: Vec<DocumentTable>,
     pub confidence: Option<ConfidenceDimensions>,
@@ -995,6 +1138,8 @@ struct RawDocumentResult {
     text: String,
     #[serde(default)]
     markdown: String,
+    #[serde(default)]
+    pages: Vec<DocumentPage>,
     #[serde(default)]
     fields: BTreeMap<String, ExtractedValue>,
     #[serde(default)]
@@ -1039,6 +1184,7 @@ impl TryFrom<RawDocumentResult> for DocumentResult {
             DocumentResultPayload {
                 text: value.text,
                 markdown: value.markdown,
+                pages: value.pages,
                 fields: value.fields,
                 tables: value.tables,
                 confidence: value.confidence,
@@ -1056,7 +1202,7 @@ impl DocumentResult {
     pub fn new(
         document_id: DocumentId,
         document_version: DocumentVersion,
-        payload: DocumentResultPayload,
+        mut payload: DocumentResultPayload,
     ) -> Result<Self> {
         if (!payload.text.is_empty() || !payload.markdown.is_empty())
             && payload.citations.is_empty()
@@ -1070,6 +1216,17 @@ impl DocumentResult {
         {
             return Err(Error::InvalidFieldName);
         }
+        if payload.pages.len() > 300 {
+            return Err(Error::InvalidDocumentPage);
+        }
+        payload.pages.sort_by_key(|page| u32::from(page.page));
+        if payload
+            .pages
+            .windows(2)
+            .any(|pages| pages[0].page == pages[1].page)
+        {
+            return Err(Error::InvalidDocumentPage);
+        }
         let provenance = payload.provenance;
         Ok(Self {
             schema_version: RESULT_SCHEMA_VERSION.to_owned(),
@@ -1078,6 +1235,7 @@ impl DocumentResult {
             content_trust: ContentTrust::Untrusted,
             text: payload.text,
             markdown: payload.markdown,
+            pages: payload.pages,
             fields: payload.fields,
             tables: payload.tables,
             confidence: payload.confidence,

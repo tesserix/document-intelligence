@@ -2,10 +2,12 @@
 
 mod detection;
 mod geometry;
+mod page;
 mod recognition;
 
 pub use detection::{select_regions, DetectionCandidate, DetectionLimits};
 pub use geometry::{CropRegion, Rotation, TransformChain, TransformStep};
+pub use page::build_page_observations;
 pub use recognition::{assemble_recognitions, RecognitionAlternative, RecognizedRegion};
 
 use std::io::Cursor;
@@ -44,6 +46,8 @@ pub enum Error {
     InvalidRecognition,
     #[error("recognizer batch does not exactly cover detector regions")]
     InvalidRecognitionBatch,
+    #[error("page observation output is invalid")]
+    InvalidPageObservation,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
