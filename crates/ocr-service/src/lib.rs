@@ -4,12 +4,17 @@ mod document_reader;
 mod importer;
 mod malware;
 mod outbox_relay;
+mod page_runner;
 mod parser_process;
 mod result_artifacts;
 mod source_promotion;
 mod upload_artifacts;
 mod upload_intents;
 
+pub use page_runner::{
+    CheckpointedPageRunner, PageProcessError, PageProcessFuture, PageProcessor, PageRunnerError,
+    PageRunnerOutcome,
+};
 pub use parser_process::{
     ParserInspectionReport, ParserProcess, ParserProcessError, PARSER_PROFILE, PARSER_VERSION,
 };

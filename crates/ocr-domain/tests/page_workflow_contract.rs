@@ -49,3 +49,15 @@ fn cancellation_is_idempotent_and_stops_new_or_stale_page_work() {
     let resumed: PageWorkflow = serde_json::from_slice(&checkpoint).unwrap();
     assert_eq!(resumed.status(), PageWorkflowStatus::Cancelled);
 }
+
+#[test]
+fn permanent_failure_exhausts_only_the_failed_page() {
+    let mut workflow = PageWorkflow::new(JobId::new("job_PAGE_PERMANENT").unwrap(), 2, 3).unwrap();
+    let tasks = workflow.claim_ready(2).unwrap();
+
+    workflow.record_permanent_failure(&tasks[0]).unwrap();
+    workflow.record_success(&tasks[1]).unwrap();
+
+    assert_eq!(workflow.status(), PageWorkflowStatus::Partial);
+    assert!(workflow.claim_ready(2).unwrap().is_empty());
+}

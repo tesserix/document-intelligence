@@ -24,6 +24,7 @@ enum PageProgress {
     Running { attempt: u8 },
     Succeeded,
     Exhausted { attempts: u8 },
+    PermanentlyFailed { attempt: u8 },
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -57,6 +58,9 @@ impl TryFrom<RawPageWorkflow> for PageWorkflow {
                 PageProgress::Running { attempt } => *attempt == 0 || *attempt > value.max_attempts,
                 PageProgress::Succeeded => false,
                 PageProgress::Exhausted { attempts } => *attempts != value.max_attempts,
+                PageProgress::PermanentlyFailed { attempt } => {
+                    *attempt == 0 || *attempt > value.max_attempts
+                }
             })
         {
             return Err(Error::InvalidPageWorkflow);
@@ -96,7 +100,9 @@ impl PageWorkflow {
         } else if self.pages.iter().all(|page| {
             matches!(
                 page,
-                PageProgress::Succeeded | PageProgress::Exhausted { .. }
+                PageProgress::Succeeded
+                    | PageProgress::Exhausted { .. }
+                    | PageProgress::PermanentlyFailed { .. }
             )
         }) {
             PageWorkflowStatus::Partial
@@ -129,7 +135,9 @@ impl PageWorkflow {
                     *progress = PageProgress::Running { attempt };
                     attempt
                 }
-                PageProgress::Succeeded | PageProgress::Exhausted { .. } => continue,
+                PageProgress::Succeeded
+                | PageProgress::Exhausted { .. }
+                | PageProgress::PermanentlyFailed { .. } => continue,
             };
             let page = u32::try_from(index + 1).map_err(|_| Error::InvalidPageWorkflow)?;
             tasks.push(PageTask {
@@ -158,6 +166,14 @@ impl PageWorkflow {
             PageProgress::Pending {
                 failures: task.attempt,
             }
+        };
+        Ok(())
+    }
+
+    pub fn record_permanent_failure(&mut self, task: &PageTask) -> Result<()> {
+        let progress = self.active_progress(task)?;
+        *progress = PageProgress::PermanentlyFailed {
+            attempt: task.attempt,
         };
         Ok(())
     }
