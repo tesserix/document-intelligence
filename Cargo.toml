@@ -16,6 +16,7 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 tokio = { version = "1.47", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
 bytes = "1.10"
 futures-util = "0.3"
+futures = "0.3"
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["limit", "request-id", "timeout", "trace"] }
@@ -39,3 +40,6 @@ url = "2.5"
 lopdf = { version = "0.44", default-features = false }
 temporalio-client = { version = "=0.8.0", default-features = false }
 temporalio-common = { version = "=0.8.0", default-features = false, features = ["serde_serialize"] }
+temporalio-macros = "=0.8.0"
+temporalio-sdk = { version = "=0.8.0", default-features = false }
+temporalio-workflow = "=0.8.0"

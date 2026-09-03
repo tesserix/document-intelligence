@@ -12,9 +12,12 @@ use temporalio_client::{
     errors::{WorkflowInteractionError, WorkflowStartError},
     Client, RpcOptions, UntypedWorkflow, WorkflowCancelOptions, WorkflowStartOptions,
 };
-use temporalio_common::{
-    protos::temporal::api::enums::v1::WorkflowIdReusePolicy, HasWorkflowDefinition,
-    WorkflowDefinition,
+use temporalio_common::{protos::temporal::api::enums::v1::WorkflowIdReusePolicy, RetryPolicy};
+use temporalio_macros::{activities, workflow, workflow_methods};
+use temporalio_sdk::{
+    activities::{ActivityContext, ActivityError},
+    ActivityCancellationType, ActivityOptions, ContinueAsNewOptions, WorkflowContext,
+    WorkflowResult,
 };
 use thiserror::Error;
 
@@ -22,7 +25,6 @@ const WORKFLOW_SCHEMA_VERSION: &str = "1";
 const MAX_PAGE_COUNT: u32 = 300;
 const MAX_WORKFLOW_INPUT_BYTES: usize = 512;
 const TEMPORAL_RPC_TIMEOUT: Duration = Duration::from_secs(5);
-const OCR_WORKFLOW_TYPE: &str = "ocr_document_v1";
 const PAGES_PER_RUN: u32 = 50;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
@@ -32,6 +34,98 @@ pub struct WorkflowInput {
     tenant_id: TenantId,
     job_id: JobId,
     page_count: u32,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct WorkflowRunInput {
+    schema_version: String,
+    product_id: ProductId,
+    tenant_id: TenantId,
+    job_id: JobId,
+    page_count: u32,
+    next_page: u32,
+    run_number: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WireWorkflowRunInput {
+    schema_version: String,
+    product_id: ProductId,
+    tenant_id: TenantId,
+    job_id: JobId,
+    page_count: u32,
+    next_page: u32,
+    run_number: u32,
+}
+
+impl<'de> Deserialize<'de> for WorkflowRunInput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = WireWorkflowRunInput::deserialize(deserializer)?;
+        let expected_next_page = wire
+            .run_number
+            .checked_sub(1)
+            .and_then(|run| run.checked_mul(PAGES_PER_RUN))
+            .and_then(|page| page.checked_add(1));
+        if wire.schema_version != WORKFLOW_SCHEMA_VERSION
+            || !(1..=MAX_PAGE_COUNT).contains(&wire.page_count)
+            || expected_next_page != Some(wire.next_page)
+            || wire.next_page > wire.page_count
+        {
+            return Err(serde::de::Error::custom("invalid workflow run input"));
+        }
+        Ok(Self {
+            schema_version: wire.schema_version,
+            product_id: wire.product_id,
+            tenant_id: wire.tenant_id,
+            job_id: wire.job_id,
+            page_count: wire.page_count,
+            next_page: wire.next_page,
+            run_number: wire.run_number,
+        })
+    }
+}
+
+impl WorkflowRunInput {
+    pub fn first(input: WorkflowInput) -> Self {
+        Self {
+            schema_version: input.schema_version.to_owned(),
+            product_id: input.product_id,
+            tenant_id: input.tenant_id,
+            job_id: input.job_id,
+            page_count: input.page_count,
+            next_page: 1,
+            run_number: 1,
+        }
+    }
+
+    pub fn run_number(&self) -> u32 {
+        self.run_number
+    }
+
+    pub fn page_range(&self) -> RangeInclusive<u32> {
+        let last_page = self
+            .next_page
+            .saturating_add(PAGES_PER_RUN - 1)
+            .min(self.page_count);
+        self.next_page..=last_page
+    }
+
+    pub fn next_run(&self) -> Option<Self> {
+        let next_page = self.page_range().end().saturating_add(1);
+        (next_page <= self.page_count).then(|| Self {
+            schema_version: self.schema_version.clone(),
+            product_id: self.product_id.clone(),
+            tenant_id: self.tenant_id.clone(),
+            job_id: self.job_id.clone(),
+            page_count: self.page_count,
+            next_page,
+            run_number: self.run_number.saturating_add(1),
+        })
+    }
 }
 
 #[derive(Deserialize)]
@@ -238,19 +332,122 @@ pub enum GatewayError {
     Unavailable,
 }
 
-struct OcrDocumentWorkflow;
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct PageActivityInput {
+    product_id: ProductId,
+    tenant_id: TenantId,
+    job_id: JobId,
+    page: u32,
+}
 
-impl WorkflowDefinition for OcrDocumentWorkflow {
-    type Input = WorkflowInput;
-    type Output = ();
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct WirePageActivityInput {
+    product_id: ProductId,
+    tenant_id: TenantId,
+    job_id: JobId,
+    page: u32,
+}
 
-    fn name(&self) -> &str {
-        OCR_WORKFLOW_TYPE
+impl<'de> Deserialize<'de> for PageActivityInput {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let wire = WirePageActivityInput::deserialize(deserializer)?;
+        if !(1..=MAX_PAGE_COUNT).contains(&wire.page) {
+            return Err(serde::de::Error::custom("invalid page activity input"));
+        }
+        Ok(Self {
+            product_id: wire.product_id,
+            tenant_id: wire.tenant_id,
+            job_id: wire.job_id,
+            page: wire.page,
+        })
     }
 }
 
-impl HasWorkflowDefinition for OcrDocumentWorkflow {
-    type Run = Self;
+impl WorkflowRunInput {
+    fn page_activity_input(&self, page: u32) -> PageActivityInput {
+        PageActivityInput {
+            product_id: self.product_id.clone(),
+            tenant_id: self.tenant_id.clone(),
+            job_id: self.job_id.clone(),
+            page,
+        }
+    }
+}
+
+pub struct QualificationPageActivities;
+
+#[activities]
+impl QualificationPageActivities {
+    #[activity(name = "ocr_page_v1")]
+    pub async fn process_page(
+        ctx: ActivityContext,
+        input: PageActivityInput,
+    ) -> Result<u32, ActivityError> {
+        if ctx.is_cancelled() {
+            return Err(ActivityError::cancelled());
+        }
+        ctx.record_heartbeat(input.page).await?;
+        tokio::task::yield_now().await;
+        if ctx.is_cancelled() {
+            return Err(ActivityError::cancelled());
+        }
+        Ok(input.page)
+    }
+}
+
+pub fn page_activity_options(page: u32) -> ActivityOptions {
+    let policy = ActivityPolicy::page_ocr();
+    let retry_policy = RetryPolicy::builder()
+        .initial_interval(policy.initial_backoff())
+        .maximum_interval(policy.maximum_backoff())
+        .maximum_attempts(policy.maximum_attempts())
+        .non_retryable_error_types(policy.non_retryable_errors().iter().copied())
+        .build();
+    ActivityOptions::with_start_to_close_timeout(policy.start_to_close_timeout())
+        .activity_id(format!("ocr-page-{page:04}"))
+        .heartbeat_timeout(policy.heartbeat_timeout())
+        .cancellation_type(ActivityCancellationType::WaitCancellationCompleted)
+        .retry_policy(retry_policy)
+        .build()
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct WorkflowResultMetadata {
+    pub pages_processed: u32,
+    pub runs: u32,
+}
+
+#[workflow]
+#[derive(Default)]
+pub struct OcrDocumentWorkflow;
+
+#[workflow_methods]
+impl OcrDocumentWorkflow {
+    #[run(name = "ocr_document_v1")]
+    pub async fn run(
+        ctx: &mut WorkflowContext<Self>,
+        input: WorkflowRunInput,
+    ) -> WorkflowResult<WorkflowResultMetadata> {
+        for page in input.page_range() {
+            ctx.execute_activity(
+                QualificationPageActivities::process_page,
+                input.page_activity_input(page),
+                page_activity_options(page),
+            )
+            .await?;
+        }
+        if let Some(next) = input.next_run() {
+            ctx.continue_as_new(next, ContinueAsNewOptions::default())?;
+        }
+        Ok(WorkflowResultMetadata {
+            pages_processed: input.page_count,
+            runs: input.run_number,
+        })
+    }
 }
 
 pub struct OfficialTemporalGateway {
@@ -282,7 +479,11 @@ impl TemporalGateway for OfficialTemporalGateway {
                     .build();
                 match self
                     .client
-                    .start_workflow(OcrDocumentWorkflow, input, options)
+                    .start_workflow(
+                        OcrDocumentWorkflow::run,
+                        WorkflowRunInput::first(input),
+                        options,
+                    )
                     .await
                 {
                     Ok(_) => Ok(GatewayOutcome::Accepted),

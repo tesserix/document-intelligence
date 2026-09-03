@@ -14,6 +14,9 @@ The candidate targets 20 jobs/s and 100 pages/s peak, a 300-page document ceilin
 | --- | --- | --- |
 | `temporalio-client` | `=0.8.0` | `06a672ea7c8fb963e3da4224c74b4fb2b0d2085dbe55d9b735a24c70af68c68f` |
 | `temporalio-common` | `=0.8.0` | `49a8ab419d730698e89a027a9c80aaedd8da40f8b4a761ad5bf94abfd62ccbfe` |
+| `temporalio-macros` | `=0.8.0` | `43058fe5557a8d122704c136991510703ea3998ff83d5279d0e0924434164413` |
+| `temporalio-sdk` | `=0.8.0` | `099245859a89a43c9218ab0e3e37fab62a3bcbd2fa962ef409c8c783ed0c8679` |
+| `temporalio-workflow` | `=0.8.0` | `aa469b8e55b2ad6cc589b5596bd4ec4b2ac498800a38c5f1a69027d3fd751004` |
 
 The corresponding upstream `v0.8.0` tag resolves to commit `207acc165c8091421a3eb41aef65b1ca53ae6aa1`. The Rust SDK is Public Preview. Exact Cargo versions and `Cargo.lock` checksums prevent dependency drift, but they do not make a preview SDK production-ready.
 
@@ -26,7 +29,11 @@ The corresponding upstream `v0.8.0` tag resolves to commit `207acc165c8091421a3e
 - Client RPCs have a five-second deadline. Failures remain retryable at the outbox boundary, and an outbox row is acknowledged only after Temporal accepts the command.
 - Page activity policy requires a 120-second start-to-close timeout, a 10-second heartbeat timeout, three attempts, and bounded backoff. Validation and scope failures are non-retryable.
 - A 300-page plan continues as new after each 50-page run, bounding history growth.
+- The SDK workflow executes one independently identified activity per page, propagates cancellation to the active activity, and continues as new with a strictly validated run number and next-page cursor.
+- The qualification activity carries only scoped identifiers and a page number, heartbeats progress, checks cancellation before and after yielding, and returns page metadata only. It is not a production OCR implementation.
 - Workflow inputs, IDs, search attributes, logs and traces must never contain document text, filenames, URLs, object locators, credentials or extracted values.
+
+On 2026-09-04, `scripts/test-temporal-qualification.sh` ran a 51-page workflow against Temporal CLI 1.5.0 / server 1.29.0. The workflow completed through two runs and its first-run history replayed successfully with the candidate worker. The script downloads the exact platform archive, verifies a hard-coded SHA-256 copied from the official release checksums, uses `EphemeralExe::ExistingPath`, and deletes its temporary server files on exit. This is a functional qualification result, not the required 24-hour soak.
 
 The 0.8.0 high-level start API generates its own request ID and does not expose a caller-supplied start request ID. Workflow-ID reuse policy therefore provides start idempotency; the deterministic outbox request ID remains available for cancellation and audit correlation. This API limitation must be re-evaluated during upgrade qualification.
 
@@ -42,7 +49,7 @@ The following evidence is still mandatory before production selection:
 6. Prove worker-version routing with old and candidate workers active simultaneously.
 7. Run the upgrade soak below for at least 24 hours and retain server/worker versions, history sizes, retries, latency and memory artefacts.
 
-An integration harness must pin the Temporal development server image by digest. It must be manually invoked, use disposable local storage, require no cloud credentials and never be part of ordinary unit tests. No unverified server image has been added to this repository.
+The integration harness pins and checksum-verifies the Temporal CLI release rather than allowing the SDK downloader to select an executable. It is manually invoked, uses disposable local storage, requires no cloud credentials and is excluded from ordinary unit tests. No unverified server image or executable is used.
 
 ## Twenty-four-hour upgrade soak
 
