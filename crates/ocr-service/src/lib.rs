@@ -1,6 +1,10 @@
 //! HTTP boundary for the document intelligence service.
 
-use std::time::Duration;
+mod result_artifacts;
+
+pub use result_artifacts::{GcsResultReader, ResultArtifactConfigurationError};
+
+use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use axum::{
     extract::{rejection::JsonRejection, FromRequestParts, Path, State},
@@ -9,8 +13,12 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use ocr_domain::{IdempotencyKey, JobId, JobState, ProductId, RequestDigest, TenantId};
-use ocr_store::{CancelOutcome, CreateJob, CreateOutcome, PgJobStore};
+use ocr_domain::{
+    DocumentResult, IdempotencyKey, JobId, JobState, ProductId, RequestDigest, TenantId,
+};
+use ocr_store::{
+    CancelOutcome, CreateJob, CreateOutcome, PgJobStore, ResultLookup, StoredResultLocator,
+};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tower_http::{
@@ -22,6 +30,40 @@ use tower_http::{
 use uuid::Uuid;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
+const MAXIMUM_RESULT_BYTES: usize = 16 * 1024 * 1024;
+
+#[derive(Debug)]
+pub struct ResultArtifactError;
+
+pub type ResultReadFuture<'a> =
+    Pin<Box<dyn Future<Output = std::result::Result<Vec<u8>, ResultArtifactError>> + Send + 'a>>;
+
+pub trait ResultArtifactReader: Send + Sync {
+    fn read<'a>(
+        &'a self,
+        locator: &'a StoredResultLocator,
+        maximum_bytes: usize,
+    ) -> ResultReadFuture<'a>;
+}
+
+struct UnavailableResultReader;
+
+impl ResultArtifactReader for UnavailableResultReader {
+    fn read<'a>(
+        &'a self,
+        _locator: &'a StoredResultLocator,
+        _maximum_bytes: usize,
+    ) -> ResultReadFuture<'a> {
+        Box::pin(async { Err(ResultArtifactError) })
+    }
+}
+
+#[derive(Clone)]
+struct AppState {
+    jobs: PgJobStore,
+    results: Arc<dyn ResultArtifactReader>,
+    result_artifacts_configured: bool,
+}
 
 #[derive(Debug, Clone)]
 pub struct TrustedIdentity {
@@ -135,6 +177,28 @@ impl ApiError {
             },
         }
     }
+
+    fn result_not_ready(request_id: String) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            body: ErrorBody {
+                code: "result_not_ready",
+                message: "job result is not ready",
+                request_id,
+            },
+        }
+    }
+
+    fn result_unavailable(request_id: String) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            body: ErrorBody {
+                code: "result_unavailable",
+                message: "job has no result",
+                request_id,
+            },
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -230,14 +294,34 @@ impl MakeRequestId for RequestIdFactory {
 }
 
 pub fn router(store: PgJobStore) -> Router {
+    build_router(store, Arc::new(UnavailableResultReader), false)
+}
+
+pub fn router_with_result_reader(
+    store: PgJobStore,
+    results: Arc<dyn ResultArtifactReader>,
+) -> Router {
+    build_router(store, results, true)
+}
+
+fn build_router(
+    store: PgJobStore,
+    results: Arc<dyn ResultArtifactReader>,
+    result_artifacts_configured: bool,
+) -> Router {
     let request_id_header = HeaderName::from_static(REQUEST_ID_HEADER);
     Router::new()
         .route("/healthz", get(|| async { StatusCode::OK }))
         .route("/readyz", get(readiness))
         .route("/v1/ocr/jobs", post(create_job))
         .route("/v1/ocr/jobs/{job_id}", get(get_job))
+        .route("/v1/ocr/jobs/{job_id}/result", get(get_result))
         .route("/v1/ocr/jobs/{job_id}/cancel", post(cancel_job))
-        .with_state(store)
+        .with_state(AppState {
+            jobs: store,
+            results,
+            result_artifacts_configured,
+        })
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
@@ -249,11 +333,15 @@ pub fn router(store: PgJobStore) -> Router {
 }
 
 async fn readiness(
-    State(store): State<PgJobStore>,
+    State(state): State<AppState>,
     request: axum::extract::Request,
 ) -> Result<StatusCode, ApiError> {
     let request_id = request_id_from_extensions(request.extensions());
-    store
+    if !state.result_artifacts_configured {
+        return Err(ApiError::unavailable(request_id));
+    }
+    state
+        .jobs
         .ready()
         .await
         .map_err(|_| ApiError::unavailable(request_id))?;
@@ -261,7 +349,7 @@ async fn readiness(
 }
 
 async fn create_job(
-    State(store): State<PgJobStore>,
+    State(state): State<AppState>,
     identity: VerifiedIdentity,
     headers: HeaderMap,
     payload: Result<Json<CreateJobRequest>, JsonRejection>,
@@ -316,7 +404,8 @@ async fn create_job(
         })?;
     let generated_id = JobId::new(&format!("job_{}", Uuid::new_v4().simple()))
         .map_err(|_| ApiError::unavailable(request_id.clone()))?;
-    let outcome = store
+    let outcome = state
+        .jobs
         .create(CreateJob {
             job_id: generated_id.clone(),
             tenant_id: identity.0.tenant_id,
@@ -348,14 +437,15 @@ async fn create_job(
 }
 
 async fn get_job(
-    State(store): State<PgJobStore>,
+    State(state): State<AppState>,
     identity: VerifiedIdentity,
     Path(job_id): Path<String>,
     request: axum::extract::Request,
 ) -> Result<Json<JobResponse>, ApiError> {
     let request_id = request_id_from_extensions(request.extensions());
     let job_id = JobId::new(&job_id).map_err(|_| ApiError::not_found(request_id.clone()))?;
-    let job = store
+    let job = state
+        .jobs
         .find(&identity.0.tenant_id, &identity.0.product_id, &job_id)
         .await
         .map_err(|_| ApiError::unavailable(request_id.clone()))?
@@ -369,15 +459,59 @@ async fn get_job(
     }))
 }
 
+async fn get_result(
+    State(state): State<AppState>,
+    identity: VerifiedIdentity,
+    Path(job_id): Path<String>,
+    request: axum::extract::Request,
+) -> Result<Json<DocumentResult>, ApiError> {
+    let request_id = request_id_from_extensions(request.extensions());
+    let job_id = JobId::new(&job_id).map_err(|_| ApiError::not_found(request_id.clone()))?;
+    let locator = match state
+        .jobs
+        .find_result(&identity.0.tenant_id, &identity.0.product_id, &job_id)
+        .await
+        .map_err(|_| ApiError::unavailable(request_id.clone()))?
+    {
+        ResultLookup::Ready(locator) => locator,
+        ResultLookup::NotReady(_) => return Err(ApiError::result_not_ready(request_id)),
+        ResultLookup::Unavailable(_) => return Err(ApiError::result_unavailable(request_id)),
+        ResultLookup::NotFound => return Err(ApiError::not_found(request_id)),
+    };
+    let expected_length = usize::try_from(locator.content_length)
+        .map_err(|_| ApiError::unavailable(request_id.clone()))?;
+    if expected_length > MAXIMUM_RESULT_BYTES {
+        return Err(ApiError::unavailable(request_id));
+    }
+    let bytes = state
+        .results
+        .read(&locator, MAXIMUM_RESULT_BYTES)
+        .await
+        .map_err(|_| ApiError::unavailable(request_id.clone()))?;
+    let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+    if bytes.len() != expected_length || digest != locator.object_digest {
+        return Err(ApiError::unavailable(request_id));
+    }
+    let result: DocumentResult =
+        serde_json::from_slice(&bytes).map_err(|_| ApiError::unavailable(request_id.clone()))?;
+    if result.document_id != locator.document_id
+        || result.document_version != locator.document_version
+    {
+        return Err(ApiError::unavailable(request_id));
+    }
+    Ok(Json(result))
+}
+
 async fn cancel_job(
-    State(store): State<PgJobStore>,
+    State(state): State<AppState>,
     identity: VerifiedIdentity,
     Path(job_id): Path<String>,
     request: axum::extract::Request,
 ) -> Result<Json<JobResponse>, ApiError> {
     let request_id = request_id_from_extensions(request.extensions());
     let job_id = JobId::new(&job_id).map_err(|_| ApiError::not_found(request_id.clone()))?;
-    let outcome = store
+    let outcome = state
+        .jobs
         .cancel(&identity.0.tenant_id, &identity.0.product_id, &job_id)
         .await
         .map_err(|_| ApiError::unavailable(request_id.clone()))?;

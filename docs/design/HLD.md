@@ -96,7 +96,7 @@ All runtime images are multi-stage, digest-pinned, non-root, read-only, without 
 
 CloudNativePG Postgres owns jobs, pages, attempts, provider decisions, extraction/validation summaries, canonical memory/chunks, idempotency records, review tasks, corrections, retention state, and outbox/audit events. Every tenant-owned table has `tenant_id`; repository queries require the verified tenant and use row-level security as defense in depth.
 
-GCS owns immutable source versions, rendered/preprocessed page artifacts where retention permits, full normalized results, and encrypted golden-set assets. Object names use generated identifiers, never user filenames or PII. Buckets and keys are regional and environment-separated. A result locator is tenant-bound and short-lived.
+GCS owns immutable source versions, rendered/preprocessed page artifacts where retention permits, full normalized results, and encrypted golden-set assets. Object names use generated identifiers, never user filenames or PII. Buckets and keys are regional and environment-separated. The internal result locator is tenant-bound and generation-pinned; any externally issued signed URL is short-lived.
 
 Temporal owns execution history, timers, retries, and signals; it does not replace Postgres as the query/API source of truth. Status projection writes are idempotent. Large binary content and normalized page payloads are never placed in workflow history; activities pass content-addressed locators.
 

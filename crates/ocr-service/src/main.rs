@@ -1,7 +1,7 @@
-use std::{env, str::FromStr};
+use std::{env, str::FromStr, sync::Arc};
 
 use anyhow::{Context, Result};
-use ocr_service::router;
+use ocr_service::{router, router_with_result_reader, GcsResultReader};
 use ocr_store::PgJobStore;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use tokio::{net::TcpListener, signal};
@@ -23,12 +23,27 @@ async fn main() -> Result<()> {
     let pool = PgPoolOptions::new()
         .max_connections(10)
         .connect_lazy_with(options);
+    let application = match env::var("RESULT_BUCKETS") {
+        Ok(value) => {
+            let buckets: Vec<String> = value
+                .split(',')
+                .map(str::trim)
+                .filter(|bucket| !bucket.is_empty())
+                .map(str::to_owned)
+                .collect();
+            let reader = GcsResultReader::new(&buckets)
+                .context("RESULT_BUCKETS contains invalid configuration")?;
+            router_with_result_reader(PgJobStore::new(pool), Arc::new(reader))
+        }
+        Err(env::VarError::NotPresent) => router(PgJobStore::new(pool)),
+        Err(env::VarError::NotUnicode(_)) => anyhow::bail!("RESULT_BUCKETS is not valid UTF-8"),
+    };
     let listener = TcpListener::bind(&bind_address)
         .await
         .with_context(|| format!("cannot bind to {bind_address}"))?;
 
     info!(bind_address, "OCR service listening");
-    axum::serve(listener, router(PgJobStore::new(pool)))
+    axum::serve(listener, application)
         .with_graceful_shutdown(shutdown_signal())
         .await
         .context("HTTP server stopped unexpectedly")

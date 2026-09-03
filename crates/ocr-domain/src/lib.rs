@@ -40,6 +40,8 @@ pub enum Error {
     InvalidIdempotencyKey,
     #[error("request digest must be a lowercase sha256 digest")]
     InvalidRequestDigest,
+    #[error("result schema version is unsupported")]
+    UnsupportedResultSchemaVersion,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -601,12 +603,40 @@ enum ContentTrust {
 }
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawDocumentResult")]
 pub struct DocumentResult {
-    schema_version: &'static str,
+    schema_version: String,
     pub document_id: DocumentId,
     pub document_version: DocumentVersion,
     content_trust: ContentTrust,
     pub fields: BTreeMap<String, ExtractedValue>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDocumentResult {
+    schema_version: String,
+    document_id: DocumentId,
+    document_version: DocumentVersion,
+    content_trust: ContentTrust,
+    fields: BTreeMap<String, ExtractedValue>,
+}
+
+impl TryFrom<RawDocumentResult> for DocumentResult {
+    type Error = Error;
+
+    fn try_from(value: RawDocumentResult) -> Result<Self> {
+        if value.schema_version != RESULT_SCHEMA_VERSION {
+            return Err(Error::UnsupportedResultSchemaVersion);
+        }
+        Ok(Self {
+            schema_version: value.schema_version,
+            document_id: value.document_id,
+            document_version: value.document_version,
+            content_trust: value.content_trust,
+            fields: value.fields,
+        })
+    }
 }
 
 impl DocumentResult {
@@ -616,7 +646,7 @@ impl DocumentResult {
         fields: BTreeMap<String, ExtractedValue>,
     ) -> Self {
         Self {
-            schema_version: RESULT_SCHEMA_VERSION,
+            schema_version: RESULT_SCHEMA_VERSION.to_owned(),
             document_id,
             document_version,
             content_trust: ContentTrust::Untrusted,

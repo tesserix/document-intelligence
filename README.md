@@ -47,3 +47,12 @@ consumer integrations around the shared service.
 ## Design checkpoint
 
 Before implementation, reviewers must confirm the launch scale, residency regions, retention defaults, supported identity issuer, review-application owner, Google Document AI processor locations, Temporal hosting model, and the quality/cost thresholds in the evaluation plan.
+
+## Current runtime configuration
+
+`DATABASE_URL` is required. `RESULT_BUCKETS` is a comma-separated allowlist of
+product/environment result buckets and enables the generation-pinned GCS result
+reader through Application Default Credentials. When the allowlist is absent,
+the process remains live for diagnostics but `/readyz` returns `503`; no result
+traffic is served. Workload Identity, rather than service-account key files, is
+the production credential source.

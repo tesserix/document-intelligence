@@ -68,6 +68,14 @@ States are `accepted`, `inspecting`, `processing`, `validating`, `cancelling`, `
 
 Cancellation is a durable request. A successful response means cancellation was recorded, not that every external provider call stopped instantly. Repeated cancellation is safe. Terminal completed/rejected/cancelled jobs do not move backward.
 
+`GET /v1/ocr/jobs/{job_id}/result` returns `409 result_not_ready` while work is
+active and `409 result_unavailable` for terminal states that produce no result.
+A ready result is read from the exact generation-pinned GCS object selected by
+trusted service state. Before returning it, the service verifies the bounded
+content length, SHA-256 digest, schema version, document ID, document version,
+and the invariant that content trust is `untrusted`. Bucket names, object names,
+generations, and cloud credentials are never exposed in the public response.
+
 ## Canonical result outline
 
 ```json

@@ -25,3 +25,4 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
 sha2 = "0.10"
 time = { version = "0.3", features = ["formatting", "serde"] }
+object_store = { version = "0.14.1", default-features = false, features = ["gcp"] }

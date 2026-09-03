@@ -104,4 +104,12 @@ fn deserialization_cannot_bypass_domain_invariants() {
         "evidence": []
     }))
     .is_err());
+    assert!(serde_json::from_value::<DocumentResult>(json!({
+        "schema_version": "2.0",
+        "document_id": "doc_TEST",
+        "document_version": format!("sha256:{}", "a".repeat(64)),
+        "content_trust": "untrusted",
+        "fields": {}
+    }))
+    .is_err());
 }

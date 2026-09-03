@@ -1,6 +1,9 @@
 //! PostgreSQL persistence for document jobs.
 
-use ocr_domain::{IdempotencyKey, JobId, JobState, ProductId, RequestDigest, TenantId};
+use ocr_domain::{
+    DocumentId, DocumentVersion, IdempotencyKey, JobId, JobState, ProductId, RequestDigest,
+    TenantId,
+};
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use thiserror::Error;
 use time::OffsetDateTime;
@@ -13,6 +16,8 @@ pub enum Error {
     IdempotencyConflict,
     #[error("stored job is invalid")]
     InvalidStoredJob,
+    #[error("stored result is invalid")]
+    InvalidStoredResult,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -45,6 +50,25 @@ pub struct StoredJob {
     pub job_id: JobId,
     pub state: JobState,
     pub created_at: OffsetDateTime,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub struct StoredResultLocator {
+    pub document_id: DocumentId,
+    pub document_version: DocumentVersion,
+    pub object_bucket: String,
+    pub object_name: String,
+    pub object_generation: i64,
+    pub object_digest: String,
+    pub content_length: i64,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum ResultLookup {
+    Ready(StoredResultLocator),
+    NotReady(JobState),
+    Unavailable(JobState),
+    NotFound,
 }
 
 #[derive(Debug, Clone)]
@@ -197,6 +221,66 @@ impl PgJobStore {
             Ok(CancelOutcome::NotCancellable(job))
         }
     }
+
+    pub async fn find_result(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        job_id: &JobId,
+    ) -> Result<ResultLookup> {
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let row = sqlx::query(
+            "select j.status::text as status, r.document_id, r.document_version, \
+             r.object_bucket, r.object_name, r.object_generation, r.object_digest, \
+             r.content_length \
+             from ocr_jobs j left join ocr_results r on r.job_id = j.job_id \
+             where j.product_id = $1 and j.tenant_id = $2 and j.job_id = $3",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(job_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+
+        let Some(row) = row else {
+            return Ok(ResultLookup::NotFound);
+        };
+        let state = parse_job_state(row.try_get("status")?)?;
+        let document_id: Option<&str> = row.try_get("document_id")?;
+        let Some(document_id) = document_id else {
+            return Ok(match state {
+                JobState::Accepted
+                | JobState::Inspecting
+                | JobState::Processing
+                | JobState::Validating
+                | JobState::Cancelling => ResultLookup::NotReady(state),
+                JobState::Cancelled | JobState::Rejected => ResultLookup::Unavailable(state),
+                JobState::Partial | JobState::ReviewRequired | JobState::Completed => {
+                    return Err(Error::InvalidStoredResult)
+                }
+            });
+        };
+        if !matches!(
+            state,
+            JobState::Partial | JobState::ReviewRequired | JobState::Completed
+        ) {
+            return Err(Error::InvalidStoredResult);
+        }
+        let locator = StoredResultLocator {
+            document_id: DocumentId::new(document_id).map_err(|_| Error::InvalidStoredResult)?,
+            document_version: DocumentVersion::new(row.try_get("document_version")?)
+                .map_err(|_| Error::InvalidStoredResult)?,
+            object_bucket: row.try_get("object_bucket")?,
+            object_name: row.try_get("object_name")?,
+            object_generation: row.try_get("object_generation")?,
+            object_digest: row.try_get("object_digest")?,
+            content_length: row.try_get("content_length")?,
+        };
+        validate_locator(&locator)?;
+        Ok(ResultLookup::Ready(locator))
+    }
 }
 
 async fn set_scope(
@@ -217,7 +301,17 @@ async fn set_scope(
 
 fn stored_job(row: sqlx::postgres::PgRow) -> Result<StoredJob> {
     let job_id = JobId::new(row.try_get("job_id")?).map_err(|_| Error::InvalidStoredJob)?;
-    let state = match row.try_get("status")? {
+    let state = parse_job_state(row.try_get("status")?)?;
+    let created_at = row.try_get("created_at")?;
+    Ok(StoredJob {
+        job_id,
+        state,
+        created_at,
+    })
+}
+
+fn parse_job_state(value: &str) -> Result<JobState> {
+    Ok(match value {
         "accepted" => JobState::Accepted,
         "inspecting" => JobState::Inspecting,
         "processing" => JobState::Processing,
@@ -229,11 +323,26 @@ fn stored_job(row: sqlx::postgres::PgRow) -> Result<StoredJob> {
         "review_required" => JobState::ReviewRequired,
         "completed" => JobState::Completed,
         _ => return Err(Error::InvalidStoredJob),
-    };
-    let created_at = row.try_get("created_at")?;
-    Ok(StoredJob {
-        job_id,
-        state,
-        created_at,
     })
+}
+
+fn validate_locator(locator: &StoredResultLocator) -> Result<()> {
+    let digest = locator.object_digest.strip_prefix("sha256:");
+    let digest_is_valid = digest.is_some_and(|value| {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    if locator.object_bucket.is_empty()
+        || locator.object_bucket.len() > 222
+        || locator.object_name.is_empty()
+        || locator.object_name.len() > 1024
+        || locator.object_generation <= 0
+        || locator.content_length <= 0
+        || !digest_is_valid
+    {
+        return Err(Error::InvalidStoredResult);
+    }
+    Ok(())
 }
