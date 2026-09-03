@@ -1,4 +1,8 @@
-use ocr_service::{GcsPageArtifactReader, PageArtifactReadError, PageArtifactReader};
+use std::collections::HashMap;
+
+use ocr_service::{
+    GcsPageArtifactReader, GcsPageArtifactWriter, PageArtifactReadError, PageArtifactReader,
+};
 use ocr_store::StoredPageArtifact;
 
 fn artifact(bucket: &str) -> StoredPageArtifact {
@@ -19,6 +23,26 @@ fn page_reader_requires_an_explicit_valid_bucket_allowlist() {
     assert!(GcsPageArtifactReader::new(&[]).is_err());
     assert!(GcsPageArtifactReader::new(&["invalid/bucket".to_owned()]).is_err());
     assert!(GcsPageArtifactReader::new(&["dev-kora-ocr-pages".to_owned()]).is_ok());
+}
+
+#[test]
+fn page_writer_requires_one_isolated_bucket_per_valid_product() {
+    assert!(GcsPageArtifactWriter::new(HashMap::new()).is_err());
+    assert!(GcsPageArtifactWriter::new(HashMap::from([(
+        "Kora".to_owned(),
+        "dev-kora-ocr-pages".to_owned()
+    )]))
+    .is_err());
+    assert!(GcsPageArtifactWriter::new(HashMap::from([(
+        "kora".to_owned(),
+        "invalid/bucket".to_owned()
+    )]))
+    .is_err());
+    assert!(GcsPageArtifactWriter::new(HashMap::from([(
+        "kora".to_owned(),
+        "dev-kora-ocr-pages".to_owned()
+    )]))
+    .is_ok());
 }
 
 #[tokio::test]

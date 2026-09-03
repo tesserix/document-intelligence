@@ -17,8 +17,8 @@ mod upload_intents;
 
 pub use document_finalizer::{DocumentFinalizeError, DocumentFinalizer};
 pub use page_artifacts::{
-    GcsPageArtifactReader, PageArtifactConfigurationError, PageArtifactReadError,
-    PageArtifactReadFuture, PageArtifactReader,
+    GcsPageArtifactReader, GcsPageArtifactWriter, PageArtifactConfigurationError,
+    PageArtifactReadError, PageArtifactReadFuture, PageArtifactReader, PageArtifactWriteError,
 };
 pub use page_runner::{
     CheckpointedPageRunner, PageProcessError, PageProcessFuture, PageProcessor, PageRunnerError,
