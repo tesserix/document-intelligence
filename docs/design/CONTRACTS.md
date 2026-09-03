@@ -109,6 +109,10 @@ means invalid or unsupported content, `11` means a hard resource limit, `12`
 means a password-protected PDF without an approved one-time secret, and `13`
 means an internal or I/O failure. Runtime configuration cannot raise the hard
 100 MiB, 300-page, 100-million-pixel page, or one-billion-pixel document caps.
+The importer invokes only an absolute configured executable path, caps parser
+stdout at 4 KiB, discards stderr, applies one deadline to write/read/process
+completion, and kills the child on timeout. Unknown exits, malformed metadata,
+and out-of-contract success metadata are unavailable rather than successful.
 
 ## Create job
 

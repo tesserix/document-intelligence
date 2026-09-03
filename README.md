@@ -95,5 +95,7 @@ accepts document bytes only on standard input, verifies PDF or declared image
 format, bounds encoded bytes, PDF objects, pages, per-page pixels, and aggregate
 render pixels, and emits only a small JSON metadata report. Malformed input,
 password protection, and limit violations use stable content-free exit codes.
-Production use still requires the reviewed disposable runtime profile and
-orchestrator deadline around this executable.
+The importer-side process adapter now adds a bounded stdin/stdout protocol, a
+two-minute hard ceiling on its configurable deadline, kill-on-timeout, strict
+metadata decoding, and stable invalid/limit/password/unavailable outcomes.
+Production use still requires the reviewed disposable runtime profile.
