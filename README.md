@@ -71,8 +71,10 @@ source locator and a second content-free outbox event atomically, and only that
 Inspection uses a five-minute, tenant-scoped CNPG lease: duplicate delivery by
 the same worker renews it, another worker is excluded, an expired lease is
 reclaimable, and ten exhausted attempts atomically reject the upload and emit a
-content-free event. Pixel/page, decompression, parser sandboxing, and importer
-orchestration remain the next quarantine stages before OCR processing.
+content-free event. Acceptance also persists the bounded page count, maximum
+and aggregate pixel counts, and parser profile/version; document text never
+enters upload metadata or events. Importer orchestration remains the next
+quarantine stage before OCR processing.
 
 The malware adapter implements the bounded ClamAV `INSTREAM` protocol over a
 loopback-only TCP connection to a separately sandboxed sidecar. It streams only

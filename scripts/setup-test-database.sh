@@ -19,6 +19,8 @@ psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0005_job_upload_sour
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0006_accepted_source.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0007_upload_inspection_lease.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0008_upload_rejection_reason.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0009_parser_inspection_metadata.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0009_parser_inspection_metadata.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0008_upload_rejection_reason.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0007_upload_inspection_lease.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0006_accepted_source.down.sql >/dev/null
@@ -35,6 +37,7 @@ psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0005_job_upload_sour
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0006_accepted_source.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0007_upload_inspection_lease.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0008_upload_rejection_reason.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0009_parser_inspection_metadata.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 <<SQL >/dev/null
 grant usage on schema public to ${application_role};
 grant select, insert, update, delete on ocr_jobs, ocr_outbox to ${application_role};

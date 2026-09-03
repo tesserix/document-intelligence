@@ -11,7 +11,9 @@ use ocr_service::{
     UploadArtifactReadFuture, UploadArtifactReader, UploadIntentIssuer, UploadIssueFuture,
     VerifiedUploadArtifact,
 };
-use ocr_store::{AcceptUpload, ClaimUploadInspection, PgJobStore, StoredResultLocator};
+use ocr_store::{
+    AcceptUpload, ClaimUploadInspection, ParserInspectionMetadata, PgJobStore, StoredResultLocator,
+};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
@@ -920,6 +922,13 @@ async fn a_second_product_uses_the_same_contract_without_cross_product_visibilit
                     source_object_generation: 82,
                     source_digest: digest.clone(),
                     source_content_length: i64::try_from(bytes.len()).unwrap(),
+                    parser_inspection: ParserInspectionMetadata {
+                        page_count: 1,
+                        maximum_page_pixels: 1,
+                        total_page_pixels: 1,
+                        profile: "compat-v1".to_owned(),
+                        version: "0.1.0".to_owned(),
+                    },
                 },
             )
             .await

@@ -2,8 +2,8 @@ use ocr_domain::{DocumentId, IdempotencyKey, JobId, ProductId, RequestDigest, Te
 use ocr_store::{
     AcceptUpload, AcceptUploadOutcome, CancelOutcome, ClaimUploadInspection,
     ClaimUploadInspectionOutcome, CreateJob, CreateOutcome, CreateUpload, CreateUploadOutcome,
-    Error, PgJobStore, RecordUpload, RecordUploadOutcome, RejectUploadOutcome, ResultLookup,
-    UploadRejectionReason,
+    Error, ParserInspectionMetadata, PgJobStore, RecordUpload, RecordUploadOutcome,
+    RejectUploadOutcome, ResultLookup, UploadRejectionReason,
 };
 use sqlx::PgPool;
 
@@ -424,6 +424,13 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
         source_object_generation: 73,
         source_digest: digest.clone(),
         source_content_length: 1024,
+        parser_inspection: ParserInspectionMetadata {
+            page_count: 2,
+            maximum_page_pixels: 8_500_000,
+            total_page_pixels: 16_000_000,
+            profile: "intake-v1".to_owned(),
+            version: "0.1.0".to_owned(),
+        },
     };
 
     let not_claimed = store
@@ -546,13 +553,43 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
         )
         .await
         .unwrap();
+    let mismatched_parser = store
+        .accept_upload(
+            &tenant_id,
+            &product_id,
+            &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
+            AcceptUpload {
+                parser_inspection: ParserInspectionMetadata {
+                    profile: "intake-v2".to_owned(),
+                    ..acceptance("importer-02").parser_inspection
+                },
+                ..acceptance("importer-02")
+            },
+        )
+        .await
+        .unwrap();
     assert_eq!(accepted, AcceptUploadOutcome::Accepted);
     assert_eq!(replayed, AcceptUploadOutcome::Existing);
     assert_eq!(mismatched, AcceptUploadOutcome::SourceMismatch);
+    assert_eq!(mismatched_parser, AcceptUploadOutcome::SourceMismatch);
 
-    let row: (String, String, i64, String, i64, i32) = sqlx::query_as(
+    let row: (
+        String,
+        String,
+        i64,
+        String,
+        i64,
+        i32,
+        i32,
+        i64,
+        i64,
+        String,
+        String,
+    ) = sqlx::query_as(
         "select source_bucket, source_object_name, source_object_generation, source_digest, \
-         source_content_length, inspection_attempts from ocr_uploads \
+         source_content_length, inspection_attempts, parser_page_count, \
+         parser_maximum_page_pixels, parser_total_page_pixels, parser_profile, parser_version \
+         from ocr_uploads \
          where upload_id = 'upl_ACCEPT_SOURCE'",
     )
     .fetch_one(&admin_pool)
@@ -567,6 +604,11 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
     assert_eq!(row.3, digest);
     assert_eq!(row.4, 1024);
     assert_eq!(row.5, 2);
+    assert_eq!(row.6, 2);
+    assert_eq!(row.7, 8_500_000);
+    assert_eq!(row.8, 16_000_000);
+    assert_eq!(row.9, "intake-v1");
+    assert_eq!(row.10, "0.1.0");
 
     let events: i64 = sqlx::query_scalar(
         "select count(*) from ocr_upload_outbox where upload_id = 'upl_ACCEPT_SOURCE' \

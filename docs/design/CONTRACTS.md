@@ -80,9 +80,11 @@ attempt. Ten exhausted attempts atomically produce `rejected` plus one
 inspection succeeds, the importer promotes the exact verified
 generation to a create-only immutable source object. A short CNPG transaction
 then records `uploaded → accepted`, the source bucket/object/generation/digest,
-and one content-free `ocr.upload.accepted.v1` outbox event. Exact replays are
-successful without duplicating the event; a stale lease owner or different
-source locator fails closed. A crash after object creation but before commit is recovered by
+bounded page and pixel counts, parser profile and parser version, plus one
+content-free `ocr.upload.accepted.v1` outbox event. No extracted text is stored
+in upload metadata or emitted in this event. Exact replays are successful
+without duplicating the event; a stale lease owner or different source or
+parser metadata fails closed. A crash after object creation but before commit is recovered by
 verifying that the existing destination is the expected content-addressed
 object and replaying the database transition.
 

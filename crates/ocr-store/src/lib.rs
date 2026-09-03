@@ -108,6 +108,15 @@ pub enum RecordUploadOutcome {
 }
 
 #[derive(Debug)]
+pub struct ParserInspectionMetadata {
+    pub page_count: i32,
+    pub maximum_page_pixels: i64,
+    pub total_page_pixels: i64,
+    pub profile: String,
+    pub version: String,
+}
+
+#[derive(Debug)]
 pub struct AcceptUpload {
     pub inspection_lease_owner: String,
     pub source_bucket: String,
@@ -115,6 +124,7 @@ pub struct AcceptUpload {
     pub source_object_generation: i64,
     pub source_digest: String,
     pub source_content_length: i64,
+    pub parser_inspection: ParserInspectionMetadata,
 }
 
 #[derive(Debug)]
@@ -396,7 +406,10 @@ impl PgJobStore {
         let updated = sqlx::query(
             "update ocr_uploads set status = 'accepted', source_bucket = $4, \
              source_object_name = $5, source_object_generation = $6, source_digest = $7, \
-             source_content_length = $8, accepted_at = now(), inspection_lease_owner = null, \
+             source_content_length = $8, parser_page_count = $10, \
+             parser_maximum_page_pixels = $11, parser_total_page_pixels = $12, \
+             parser_profile = $13, parser_version = $14, accepted_at = now(), \
+             inspection_lease_owner = null, \
              inspection_lease_expires_at = null, updated_at = now() \
              where product_id = $1 and tenant_id = $2 and upload_id = $3 \
              and status = 'inspecting' and verified_digest = $7 and verified_content_length = $8 \
@@ -412,6 +425,11 @@ impl PgJobStore {
         .bind(&source.source_digest)
         .bind(source.source_content_length)
         .bind(&source.inspection_lease_owner)
+        .bind(source.parser_inspection.page_count)
+        .bind(source.parser_inspection.maximum_page_pixels)
+        .bind(source.parser_inspection.total_page_pixels)
+        .bind(&source.parser_inspection.profile)
+        .bind(&source.parser_inspection.version)
         .fetch_optional(&mut *transaction)
         .await?;
 
@@ -433,7 +451,8 @@ impl PgJobStore {
 
         let existing = sqlx::query(
             "select status::text as status, source_bucket, source_object_name, \
-             source_object_generation, source_digest, source_content_length \
+             source_object_generation, source_digest, source_content_length, parser_page_count, \
+             parser_maximum_page_pixels, parser_total_page_pixels, parser_profile, parser_version \
              from ocr_uploads where product_id = $1 and tenant_id = $2 and upload_id = $3",
         )
         .bind(product_id.as_str())
@@ -457,6 +476,16 @@ impl PgJobStore {
                     == Some(source.source_digest.as_str())
                 && existing.try_get::<Option<i64>, _>("source_content_length")?
                     == Some(source.source_content_length)
+                && existing.try_get::<Option<i32>, _>("parser_page_count")?
+                    == Some(source.parser_inspection.page_count)
+                && existing.try_get::<Option<i64>, _>("parser_maximum_page_pixels")?
+                    == Some(source.parser_inspection.maximum_page_pixels)
+                && existing.try_get::<Option<i64>, _>("parser_total_page_pixels")?
+                    == Some(source.parser_inspection.total_page_pixels)
+                && existing.try_get::<Option<&str>, _>("parser_profile")?
+                    == Some(source.parser_inspection.profile.as_str())
+                && existing.try_get::<Option<&str>, _>("parser_version")?
+                    == Some(source.parser_inspection.version.as_str())
             {
                 AcceptUploadOutcome::Existing
             } else {
@@ -942,10 +971,23 @@ fn validate_accepted_source(source: &AcceptUpload) -> Result<()> {
         || !(1..=104_857_600).contains(&source.source_content_length)
         || !valid_digest
         || !is_valid_lease_owner(&source.inspection_lease_owner)
+        || !(1..=300).contains(&source.parser_inspection.page_count)
+        || !(1..=100_000_000).contains(&source.parser_inspection.maximum_page_pixels)
+        || !(source.parser_inspection.maximum_page_pixels..=1_000_000_000)
+            .contains(&source.parser_inspection.total_page_pixels)
+        || !is_valid_parser_identifier(&source.parser_inspection.profile)
+        || !is_valid_parser_identifier(&source.parser_inspection.version)
     {
         return Err(Error::InvalidStoredUpload);
     }
     Ok(())
+}
+
+fn is_valid_parser_identifier(value: &str) -> bool {
+    (1..=64).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_' | b'.'))
 }
 
 fn validate_lease_owner(owner: &str) -> Result<()> {
