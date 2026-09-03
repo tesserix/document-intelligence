@@ -233,6 +233,7 @@ pub fn router(store: PgJobStore) -> Router {
     let request_id_header = HeaderName::from_static(REQUEST_ID_HEADER);
     Router::new()
         .route("/healthz", get(|| async { StatusCode::OK }))
+        .route("/readyz", get(readiness))
         .route("/v1/ocr/jobs", post(create_job))
         .route("/v1/ocr/jobs/{job_id}", get(get_job))
         .route("/v1/ocr/jobs/{job_id}/cancel", post(cancel_job))
@@ -245,6 +246,18 @@ pub fn router(store: PgJobStore) -> Router {
         .layer(RequestBodyLimitLayer::new(64 * 1024))
         .layer(PropagateRequestIdLayer::new(request_id_header.clone()))
         .layer(SetRequestIdLayer::new(request_id_header, RequestIdFactory))
+}
+
+async fn readiness(
+    State(store): State<PgJobStore>,
+    request: axum::extract::Request,
+) -> Result<StatusCode, ApiError> {
+    let request_id = request_id_from_extensions(request.extensions());
+    store
+        .ready()
+        .await
+        .map_err(|_| ApiError::unavailable(request_id))?;
+    Ok(StatusCode::OK)
 }
 
 async fn create_job(

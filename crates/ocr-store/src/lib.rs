@@ -57,6 +57,11 @@ impl PgJobStore {
         Self { pool }
     }
 
+    pub async fn ready(&self) -> Result<()> {
+        sqlx::query("select 1").execute(&self.pool).await?;
+        Ok(())
+    }
+
     pub async fn create(&self, request: CreateJob) -> Result<CreateOutcome> {
         let mut transaction = self.pool.begin().await?;
         set_scope(&mut transaction, &request.tenant_id, &request.product_id).await?;

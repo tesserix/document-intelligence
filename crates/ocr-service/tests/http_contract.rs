@@ -8,13 +8,28 @@ use ocr_service::{router, TrustedIdentity};
 use ocr_store::PgJobStore;
 use serde_json::Value;
 use sqlx::postgres::PgPoolOptions;
+use std::time::Duration;
 use tower::ServiceExt;
 
 fn store_without_connection() -> PgJobStore {
     let pool = PgPoolOptions::new()
+        .acquire_timeout(Duration::from_millis(20))
         .connect_lazy("postgres://unused:unused@127.0.0.1:1/unused")
         .unwrap();
     PgJobStore::new(pool)
+}
+
+#[tokio::test]
+async fn readiness_fails_when_the_database_is_unavailable() {
+    let response = router(store_without_connection())
+        .oneshot(Request::get("/readyz").body(Body::empty()).unwrap())
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["code"], "service_unavailable");
 }
 
 #[tokio::test]
