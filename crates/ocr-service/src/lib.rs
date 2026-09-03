@@ -1031,7 +1031,8 @@ pub use malware::{
     UploadInspectionError, UploadInspectorConfigurationError,
 };
 pub use outbox_relay::{
-    JobOutboxRelay, RelayError, RelayOutcome, WorkflowAction, WorkflowDispatch,
-    WorkflowDispatchError, WorkflowDispatchOutcome, WorkflowStarter,
+    DurableWorkflowConfigurationError, DurableWorkflowStarter, JobOutboxRelay, RelayError,
+    RelayOutcome, WorkflowAction, WorkflowDispatch, WorkflowDispatchError, WorkflowDispatchOutcome,
+    WorkflowStarter,
 };
 pub use source_promotion::{GcsSourcePromoter, PromotedSource, SourcePromotionError};

@@ -1,7 +1,10 @@
 use std::{future::Future, sync::Arc};
 
-use ocr_domain::{JobId, ProductId, TenantId};
-use ocr_store::{ClaimJobOutbox, JobOutboxEventType, PgJobStore, PublishJobOutboxOutcome};
+use ocr_domain::{JobId, PageWorkflow, PageWorkflowStatus, ProductId, TenantId};
+use ocr_store::{
+    ClaimJobOutbox, CreatePageWorkflowOutcome, JobOutboxEventType, PgJobStore,
+    PublishJobOutboxOutcome, SavePageWorkflowOutcome, StoredPageWorkflow,
+};
 use thiserror::Error;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -17,6 +20,7 @@ pub struct WorkflowDispatch {
     pub product_id: ProductId,
     pub tenant_id: TenantId,
     pub job_id: JobId,
+    pub page_count: u32,
     pub action: WorkflowAction,
 }
 
@@ -37,6 +41,134 @@ pub trait WorkflowStarter: Send + Sync {
         &'a self,
         dispatch: WorkflowDispatch,
     ) -> impl Future<Output = Result<WorkflowDispatchOutcome, WorkflowDispatchError>> + Send + 'a;
+}
+
+#[derive(Debug, Copy, Clone, Error, PartialEq, Eq)]
+#[error("invalid durable workflow configuration")]
+pub struct DurableWorkflowConfigurationError;
+
+pub struct DurableWorkflowStarter {
+    jobs: PgJobStore,
+    max_attempts: u8,
+}
+
+impl DurableWorkflowStarter {
+    pub fn new(
+        jobs: PgJobStore,
+        max_attempts: u8,
+    ) -> Result<Self, DurableWorkflowConfigurationError> {
+        if !(1..=10).contains(&max_attempts) {
+            return Err(DurableWorkflowConfigurationError);
+        }
+        Ok(Self { jobs, max_attempts })
+    }
+
+    async fn cancel(
+        &self,
+        dispatch: &WorkflowDispatch,
+    ) -> Result<WorkflowDispatchOutcome, WorkflowDispatchError> {
+        let stored = self
+            .jobs
+            .load_page_workflow(&dispatch.tenant_id, &dispatch.product_id, &dispatch.job_id)
+            .await
+            .map_err(|_| WorkflowDispatchError::Unavailable)?;
+        let stored = match stored {
+            Some(stored) => stored,
+            None => {
+                let mut workflow = PageWorkflow::new(
+                    dispatch.job_id.clone(),
+                    dispatch.page_count,
+                    self.max_attempts,
+                )
+                .map_err(|_| WorkflowDispatchError::Unavailable)?;
+                workflow.request_cancellation();
+                return match self
+                    .jobs
+                    .create_page_workflow(
+                        &dispatch.tenant_id,
+                        &dispatch.product_id,
+                        &dispatch.job_id,
+                        workflow,
+                    )
+                    .await
+                    .map_err(|_| WorkflowDispatchError::Unavailable)?
+                {
+                    CreatePageWorkflowOutcome::Created(_) => Ok(WorkflowDispatchOutcome::Started),
+                    CreatePageWorkflowOutcome::Existing(stored) => {
+                        self.cancel_stored(dispatch, stored).await
+                    }
+                    CreatePageWorkflowOutcome::Conflict | CreatePageWorkflowOutcome::NotFound => {
+                        Err(WorkflowDispatchError::Unavailable)
+                    }
+                };
+            }
+        };
+        self.cancel_stored(dispatch, stored).await
+    }
+
+    async fn cancel_stored(
+        &self,
+        dispatch: &WorkflowDispatch,
+        mut stored: StoredPageWorkflow,
+    ) -> Result<WorkflowDispatchOutcome, WorkflowDispatchError> {
+        if stored.workflow.status() == PageWorkflowStatus::Cancelled {
+            return Ok(WorkflowDispatchOutcome::Existing);
+        }
+        stored.workflow.request_cancellation();
+        match self
+            .jobs
+            .save_page_workflow(
+                &dispatch.tenant_id,
+                &dispatch.product_id,
+                &dispatch.job_id,
+                stored.revision,
+                stored.workflow,
+            )
+            .await
+            .map_err(|_| WorkflowDispatchError::Unavailable)?
+        {
+            SavePageWorkflowOutcome::Saved(_) => Ok(WorkflowDispatchOutcome::Started),
+            SavePageWorkflowOutcome::Conflict | SavePageWorkflowOutcome::NotFound => {
+                Err(WorkflowDispatchError::Unavailable)
+            }
+        }
+    }
+}
+
+impl WorkflowStarter for DurableWorkflowStarter {
+    async fn dispatch(
+        &self,
+        dispatch: WorkflowDispatch,
+    ) -> Result<WorkflowDispatchOutcome, WorkflowDispatchError> {
+        match dispatch.action {
+            WorkflowAction::Start => {
+                let workflow = PageWorkflow::new(
+                    dispatch.job_id.clone(),
+                    dispatch.page_count,
+                    self.max_attempts,
+                )
+                .map_err(|_| WorkflowDispatchError::Unavailable)?;
+                match self
+                    .jobs
+                    .create_page_workflow(
+                        &dispatch.tenant_id,
+                        &dispatch.product_id,
+                        &dispatch.job_id,
+                        workflow,
+                    )
+                    .await
+                    .map_err(|_| WorkflowDispatchError::Unavailable)?
+                {
+                    CreatePageWorkflowOutcome::Created(_) => Ok(WorkflowDispatchOutcome::Started),
+                    CreatePageWorkflowOutcome::Existing(_) => Ok(WorkflowDispatchOutcome::Existing),
+                    CreatePageWorkflowOutcome::Conflict | CreatePageWorkflowOutcome::NotFound => {
+                        Err(WorkflowDispatchError::Unavailable)
+                    }
+                }
+            }
+            WorkflowAction::Cancel => self.cancel(&dispatch).await,
+        }
+    }
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -95,6 +227,7 @@ where
                 product_id: product_id.clone(),
                 tenant_id: tenant_id.clone(),
                 job_id: event.job_id,
+                page_count: event.page_count,
                 action: match event.event_type {
                     JobOutboxEventType::Accepted => WorkflowAction::Start,
                     JobOutboxEventType::CancellationRequested => WorkflowAction::Cancel,

@@ -65,6 +65,11 @@ async fn set_upload_state(admin_pool: &PgPool, tenant_id: &str, state: &str) {
          source_object_generation = case when $2 = 'accepted' then 2 end, \
          source_digest = case when $2 = 'accepted' then verified_digest end, \
          source_content_length = case when $2 = 'accepted' then verified_content_length end, \
+         parser_page_count = case when $2 = 'accepted' then 1 end, \
+         parser_maximum_page_pixels = case when $2 = 'accepted' then 1000000 end, \
+         parser_total_page_pixels = case when $2 = 'accepted' then 1000000 end, \
+         parser_profile = case when $2 = 'accepted' then 'strict-v1' end, \
+         parser_version = case when $2 = 'accepted' then '1.0.0' end, \
          inspection_attempts = case when $2 = 'accepted' then 1 else 0 end, \
          inspection_lease_owner = null, inspection_lease_expires_at = null, \
          accepted_at = case when $2 = 'accepted' then now() end \
@@ -233,6 +238,7 @@ async fn job_outbox_claim_and_publish_are_leased_scoped_and_idempotent() {
     assert_eq!(claimed.len(), 1);
     assert_eq!(claimed[0].job_id, JobId::new("job_OUTBOX").unwrap());
     assert_eq!(claimed[0].event_type, JobOutboxEventType::Accepted);
+    assert_eq!(claimed[0].page_count, 1);
     let event_id = claimed[0].event_id;
     let same_owner = store
         .claim_job_outbox(&tenant, &product, claim("relay-01"))

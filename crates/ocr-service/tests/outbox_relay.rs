@@ -5,8 +5,8 @@ use std::sync::{
 
 use ocr_domain::{IdempotencyKey, JobId, ProductId, RequestDigest, TenantId, UploadId};
 use ocr_service::{
-    JobOutboxRelay, RelayOutcome, WorkflowAction, WorkflowDispatch, WorkflowDispatchError,
-    WorkflowDispatchOutcome, WorkflowStarter,
+    DurableWorkflowStarter, JobOutboxRelay, RelayOutcome, WorkflowAction, WorkflowDispatch,
+    WorkflowDispatchError, WorkflowDispatchOutcome, WorkflowStarter,
 };
 use ocr_store::{CreateJob, PgJobStore};
 use sqlx::PgPool;
@@ -14,6 +14,7 @@ use tokio::sync::Mutex;
 
 struct RecordingStarter {
     dispatches: Mutex<Vec<WorkflowDispatch>>,
+    inner: DurableWorkflowStarter,
 }
 
 impl WorkflowStarter for RecordingStarter {
@@ -21,8 +22,8 @@ impl WorkflowStarter for RecordingStarter {
         &self,
         dispatch: WorkflowDispatch,
     ) -> Result<WorkflowDispatchOutcome, WorkflowDispatchError> {
-        self.dispatches.lock().await.push(dispatch);
-        Ok(WorkflowDispatchOutcome::Started)
+        self.dispatches.lock().await.push(dispatch.clone());
+        self.inner.dispatch(dispatch).await
     }
 }
 
@@ -54,6 +55,10 @@ async fn relay_dispatches_a_deterministic_workflow_once_then_acknowledges() {
     let admin = PgPool::connect(&std::env::var("TEST_DATABASE_ADMIN_URL").unwrap())
         .await
         .unwrap();
+    sqlx::query("delete from ocr_page_workflows where job_id = 'job_RELAY'")
+        .execute(&admin)
+        .await
+        .unwrap();
     sqlx::query("delete from ocr_outbox where job_id = 'job_RELAY'")
         .execute(&admin)
         .await
@@ -73,12 +78,13 @@ async fn relay_dispatches_a_deterministic_workflow_once_then_acknowledges() {
           expires_at, object_generation, verified_content_type, verified_content_length, \
           verified_digest, uploaded_at, source_bucket, source_object_name, \
           source_object_generation, source_digest, source_content_length, accepted_at, \
-          inspection_attempts) values \
+          inspection_attempts, parser_page_count, parser_maximum_page_pixels, \
+          parser_total_page_pixels, parser_profile, parser_version) values \
          ('upl_RELAY', 'ten_RELAY', 'kora', 'relay-upload', $1, 'dev-kora-ocr-quarantine', \
           'products/kora/tenants/ten_RELAY/quarantine/upl_RELAY', 'application/pdf', 8, $2, \
           'accepted', now() + interval '10 minutes', 42, 'application/pdf', 8, $2, now(), \
           'dev-kora-ocr-source', 'products/kora/tenants/ten_RELAY/documents/source', 43, $2, 8, \
-          now(), 1)",
+          now(), 1, 3, 1000000, 3000000, 'strict-v1', '1.0.0')",
     )
     .bind(format!("sha256:{}", "a".repeat(64)))
     .bind(format!("sha256:{}", "b".repeat(64)))
@@ -99,8 +105,9 @@ async fn relay_dispatches_a_deterministic_workflow_once_then_acknowledges() {
         .unwrap();
     let starter = Arc::new(RecordingStarter {
         dispatches: Mutex::new(Vec::new()),
+        inner: DurableWorkflowStarter::new(store.clone(), 3).unwrap(),
     });
-    let relay = JobOutboxRelay::new(store, Arc::clone(&starter));
+    let relay = JobOutboxRelay::new(store.clone(), Arc::clone(&starter));
     let tenant = TenantId::new("ten_RELAY").unwrap();
     let product = ProductId::new("kora").unwrap();
 
@@ -122,8 +129,14 @@ async fn relay_dispatches_a_deterministic_workflow_once_then_acknowledges() {
     assert_eq!(dispatches.len(), 1);
     assert_eq!(dispatches[0].workflow_id, "ocr-job-job_RELAY");
     assert_eq!(dispatches[0].job_id, JobId::new("job_RELAY").unwrap());
+    assert_eq!(dispatches[0].page_count, 3);
     assert_eq!(dispatches[0].action, WorkflowAction::Start);
     drop(dispatches);
+    assert!(store
+        .load_page_workflow(&tenant, &product, &JobId::new("job_RELAY").unwrap())
+        .await
+        .unwrap()
+        .is_some());
 
     sqlx::query(
         "insert into ocr_outbox (product_id, tenant_id, job_id, event_type, payload) values \
@@ -157,4 +170,26 @@ async fn relay_dispatches_a_deterministic_workflow_once_then_acknowledges() {
     assert_eq!(retried.len(), 2);
     assert_eq!(retried[0].workflow_id, retried[1].workflow_id);
     assert_eq!(retried[1].action, WorkflowAction::Cancel);
+    let cancellation = retried[1].clone();
+    drop(retried);
+
+    let durable = DurableWorkflowStarter::new(store.clone(), 3).unwrap();
+    assert_eq!(
+        durable.dispatch(cancellation.clone()).await.unwrap(),
+        WorkflowDispatchOutcome::Started
+    );
+    assert_eq!(
+        durable.dispatch(cancellation).await.unwrap(),
+        WorkflowDispatchOutcome::Existing
+    );
+    assert_eq!(
+        store
+            .load_page_workflow(&tenant, &product, &JobId::new("job_RELAY").unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .workflow
+            .status(),
+        ocr_domain::PageWorkflowStatus::Cancelled
+    );
 }

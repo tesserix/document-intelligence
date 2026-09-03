@@ -99,6 +99,7 @@ pub struct StoredJobOutboxEvent {
     pub event_id: i64,
     pub job_id: JobId,
     pub event_type: JobOutboxEventType,
+    pub page_count: u32,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -417,7 +418,7 @@ impl PgJobStore {
                 and (delivery_lease_owner = $3 or delivery_lease_expires_at is null \
                     or delivery_lease_expires_at <= now()) \
                 order by event_id for update skip locked limit $4 \
-             ) update ocr_outbox as events set \
+             ), updated as (update ocr_outbox as events set \
                 delivery_attempts = case \
                     when events.delivery_lease_owner = $3 \
                         and events.delivery_lease_expires_at > now() \
@@ -425,7 +426,13 @@ impl PgJobStore {
                 delivery_lease_owner = $3, \
                 delivery_lease_expires_at = now() + interval '5 minutes' \
              from candidates where events.event_id = candidates.event_id \
-             returning events.event_id, events.job_id, events.event_type",
+             returning events.event_id, events.job_id, events.event_type, events.product_id, \
+                 events.tenant_id) \
+             select updated.event_id, updated.job_id, updated.event_type, uploads.parser_page_count \
+             from updated join ocr_jobs jobs on jobs.job_id = updated.job_id \
+                 and jobs.product_id = updated.product_id and jobs.tenant_id = updated.tenant_id \
+             join ocr_uploads uploads on uploads.upload_id = jobs.upload_id \
+                 and uploads.product_id = jobs.product_id and uploads.tenant_id = jobs.tenant_id",
         )
         .bind(product_id.as_str())
         .bind(tenant_id.as_str())
@@ -1250,10 +1257,16 @@ fn stored_job_outbox_event(row: sqlx::postgres::PgRow) -> Result<StoredJobOutbox
         "ocr.job.cancellation_requested.v1" => JobOutboxEventType::CancellationRequested,
         _ => return Err(Error::InvalidOutboxEvent),
     };
+    let page_count = u32::try_from(row.try_get::<i32, _>("parser_page_count")?)
+        .map_err(|_| Error::InvalidOutboxEvent)?;
+    if !(1..=300).contains(&page_count) {
+        return Err(Error::InvalidOutboxEvent);
+    }
     Ok(StoredJobOutboxEvent {
         event_id,
         job_id,
         event_type,
+        page_count,
     })
 }
 
