@@ -8,14 +8,14 @@ use std::{
 
 use futures_util::FutureExt;
 use ocr_domain::{
-    DocumentId, DocumentResult, DocumentResultPayload, DocumentVersion, IdempotencyKey, JobId,
-    JobState, PageTask, PageWorkflow, PageWorkflowStatus, ProductId, RequestDigest, TenantId,
-    UploadId,
+    DocumentId, DocumentPage, DocumentResult, DocumentResultPayload, DocumentVersion,
+    IdempotencyKey, JobId, JobState, PageNumber, PageTask, PageWorkflow, PageWorkflowStatus,
+    ProductId, RequestDigest, TenantId, UploadId,
 };
 use ocr_service::{
-    CheckpointedPageRunner, PageProcessError, PageProcessFuture, PageProcessor, PageRunnerOutcome,
-    PublishResultError, ResultArtifactWriteError, ResultArtifactWriteFuture, ResultArtifactWriter,
-    ResultPublisher,
+    CheckpointedPageRunner, DocumentFinalizer, PageArtifactReadFuture, PageArtifactReader,
+    PageProcessError, PageProcessFuture, PageProcessor, PageRunnerOutcome, PublishResultError,
+    ResultArtifactWriteError, ResultArtifactWriteFuture, ResultArtifactWriter, ResultPublisher,
 };
 use ocr_store::{
     CommitResultOutcome, CreateJob, CreateOutcome, CreatePageWorkflowOutcome, PgJobStore,
@@ -151,6 +151,77 @@ impl ResultArtifactWriter for StaticResultWriter {
         _result: &'a DocumentResult,
     ) -> ResultArtifactWriteFuture<'a> {
         Box::pin(async { Ok(self.0.clone()) })
+    }
+}
+
+struct PageJsonReader;
+
+impl PageArtifactReader for PageJsonReader {
+    fn read<'a>(
+        &'a self,
+        artifact: &'a StoredPageArtifact,
+        _maximum_bytes: usize,
+    ) -> PageArtifactReadFuture<'a> {
+        Box::pin(async move {
+            let page = DocumentPage::new(
+                PageNumber::new(artifact.page).unwrap(),
+                1000,
+                1400,
+                Vec::new(),
+            )
+            .unwrap();
+            Ok(serde_json::to_vec(&page).unwrap())
+        })
+    }
+}
+
+struct WrongPageJsonReader;
+
+impl PageArtifactReader for WrongPageJsonReader {
+    fn read<'a>(
+        &'a self,
+        artifact: &'a StoredPageArtifact,
+        _maximum_bytes: usize,
+    ) -> PageArtifactReadFuture<'a> {
+        Box::pin(async move {
+            let page = DocumentPage::new(
+                PageNumber::new(artifact.page + 1).unwrap(),
+                1000,
+                1400,
+                Vec::new(),
+            )
+            .unwrap();
+            Ok(serde_json::to_vec(&page).unwrap())
+        })
+    }
+}
+
+struct MatchingResultWriter;
+
+impl ResultArtifactWriter for MatchingResultWriter {
+    fn write<'a>(
+        &'a self,
+        product_id: &'a ProductId,
+        tenant_id: &'a TenantId,
+        job_id: &'a JobId,
+        result: &'a DocumentResult,
+    ) -> ResultArtifactWriteFuture<'a> {
+        Box::pin(async move {
+            Ok(StoredResultLocator {
+                document_id: result.document_id.clone(),
+                document_version: result.document_version.clone(),
+                object_bucket: format!("dev-{}-ocr-results", product_id.as_str()),
+                object_name: format!(
+                    "products/{}/tenants/{}/results/{}/result.json",
+                    product_id.as_str(),
+                    tenant_id.as_str(),
+                    job_id.as_str()
+                ),
+                object_generation: 11,
+                object_digest: format!("sha256:{}", "c".repeat(64)),
+                content_length: 256,
+            })
+        })
     }
 }
 
@@ -443,4 +514,75 @@ async fn result_storage_failure_cannot_create_a_terminal_job_or_locator() {
         store.find_result(&tenant, &product, &job).await.unwrap(),
         ResultLookup::Ready(locator)
     );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn finalizer_reads_every_completed_page_and_publishes_the_document() {
+    let (store, admin_pool) = store().await;
+    let tenant = TenantId::new("ten_FINALIZER").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let job = JobId::new("job_FINALIZER").unwrap();
+    seed_job(&store, &admin_pool, job.as_str(), tenant.as_str()).await;
+    store
+        .create_page_workflow(
+            &tenant,
+            &product,
+            &job,
+            PageWorkflow::new(job.clone(), 2, 3).unwrap(),
+        )
+        .await
+        .unwrap();
+    let processor = RecordingProcessor::default();
+    let runner = CheckpointedPageRunner::new(&store, &processor, 2, 2).unwrap();
+    assert_eq!(
+        runner.run_once(&tenant, &product, &job).await.unwrap(),
+        PageRunnerOutcome::Progressed(PageWorkflowStatus::Completed)
+    );
+    let document_id = DocumentId::new("doc_FINALIZER").unwrap();
+    let document_version = DocumentVersion::new(&format!("sha256:{}", "d".repeat(64))).unwrap();
+    let bad_publisher = ResultPublisher::new(store.clone(), Arc::new(MatchingResultWriter));
+    let bad_finalizer = DocumentFinalizer::new(
+        store.clone(),
+        Arc::new(WrongPageJsonReader),
+        bad_publisher,
+        2,
+    )
+    .unwrap();
+    assert!(matches!(
+        bad_finalizer
+            .finalize(
+                &tenant,
+                &product,
+                &job,
+                document_id.clone(),
+                document_version.clone(),
+            )
+            .await,
+        Err(ocr_service::DocumentFinalizeError::InvalidPageArtifact)
+    ));
+    assert_eq!(
+        store
+            .find(&tenant, &product, &job)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Processing
+    );
+    let publisher = ResultPublisher::new(store.clone(), Arc::new(MatchingResultWriter));
+    let finalizer =
+        DocumentFinalizer::new(store.clone(), Arc::new(PageJsonReader), publisher, 2).unwrap();
+
+    assert!(matches!(
+        finalizer
+            .finalize(&tenant, &product, &job, document_id, document_version,)
+            .await
+            .unwrap(),
+        CommitResultOutcome::Committed(_)
+    ));
+    assert!(matches!(
+        store.find_result(&tenant, &product, &job).await.unwrap(),
+        ResultLookup::Ready(_)
+    ));
 }

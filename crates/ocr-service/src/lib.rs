@@ -1,9 +1,11 @@
 //! HTTP boundary for the document intelligence service.
 
+mod document_finalizer;
 mod document_reader;
 mod importer;
 mod malware;
 mod outbox_relay;
+mod page_artifacts;
 mod page_runner;
 mod parser_process;
 mod result_artifacts;
@@ -13,6 +15,11 @@ mod source_promotion;
 mod upload_artifacts;
 mod upload_intents;
 
+pub use document_finalizer::{DocumentFinalizeError, DocumentFinalizer};
+pub use page_artifacts::{
+    GcsPageArtifactReader, PageArtifactConfigurationError, PageArtifactReadError,
+    PageArtifactReadFuture, PageArtifactReader,
+};
 pub use page_runner::{
     CheckpointedPageRunner, PageProcessError, PageProcessFuture, PageProcessor, PageRunnerError,
     PageRunnerOutcome,

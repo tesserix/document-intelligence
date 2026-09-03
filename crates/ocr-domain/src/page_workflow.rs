@@ -117,6 +117,13 @@ impl PageWorkflow {
         &self.job_id
     }
 
+    pub fn successful_page_count(&self) -> usize {
+        self.pages
+            .iter()
+            .filter(|page| matches!(page, PageProgress::Succeeded { .. }))
+            .count()
+    }
+
     pub fn claim_ready(&mut self, limit: usize) -> Result<Vec<PageTask>> {
         if !(1..=64).contains(&limit) {
             return Err(Error::InvalidPageWorkflow);
