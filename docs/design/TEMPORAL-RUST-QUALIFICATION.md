@@ -33,17 +33,17 @@ The corresponding upstream `v0.8.0` tag resolves to commit `207acc165c8091421a3e
 - The qualification activity carries only scoped identifiers and a page number, heartbeats progress, checks cancellation before and after yielding, and returns page metadata only. It is not a production OCR implementation.
 - Workflow inputs, IDs, search attributes, logs and traces must never contain document text, filenames, URLs, object locators, credentials or extracted values.
 
-On 2026-09-04, `scripts/test-temporal-qualification.sh` ran against Temporal CLI 1.5.0 / server 1.29.0. A 51-page workflow completed through two runs and its first-run history replayed successfully with the candidate worker. A separate 300-page workflow was cancelled while its first page activity was executing; history proves Temporal requested activity cancellation, scheduled no following page and closed the workflow as cancelled. The script downloads the exact platform archive, verifies a hard-coded SHA-256 copied from the official release checksums, uses `EphemeralExe::ExistingPath`, and deletes its temporary server files on exit. This is a functional qualification result, not worker-loss evidence or the required 24-hour soak.
+On 2026-09-04, `scripts/test-temporal-qualification.sh` ran against Temporal CLI 1.5.0 / server 1.29.0. A 51-page workflow completed through two runs and its first-run history replayed successfully with the candidate worker. A separate 300-page workflow was cancelled while its first page activity was executing; history proves Temporal requested activity cancellation, scheduled no following page and closed the workflow as cancelled. A third 300-page workflow ran its activity worker in an isolated process: the harness killed that process during page 1, started a replacement, observed page 1 complete on attempt 2 with the recorded prior failure, completed the other 299 pages once and finished after six bounded runs. The script downloads the exact platform archive, verifies a hard-coded SHA-256 copied from the official release checksums, uses `EphemeralExe::ExistingPath`, and deletes its temporary server files on exit. This is functional qualification evidence, not the required 24-hour soak.
 
 The 0.8.0 high-level start API generates its own request ID and does not expose a caller-supplied start request ID. Workflow-ID reuse policy therefore provides start idempotency; the deterministic outbox request ID remains available for cancellation and audit correlation. This API limitation must be re-evaluated during upgrade qualification.
 
 ## Required integration matrix
 
-The following evidence is still mandatory before production selection:
+The following evidence remains mandatory before production selection. The first worker-loss case is now automated; the remaining cases are open:
 
-1. Start a 300-page fixture, terminate the worker during page processing, restart it, and prove only incomplete activities execute again.
-2. Replay histories produced by the current worker with the candidate worker and fail the gate on nondeterminism.
-3. Exercise cancellation before start, during a heartbeat, between page runs and after completion.
+1. Completed locally: start a 300-page fixture, terminate the isolated activity-worker process during page 1, replace it, and prove page 1 alone advances to attempt 2 before all six runs complete.
+2. Replay histories produced by a separately versioned current worker with the candidate worker and fail the gate on nondeterminism. Same-candidate first-run replay is complete.
+3. Exercise cancellation before start, between page runs and after completion. In-flight page cancellation is complete.
 4. Exercise bounded activity exhaustion and prove the job becomes partial/review-required without losing completed page artefacts.
 5. Exercise signals and child-workflow behavior if either is introduced; neither is approved merely by this client adapter.
 6. Prove worker-version routing with old and candidate workers active simultaneously.

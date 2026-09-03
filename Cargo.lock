@@ -1959,6 +1959,7 @@ dependencies = [
  "temporalio-workflow",
  "thiserror",
  "tokio",
+ "url",
 ]
 
 [[package]]

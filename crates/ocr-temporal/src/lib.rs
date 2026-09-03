@@ -1,6 +1,6 @@
 //! Temporal qualification adapter for OCR workflow dispatch.
 
-use std::{future::Future, ops::RangeInclusive, sync::Arc, time::Duration};
+use std::{future::Future, net::SocketAddr, ops::RangeInclusive, sync::Arc, time::Duration};
 
 use ocr_domain::{JobId, ProductId, TenantId};
 use ocr_service::{
@@ -12,6 +12,7 @@ use temporalio_client::{
     errors::{WorkflowInteractionError, WorkflowStartError},
     Client, RpcOptions, UntypedWorkflow, WorkflowCancelOptions, WorkflowStartOptions,
 };
+use temporalio_common::worker::WorkerDeploymentOptions;
 use temporalio_common::{protos::temporal::api::enums::v1::WorkflowIdReusePolicy, RetryPolicy};
 use temporalio_macros::{activities, workflow, workflow_methods};
 use temporalio_sdk::{
@@ -20,6 +21,7 @@ use temporalio_sdk::{
     WorkflowResult,
 };
 use thiserror::Error;
+use tokio::io::AsyncWriteExt;
 
 const WORKFLOW_SCHEMA_VERSION: &str = "1";
 const MAX_PAGE_COUNT: u32 = 300;
@@ -378,17 +380,42 @@ impl WorkflowRunInput {
     }
 }
 
-#[derive(Default)]
 pub struct QualificationPageActivities {
     started: Option<Arc<tokio::sync::Notify>>,
+    started_endpoint: Option<SocketAddr>,
+    heartbeat_steps: u32,
+}
+
+impl Default for QualificationPageActivities {
+    fn default() -> Self {
+        Self {
+            started: None,
+            started_endpoint: None,
+            heartbeat_steps: 1,
+        }
+    }
 }
 
 impl QualificationPageActivities {
     pub fn with_started_notifier(started: Arc<tokio::sync::Notify>) -> Self {
         Self {
             started: Some(started),
+            started_endpoint: None,
+            heartbeat_steps: 100,
         }
     }
+
+    pub fn held_for_process_loss(started_endpoint: SocketAddr) -> Self {
+        Self {
+            started: None,
+            started_endpoint: Some(started_endpoint),
+            heartbeat_steps: 1_000,
+        }
+    }
+}
+
+pub fn qualification_deployment_options() -> WorkerDeploymentOptions {
+    WorkerDeploymentOptions::from_build_id("ocr-temporal-qualification-v1".to_owned())
 }
 
 #[activities]
@@ -399,15 +426,18 @@ impl QualificationPageActivities {
         ctx: ActivityContext,
         input: PageActivityInput,
     ) -> Result<u32, ActivityError> {
-        let hold_for_observation = self.started.is_some();
         if let Some(started) = &self.started {
             started.notify_one();
+        }
+        if let Some(started_endpoint) = self.started_endpoint {
+            if let Ok(mut stream) = tokio::net::TcpStream::connect(started_endpoint).await {
+                let _ = stream.write_all(&[1]).await;
+            }
         }
         if ctx.is_cancelled() {
             return Err(ActivityError::cancelled());
         }
-        let heartbeat_steps = if hold_for_observation { 100 } else { 1 };
-        for progress in 1..=heartbeat_steps {
+        for progress in 1..=self.heartbeat_steps {
             ctx.record_heartbeat((input.page, progress)).await?;
             tokio::time::sleep(Duration::from_millis(10)).await;
             if ctx.is_cancelled() {

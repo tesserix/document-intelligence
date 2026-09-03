@@ -29,4 +29,4 @@ fi
 
 tar -xzf "${archive_path}" -C "${qualification_dir}" temporal
 TEMPORAL_CLI_PATH="${qualification_dir}/temporal" \
-  cargo test -p ocr-temporal --test live_temporal_qualification -- --ignored --nocapture
+  cargo test -p ocr-temporal --test live_temporal_qualification -- --ignored --nocapture --test-threads=1

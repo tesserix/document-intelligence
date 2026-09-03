@@ -1,16 +1,22 @@
-use std::sync::Arc;
+use std::{
+    net::{SocketAddr, TcpListener},
+    process::{Child, Command, Stdio},
+    sync::Arc,
+    time::Duration,
+};
 
 use ocr_domain::{JobId, ProductId, TenantId};
 use ocr_service::{WorkflowAction, WorkflowDispatch};
 use ocr_temporal::{
-    OcrDocumentWorkflow, QualificationPageActivities, WorkflowInput, WorkflowResultMetadata,
-    WorkflowRunInput,
+    qualification_deployment_options, OcrDocumentWorkflow, QualificationPageActivities,
+    WorkflowInput, WorkflowResultMetadata, WorkflowRunInput,
 };
 use temporalio_client::{
     errors::WorkflowGetResultError, WorkflowCancelOptions, WorkflowFetchHistoryOptions,
     WorkflowGetResultOptions, WorkflowStartOptions,
 };
 use temporalio_common::protos::temporal::api::enums::v1::EventType;
+use temporalio_common::protos::temporal::api::history::v1::history_event::Attributes;
 use temporalio_sdk::{
     testing::{
         DevServerLogLevel, EphemeralExe, LocalWorkflowEnvironmentOptions, WorkflowEnvironment,
@@ -33,6 +39,49 @@ fn workflow_input(page_count: u32) -> WorkflowRunInput {
         action: WorkflowAction::Start,
     };
     WorkflowRunInput::first(WorkflowInput::try_from(&dispatch).unwrap())
+}
+
+struct ActivityWorkerProcess(Child);
+
+impl ActivityWorkerProcess {
+    fn start(target: &str, task_queue: &str, started_endpoint: Option<SocketAddr>) -> Self {
+        let mode = if started_endpoint.is_some() {
+            "hold"
+        } else {
+            "normal"
+        };
+        let mut command = Command::new(env!("CARGO_BIN_EXE_temporal-qualification-worker"));
+        command.arg(target).arg(task_queue).arg(mode);
+        if let Some(endpoint) = started_endpoint {
+            command.arg(endpoint.to_string());
+        }
+        let child = command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::inherit())
+            .spawn()
+            .unwrap();
+        Self(child)
+    }
+
+    fn terminate(&mut self) {
+        let _ = self.0.kill();
+        let _ = self.0.wait();
+    }
+}
+
+impl Drop for ActivityWorkerProcess {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
+fn unused_loopback_port() -> u16 {
+    TcpListener::bind(("127.0.0.1", 0))
+        .unwrap()
+        .local_addr()
+        .unwrap()
+        .port()
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -189,6 +238,115 @@ async fn cancellation_during_page_activity_stops_following_pages() {
 
             shutdown();
             worker_task.await.unwrap().unwrap();
+            env.shutdown().await.unwrap();
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires scripts/test-temporal-qualification.sh"]
+async fn activity_worker_process_loss_retries_only_the_incomplete_page() {
+    let Ok(cli) = std::env::var("TEMPORAL_CLI_PATH") else {
+        return;
+    };
+    let port = unused_loopback_port();
+    let target = format!("http://127.0.0.1:{port}");
+    let env = WorkflowEnvironment::start_local(
+        LocalWorkflowEnvironmentOptions::builder()
+            .server_executable(EphemeralExe::ExistingPath(cli))
+            .port(port)
+            .log_level(DevServerLogLevel::Never)
+            .build(),
+    )
+    .await
+    .unwrap();
+    let runtime = Runtime::new_assume_tokio(Default::default()).unwrap();
+    let task_queue = "ocr-temporal-process-loss";
+    let worker_options = WorkerOptions::new(task_queue)
+        .deployment_options(qualification_deployment_options())
+        .register_workflow::<OcrDocumentWorkflow>()
+        .unwrap()
+        .build();
+    let mut workflow_worker = Worker::new(&runtime, env.client().clone(), worker_options).unwrap();
+    let shutdown = workflow_worker.shutdown_handle();
+
+    tokio::task::LocalSet::new()
+        .run_until(async move {
+            let workflow_worker_task =
+                tokio::task::spawn_local(async move { workflow_worker.run().await });
+            let started_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+                .await
+                .unwrap();
+            let started_endpoint = started_listener.local_addr().unwrap();
+            let mut first_activity_worker =
+                ActivityWorkerProcess::start(&target, task_queue, Some(started_endpoint));
+            let handle = env
+                .client()
+                .start_workflow(
+                    OcrDocumentWorkflow::run,
+                    workflow_input(300),
+                    WorkflowStartOptions::new(
+                        task_queue,
+                        "ocr-temporal-qualification-process-loss",
+                    )
+                    .build(),
+                )
+                .await
+                .unwrap();
+
+            let (mut started_stream, _) =
+                tokio::time::timeout(Duration::from_secs(15), started_listener.accept())
+                    .await
+                    .expect("activity worker did not start")
+                    .unwrap();
+            let mut signal = [0_u8; 1];
+            tokio::io::AsyncReadExt::read_exact(&mut started_stream, &mut signal)
+                .await
+                .unwrap();
+            assert_eq!(signal, [1]);
+            first_activity_worker.terminate();
+
+            let _replacement_activity_worker =
+                ActivityWorkerProcess::start(&target, task_queue, None);
+            let result: WorkflowResultMetadata = tokio::time::timeout(
+                Duration::from_secs(90),
+                handle.get_result(WorkflowGetResultOptions::default()),
+            )
+            .await
+            .unwrap()
+            .unwrap();
+            assert_eq!(result.pages_processed, 300);
+            assert_eq!(result.runs, 6);
+
+            let events = handle
+                .fetch_history(WorkflowFetchHistoryOptions::default())
+                .into_events()
+                .await
+                .unwrap();
+            let final_attempt = events
+                .iter()
+                .find_map(|event| match event.attributes.as_ref() {
+                    Some(Attributes::ActivityTaskStartedEventAttributes(attributes)) => {
+                        Some(attributes)
+                    }
+                    _ => None,
+                })
+                .unwrap();
+            assert_eq!(final_attempt.attempt, 2);
+            assert!(final_attempt.last_failure.is_some());
+            assert_eq!(
+                events
+                    .iter()
+                    .filter(|event| {
+                        EventType::try_from(event.event_type)
+                            == Ok(EventType::ActivityTaskCompleted)
+                    })
+                    .count(),
+                50
+            );
+
+            shutdown();
+            workflow_worker_task.await.unwrap().unwrap();
             env.shutdown().await.unwrap();
         })
         .await;

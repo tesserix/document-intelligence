@@ -17,7 +17,8 @@ temporalio-macros.workspace = true
 temporalio-sdk.workspace = true
 temporalio-workflow.workspace = true
 thiserror.workspace = true
-tokio.workspace = true
+tokio = { workspace = true, features = ["net"] }
+url.workspace = true
 
 [dev-dependencies]
 temporalio-sdk = { workspace = true, features = ["testing"] }
