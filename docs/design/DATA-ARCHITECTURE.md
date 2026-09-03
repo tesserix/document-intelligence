@@ -71,13 +71,20 @@ Snapshots protect recovery time, but canonical records allow a full rebuild. Col
 Example namespaces:
 
 ```text
-ocr:job:v1:{tenant_id}:{job_id}
+ocr:job-status:v1:{product_id}:{tenant_id}:{job_id}
 ocr:result-meta:v1:{tenant_id}:{document_version}
 ocr:admission:v1:{tenant_id}:{window}
 ocr:model-manifest:v1:{model_digest}
 ```
 
-Every key has a TTL. Active job cache entries are short lived; immutable terminal metadata may be longer. Hot-key refill uses single-flight. Rate-limit scripts set expiry atomically. Valkey loss never loses a job, event, correction or deletion request.
+Every key has a TTL. The implemented job-status record is limited to product,
+tenant and job identifiers, status and creation time; it cannot contain OCR
+text, filenames, URLs, object locators, credentials or result payloads. Active
+job cache entries are short lived; immutable terminal metadata may be longer.
+Every hit is checked again against verified product and tenant scope. A miss,
+malformed or oversized record, timeout or Valkey failure falls through to the
+authoritative scoped Postgres query. Rate-limit scripts set expiry atomically.
+Valkey loss never loses a job, event, correction or deletion request.
 
 ## Failure behavior
 

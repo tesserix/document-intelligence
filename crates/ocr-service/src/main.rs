@@ -3,8 +3,9 @@ use std::{collections::HashMap, env, str::FromStr, sync::Arc};
 use anyhow::{Context, Result};
 use ocr_domain::ProductId;
 use ocr_service::{
-    router, router_with_dependencies, router_with_result_reader, router_with_upload_services,
-    GcsResultReader, GcsUploadArtifactReader, GcsUploadIssuer, TelemetryConfig, TelemetryRuntime,
+    router_with_runtime_dependencies, CachePolicy, GcsResultReader, GcsUploadArtifactReader,
+    GcsUploadIssuer, JobStatusCache, ResultArtifactReader, TelemetryConfig, TelemetryRuntime,
+    UploadArtifactReader, UploadIntentIssuer, ValkeyJobStatusCache,
 };
 use ocr_store::PgJobStore;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -32,45 +33,37 @@ async fn main() -> Result<()> {
         .connect_lazy_with(options);
     let result_buckets = optional_csv_env("RESULT_BUCKETS")?;
     let upload_buckets = optional_product_buckets_env("QUARANTINE_BUCKETS")?;
-    let application = match (result_buckets, upload_buckets) {
-        (Some(result_buckets), Some(upload_buckets)) => {
-            let reader = GcsResultReader::new(&result_buckets)
-                .context("RESULT_BUCKETS contains invalid configuration")?;
-            let issuer =
-                GcsUploadIssuer::new(&upload_buckets.values().cloned().collect::<Vec<_>>())
-                    .context("QUARANTINE_BUCKETS contains invalid configuration")?;
-            let artifact_reader =
-                GcsUploadArtifactReader::new(&upload_buckets.values().cloned().collect::<Vec<_>>())
-                    .context("QUARANTINE_BUCKETS contains invalid configuration")?;
-            router_with_dependencies(
-                PgJobStore::new(pool),
-                Arc::new(reader),
+    let results: Option<Arc<dyn ResultArtifactReader>> = result_buckets
+        .map(|buckets| {
+            GcsResultReader::new(&buckets)
+                .map(|reader| Arc::new(reader) as Arc<dyn ResultArtifactReader>)
+        })
+        .transpose()
+        .context("RESULT_BUCKETS contains invalid configuration")?;
+    let (upload_buckets, uploads, upload_artifacts) = match upload_buckets {
+        Some(upload_buckets) => {
+            let buckets = upload_buckets.values().cloned().collect::<Vec<_>>();
+            let issuer = GcsUploadIssuer::new(&buckets)
+                .context("QUARANTINE_BUCKETS contains invalid configuration")?;
+            let artifact_reader = GcsUploadArtifactReader::new(&buckets)
+                .context("QUARANTINE_BUCKETS contains invalid configuration")?;
+            (
                 upload_buckets,
-                Arc::new(issuer),
-                Arc::new(artifact_reader),
+                Some(Arc::new(issuer) as Arc<dyn UploadIntentIssuer>),
+                Some(Arc::new(artifact_reader) as Arc<dyn UploadArtifactReader>),
             )
         }
-        (Some(result_buckets), None) => {
-            let reader = GcsResultReader::new(&result_buckets)
-                .context("RESULT_BUCKETS contains invalid configuration")?;
-            router_with_result_reader(PgJobStore::new(pool), Arc::new(reader))
-        }
-        (None, Some(upload_buckets)) => {
-            let issuer =
-                GcsUploadIssuer::new(&upload_buckets.values().cloned().collect::<Vec<_>>())
-                    .context("QUARANTINE_BUCKETS contains invalid configuration")?;
-            let artifact_reader =
-                GcsUploadArtifactReader::new(&upload_buckets.values().cloned().collect::<Vec<_>>())
-                    .context("QUARANTINE_BUCKETS contains invalid configuration")?;
-            router_with_upload_services(
-                PgJobStore::new(pool),
-                upload_buckets,
-                Arc::new(issuer),
-                Arc::new(artifact_reader),
-            )
-        }
-        (None, None) => router(PgJobStore::new(pool)),
+        None => (HashMap::new(), None, None),
     };
+    let job_status_cache = optional_job_status_cache().await?;
+    let application = router_with_runtime_dependencies(
+        PgJobStore::new(pool),
+        results,
+        upload_buckets,
+        uploads,
+        upload_artifacts,
+        job_status_cache,
+    );
     let listener = TcpListener::bind(&bind_address)
         .await
         .with_context(|| format!("cannot bind to {bind_address}"))?;
@@ -82,6 +75,63 @@ async fn main() -> Result<()> {
         .context("HTTP server stopped unexpectedly");
     telemetry.shutdown().context("telemetry shutdown failed")?;
     server
+}
+
+async fn optional_job_status_cache() -> Result<Option<(Arc<dyn JobStatusCache>, CachePolicy)>> {
+    let url = match env::var("VALKEY_URL") {
+        Ok(value) if !value.trim().is_empty() => value,
+        Ok(_) => anyhow::bail!("VALKEY_URL must not be empty"),
+        Err(env::VarError::NotPresent) => return Ok(None),
+        Err(env::VarError::NotUnicode(_)) => anyhow::bail!("VALKEY_URL is not valid UTF-8"),
+    };
+    let policy = parse_job_status_cache_policy(
+        env::var("JOB_STATUS_CACHE_ACTIVE_TTL_SECONDS")
+            .ok()
+            .as_deref(),
+        env::var("JOB_STATUS_CACHE_TERMINAL_TTL_SECONDS")
+            .ok()
+            .as_deref(),
+        env::var("JOB_STATUS_CACHE_TIMEOUT_MILLISECONDS")
+            .ok()
+            .as_deref(),
+        env::var("JOB_STATUS_CACHE_MAXIMUM_RECORD_BYTES")
+            .ok()
+            .as_deref(),
+    )?;
+    let cache = ValkeyJobStatusCache::connect(&url, policy.clone())
+        .await
+        .context("Valkey cache configuration is invalid")?;
+    Ok(Some((Arc::new(cache), policy)))
+}
+
+fn parse_job_status_cache_policy(
+    active_ttl_seconds: Option<&str>,
+    terminal_ttl_seconds: Option<&str>,
+    timeout_milliseconds: Option<&str>,
+    maximum_record_bytes: Option<&str>,
+) -> Result<CachePolicy> {
+    let active_ttl = parse_bounded_number(active_ttl_seconds, 10, "active TTL")?;
+    let terminal_ttl = parse_bounded_number(terminal_ttl_seconds, 300, "terminal TTL")?;
+    let timeout = parse_bounded_number(timeout_milliseconds, 25, "timeout")?;
+    let maximum_record_bytes = parse_bounded_number(maximum_record_bytes, 512, "record limit")?;
+    CachePolicy::new(
+        std::time::Duration::from_secs(active_ttl),
+        std::time::Duration::from_secs(terminal_ttl),
+        std::time::Duration::from_millis(timeout),
+        maximum_record_bytes,
+    )
+    .context("job status cache policy is invalid")
+}
+
+fn parse_bounded_number<T>(value: Option<&str>, default: T, name: &str) -> Result<T>
+where
+    T: std::str::FromStr,
+{
+    value
+        .map(str::parse)
+        .transpose()
+        .map_err(|_| anyhow::anyhow!("job status cache {name} is invalid"))
+        .map(|value| value.unwrap_or(default))
 }
 
 fn optional_csv_env(name: &str) -> Result<Option<Vec<String>>> {
@@ -154,7 +204,8 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::parse_product_buckets;
+    use super::{parse_job_status_cache_policy, parse_product_buckets};
+    use std::time::Duration;
 
     #[test]
     fn product_bucket_configuration_is_explicit_and_unique() {
@@ -171,5 +222,24 @@ mod tests {
             parse_product_buckets(vec!["kora=first".to_owned(), "kora=second".to_owned(),])
                 .is_err()
         );
+    }
+
+    #[test]
+    fn job_status_cache_policy_rejects_unbounded_configuration() {
+        let policy =
+            parse_job_status_cache_policy(Some("10"), Some("300"), Some("25"), Some("512"))
+                .unwrap();
+        assert_eq!(
+            policy.ttl(ocr_domain::JobState::Processing),
+            Duration::from_secs(10)
+        );
+        assert_eq!(
+            policy.ttl(ocr_domain::JobState::Completed),
+            Duration::from_secs(300)
+        );
+
+        assert!(parse_job_status_cache_policy(Some("0"), None, None, None).is_err());
+        assert!(parse_job_status_cache_policy(None, None, Some("0"), None).is_err());
+        assert!(parse_job_status_cache_policy(None, None, None, Some("999999")).is_err());
     }
 }

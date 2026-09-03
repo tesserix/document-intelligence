@@ -13,7 +13,7 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 thiserror = "2.0"
 sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio", "postgres", "time"] }
-tokio = { version = "1.47", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "time"] }
+tokio = { version = "1.47", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
 bytes = "1.10"
 futures-util = "0.3"
 axum = "0.8"
@@ -37,3 +37,4 @@ object_store = { version = "0.14.1", default-features = false, features = ["gcp"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 url = "2.5"
 lopdf = { version = "0.44", default-features = false }
+fred = { version = "=10.1.0", default-features = false, features = ["enable-rustls", "i-keys"] }
