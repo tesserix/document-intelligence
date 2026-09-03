@@ -1,0 +1,21 @@
+[package]
+name = "ocr-service"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+rust-version.workspace = true
+
+[dependencies]
+axum.workspace = true
+ocr-domain = { path = "../ocr-domain" }
+ocr-store = { path = "../ocr-store" }
+serde.workspace = true
+sqlx.workspace = true
+tower-http.workspace = true
+uuid.workspace = true
+
+[dev-dependencies]
+http-body-util.workspace = true
+serde_json.workspace = true
+tokio.workspace = true
+tower.workspace = true
