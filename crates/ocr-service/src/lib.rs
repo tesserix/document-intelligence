@@ -13,6 +13,7 @@ mod result_artifacts;
 mod result_assembly;
 mod result_publisher;
 mod source_promotion;
+mod telemetry;
 mod upload_artifacts;
 mod upload_intents;
 mod webhook;
@@ -40,6 +41,7 @@ pub use result_artifacts::{
 };
 pub use result_assembly::{assemble_document_result, ResultAssemblyError};
 pub use result_publisher::{PublishResultError, ResultPublisher};
+pub use telemetry::{TelemetryConfig, TelemetryConfigError, TelemetryInitError, TelemetryRuntime};
 pub use upload_artifacts::{GcsUploadArtifactReader, UploadArtifactConfigurationError};
 pub use upload_intents::{GcsUploadIssuer, UploadIntentConfigurationError};
 pub use webhook::{
@@ -74,6 +76,7 @@ use ocr_store::{
     CancelOutcome, CreateJob, CreateOutcome, CreateUpload, CreateUploadOutcome, PgJobStore,
     RecordUpload, RecordUploadOutcome, ResultLookup, StoredResultLocator, UploadState,
 };
+use opentelemetry::{global, propagation::Extractor};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tower_http::{
@@ -82,12 +85,26 @@ use tower_http::{
     timeout::TimeoutLayer,
     trace::TraceLayer,
 };
+use tracing::{field, info_span, Span};
+use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
 const MAXIMUM_RESULT_BYTES: usize = 16 * 1024 * 1024;
 pub(crate) const MAXIMUM_UPLOAD_BYTES: i64 = 100 * 1024 * 1024;
 const UPLOAD_INTENT_TTL_MINUTES: i64 = 10;
+
+struct RequestHeaderExtractor<'a>(&'a HeaderMap);
+
+impl Extractor for RequestHeaderExtractor<'_> {
+    fn get(&self, key: &str) -> Option<&str> {
+        self.0.get(key).and_then(|value| value.to_str().ok())
+    }
+
+    fn keys(&self) -> Vec<&str> {
+        self.0.keys().map(HeaderName::as_str).collect()
+    }
+}
 
 #[derive(Debug)]
 pub struct ResultArtifactError;
@@ -210,12 +227,15 @@ where
     type Rejection = ApiError;
 
     async fn from_request_parts(parts: &mut Parts, _state: &S) -> Result<Self, Self::Rejection> {
-        parts
+        let identity = parts
             .extensions
             .get::<TrustedIdentity>()
             .cloned()
             .map(Self)
-            .ok_or_else(|| ApiError::authentication_required(request_id(parts)))
+            .ok_or_else(|| ApiError::authentication_required(request_id(parts)))?;
+        Span::current().record("product.id", identity.0.product_id.as_str());
+        Span::current().record("tenant.id", identity.0.tenant_id.as_str());
+        Ok(identity)
     }
 }
 
@@ -598,7 +618,42 @@ fn build_router(store: PgJobStore, dependencies: RouterDependencies) -> Router {
             upload_artifacts: dependencies.upload_artifacts,
             upload_artifacts_configured: dependencies.upload_artifacts_configured,
         })
-        .layer(TraceLayer::new_for_http())
+        .layer(
+            TraceLayer::new_for_http()
+                .make_span_with(|request: &axum::extract::Request| {
+                    let request_id = request
+                        .headers()
+                        .get(REQUEST_ID_HEADER)
+                        .and_then(|value| value.to_str().ok())
+                        .unwrap_or("missing");
+                    let span = info_span!(
+                        "document.api.request",
+                        http.request.method = %request.method(),
+                        http.response.status_code = field::Empty,
+                        duration_ms = field::Empty,
+                        request.id = request_id,
+                        product.id = field::Empty,
+                        tenant.id = field::Empty,
+                    );
+                    let parent = global::get_text_map_propagator(|propagator| {
+                        propagator.extract(&RequestHeaderExtractor(request.headers()))
+                    });
+                    let _parent_attached = span.set_parent(parent);
+                    span
+                })
+                .on_response(
+                    |response: &axum::response::Response, latency: Duration, span: &Span| {
+                        span.record("http.response.status_code", response.status().as_u16());
+                        span.record("duration_ms", latency.as_millis() as u64);
+                        tracing::info!(
+                            parent: span,
+                            http.response.status_code = response.status().as_u16(),
+                            duration_ms = latency.as_millis() as u64,
+                            "request completed"
+                        );
+                    },
+                ),
+        )
         .layer(TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             Duration::from_secs(10),

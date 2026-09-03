@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use ocr_domain::ProductId;
 use ocr_service::{
     router, router_with_dependencies, router_with_result_reader, router_with_upload_services,
-    GcsResultReader, GcsUploadArtifactReader, GcsUploadIssuer,
+    GcsResultReader, GcsUploadArtifactReader, GcsUploadIssuer, TelemetryConfig, TelemetryRuntime,
 };
 use ocr_store::PgJobStore;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -14,10 +14,13 @@ use tracing_subscriber::EnvFilter;
 
 #[tokio::main]
 async fn main() -> Result<()> {
-    tracing_subscriber::fmt()
-        .json()
-        .with_env_filter(EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()))
-        .init();
+    let telemetry_config = TelemetryConfig::from_process_environment()
+        .context("telemetry configuration is invalid")?;
+    let telemetry = TelemetryRuntime::install(
+        &telemetry_config,
+        EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
+    )
+    .context("telemetry initialization failed")?;
 
     let database_url = env::var("DATABASE_URL").context("DATABASE_URL is required")?;
     let bind_address = env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".to_owned());
@@ -73,10 +76,12 @@ async fn main() -> Result<()> {
         .with_context(|| format!("cannot bind to {bind_address}"))?;
 
     info!(bind_address, "OCR service listening");
-    axum::serve(listener, application)
+    let server = axum::serve(listener, application)
         .with_graceful_shutdown(shutdown_signal())
         .await
-        .context("HTTP server stopped unexpectedly")
+        .context("HTTP server stopped unexpectedly");
+    telemetry.shutdown().context("telemetry shutdown failed")?;
+    server
 }
 
 fn optional_csv_env(name: &str) -> Result<Option<Vec<String>>> {
