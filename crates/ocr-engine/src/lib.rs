@@ -1,7 +1,9 @@
 //! Safe, bounded image preparation for the Rust OCR engine.
 
+mod detection;
 mod geometry;
 
+pub use detection::{select_regions, DetectionCandidate, DetectionLimits};
 pub use geometry::{CropRegion, Rotation, TransformChain, TransformStep};
 
 use std::io::Cursor;
@@ -30,6 +32,12 @@ pub enum Error {
     UnsupportedOrInvalidImage,
     #[error("image geometry is invalid")]
     InvalidGeometry,
+    #[error("detector candidate is invalid")]
+    InvalidDetectionCandidate,
+    #[error("detector limits are invalid")]
+    InvalidDetectionLimits,
+    #[error("detector output exceeds the configured candidate limit")]
+    DetectionOutputLimitExceeded { candidates: usize, limit: usize },
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
