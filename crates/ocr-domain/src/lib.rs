@@ -1,5 +1,9 @@
 //! Provider-neutral document intelligence contracts.
 
+mod page_workflow;
+
+pub use page_workflow::{PageTask, PageWorkflow, PageWorkflowStatus};
+
 use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
@@ -62,6 +66,10 @@ pub enum Error {
     InvalidTextObservation,
     #[error("document page is invalid")]
     InvalidDocumentPage,
+    #[error("page workflow is invalid")]
+    InvalidPageWorkflow,
+    #[error("page task does not match active workflow state")]
+    StalePageTask,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
