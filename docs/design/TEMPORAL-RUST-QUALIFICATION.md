@@ -44,7 +44,7 @@ The following evidence remains mandatory before production selection. The first 
 1. Completed locally: start a 300-page fixture, terminate the isolated activity-worker process during page 1, replace it, and prove page 1 alone advances to attempt 2 before all six runs complete.
 2. Replay histories produced by a separately versioned current worker with the candidate worker and fail the gate on nondeterminism. Same-candidate first-run replay is complete.
 3. Completed locally: cancellation before start, during an active page, after continue-as-new enters page 51 and after completion is idempotent and schedules no later page.
-4. Exercise bounded activity exhaustion and prove the job becomes partial/review-required without losing completed page artefacts.
+4. CNPG integration is complete: a retryable page fails exactly three attempts, the other page artefacts remain addressable and the finalizer publishes a `partial` result. Injecting the same exhaustion through the SDK activity boundary remains open.
 5. Exercise signals and child-workflow behavior if either is introduced; neither is approved merely by this client adapter.
 6. Prove worker-version routing with old and candidate workers active simultaneously.
 7. Run the upgrade soak below for at least 24 hours and retain server/worker versions, history sizes, retries, latency and memory artefacts.
