@@ -33,6 +33,14 @@ pub enum CreateOutcome {
 }
 
 #[derive(Debug, PartialEq, Eq)]
+pub enum CancelOutcome {
+    Requested(StoredJob),
+    Existing(StoredJob),
+    NotCancellable(StoredJob),
+    NotFound,
+}
+
+#[derive(Debug, PartialEq, Eq)]
 pub struct StoredJob {
     pub job_id: JobId,
     pub state: JobState,
@@ -125,6 +133,64 @@ impl PgJobStore {
         transaction.commit().await?;
 
         row.map(stored_job).transpose()
+    }
+
+    pub async fn cancel(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        job_id: &JobId,
+    ) -> Result<CancelOutcome> {
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let updated = sqlx::query(
+            "update ocr_jobs set status = 'cancelling', updated_at = now() \
+             where product_id = $1 and tenant_id = $2 and job_id = $3 \
+             and status in ('accepted', 'inspecting', 'processing', 'validating') \
+             returning job_id, status::text as status, created_at",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(job_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+
+        if let Some(updated) = updated {
+            sqlx::query(
+                "insert into ocr_outbox \
+                 (product_id, tenant_id, job_id, event_type, payload) \
+                 values ($1, $2, $3, 'ocr.job.cancellation_requested.v1', \
+                 jsonb_build_object('job_id', $3::text, 'status', 'cancelling'))",
+            )
+            .bind(product_id.as_str())
+            .bind(tenant_id.as_str())
+            .bind(job_id.as_str())
+            .execute(&mut *transaction)
+            .await?;
+            let job = stored_job(updated)?;
+            transaction.commit().await?;
+            return Ok(CancelOutcome::Requested(job));
+        }
+
+        let existing = sqlx::query(
+            "select job_id, status::text as status, created_at from ocr_jobs \
+             where product_id = $1 and tenant_id = $2 and job_id = $3",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(job_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+
+        let Some(job) = existing.map(stored_job).transpose()? else {
+            return Ok(CancelOutcome::NotFound);
+        };
+        if matches!(job.state, JobState::Cancelling | JobState::Cancelled) {
+            Ok(CancelOutcome::Existing(job))
+        } else {
+            Ok(CancelOutcome::NotCancellable(job))
+        }
     }
 }
 

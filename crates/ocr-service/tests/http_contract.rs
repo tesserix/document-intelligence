@@ -101,7 +101,35 @@ async fn create_replay_read_and_cross_tenant_visibility_are_end_to_end() {
     assert_eq!(replayed["job_id"], created["job_id"]);
     assert_eq!(replayed["created_at"], created["created_at"]);
 
+    let cancel = application
+        .clone()
+        .layer(Extension(TrustedIdentity::new("kora", "ten_HTTP").unwrap()))
+        .oneshot(
+            Request::post(format!("/v1/ocr/jobs/{job_id}/cancel"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cancel.status(), StatusCode::OK);
+    let cancelled: Value =
+        serde_json::from_slice(&cancel.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(cancelled["status"], "cancelling");
+
+    let cancel_replay = application
+        .clone()
+        .layer(Extension(TrustedIdentity::new("kora", "ten_HTTP").unwrap()))
+        .oneshot(
+            Request::post(format!("/v1/ocr/jobs/{job_id}/cancel"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(cancel_replay.status(), StatusCode::OK);
+
     let foreign = application
+        .clone()
         .layer(Extension(
             TrustedIdentity::new("kora", "ten_OTHER").unwrap(),
         ))
@@ -113,6 +141,19 @@ async fn create_replay_read_and_cross_tenant_visibility_are_end_to_end() {
         .await
         .unwrap();
     assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
+
+    let foreign_cancel = application
+        .layer(Extension(
+            TrustedIdentity::new("kora", "ten_OTHER").unwrap(),
+        ))
+        .oneshot(
+            Request::post(format!("/v1/ocr/jobs/{job_id}/cancel"))
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(foreign_cancel.status(), StatusCode::NOT_FOUND);
 }
 
 #[tokio::test]

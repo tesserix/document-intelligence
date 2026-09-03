@@ -10,7 +10,7 @@ use axum::{
     Json, Router,
 };
 use ocr_domain::{IdempotencyKey, JobId, JobState, ProductId, RequestDigest, TenantId};
-use ocr_store::{CreateJob, CreateOutcome, PgJobStore};
+use ocr_store::{CancelOutcome, CreateJob, CreateOutcome, PgJobStore};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use tower_http::{
@@ -124,6 +124,17 @@ impl ApiError {
             },
         }
     }
+
+    fn not_cancellable(request_id: String) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            body: ErrorBody {
+                code: "job_not_cancellable",
+                message: "job cannot be cancelled in its current state",
+                request_id,
+            },
+        }
+    }
 }
 
 impl IntoResponse for ApiError {
@@ -224,6 +235,7 @@ pub fn router(store: PgJobStore) -> Router {
         .route("/healthz", get(|| async { StatusCode::OK }))
         .route("/v1/ocr/jobs", post(create_job))
         .route("/v1/ocr/jobs/{job_id}", get(get_job))
+        .route("/v1/ocr/jobs/{job_id}/cancel", post(cancel_job))
         .with_state(store)
         .layer(TraceLayer::new_for_http())
         .layer(TimeoutLayer::with_status_code(
@@ -335,6 +347,32 @@ async fn get_job(
         .await
         .map_err(|_| ApiError::unavailable(request_id.clone()))?
         .ok_or_else(|| ApiError::not_found(request_id))?;
+    Ok(Json(JobResponse {
+        job_id: job.job_id,
+        status: job.state,
+        created_at: job.created_at,
+        status_url: None,
+        result_url: None,
+    }))
+}
+
+async fn cancel_job(
+    State(store): State<PgJobStore>,
+    identity: VerifiedIdentity,
+    Path(job_id): Path<String>,
+    request: axum::extract::Request,
+) -> Result<Json<JobResponse>, ApiError> {
+    let request_id = request_id_from_extensions(request.extensions());
+    let job_id = JobId::new(&job_id).map_err(|_| ApiError::not_found(request_id.clone()))?;
+    let outcome = store
+        .cancel(&identity.0.tenant_id, &identity.0.product_id, &job_id)
+        .await
+        .map_err(|_| ApiError::unavailable(request_id.clone()))?;
+    let job = match outcome {
+        CancelOutcome::Requested(job) | CancelOutcome::Existing(job) => job,
+        CancelOutcome::NotCancellable(_) => return Err(ApiError::not_cancellable(request_id)),
+        CancelOutcome::NotFound => return Err(ApiError::not_found(request_id)),
+    };
     Ok(Json(JobResponse {
         job_id: job.job_id,
         status: job.state,

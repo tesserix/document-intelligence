@@ -1,5 +1,5 @@
 use ocr_domain::{IdempotencyKey, JobId, ProductId, RequestDigest, TenantId};
-use ocr_store::{CreateJob, CreateOutcome, Error, PgJobStore};
+use ocr_store::{CancelOutcome, CreateJob, CreateOutcome, Error, PgJobStore};
 use sqlx::PgPool;
 
 fn request(job_id: &str, tenant_id: &str, key: &str, digest: char) -> CreateJob {
@@ -109,4 +109,41 @@ async fn row_level_security_fails_closed_without_a_trusted_scope() {
         .await
         .unwrap();
     assert_eq!(visible, 0);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn cancellation_is_atomic_and_idempotent() {
+    let (store, admin_pool, _) = store().await;
+    let job_id = JobId::new("job_CANCEL").unwrap();
+    store
+        .create(request(
+            job_id.as_str(),
+            "ten_CANCEL",
+            "request-cancel",
+            'c',
+        ))
+        .await
+        .unwrap();
+
+    let tenant_id = TenantId::new("ten_CANCEL").unwrap();
+    let product_id = ProductId::new("kora").unwrap();
+    let first = store
+        .cancel(&tenant_id, &product_id, &job_id)
+        .await
+        .unwrap();
+    let replay = store
+        .cancel(&tenant_id, &product_id, &job_id)
+        .await
+        .unwrap();
+
+    assert!(matches!(first, CancelOutcome::Requested(_)));
+    assert!(matches!(replay, CancelOutcome::Existing(_)));
+    let outbox_count: i64 = sqlx::query_scalar(
+        "select count(*) from ocr_outbox where job_id = 'job_CANCEL' and event_type = 'ocr.job.cancellation_requested.v1'",
+    )
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(outbox_count, 1);
 }
