@@ -44,6 +44,20 @@ pub enum Error {
     InvalidRequestDigest,
     #[error("result schema version is unsupported")]
     UnsupportedResultSchemaVersion,
+    #[error("stable code is invalid")]
+    InvalidStableCode,
+    #[error("table id is invalid")]
+    InvalidTableId,
+    #[error("table must contain bounded cells")]
+    InvalidTable,
+    #[error("document content requires source evidence")]
+    MissingDocumentEvidence,
+    #[error("extracted field name is invalid")]
+    InvalidFieldName,
+    #[error("processing provenance is invalid")]
+    InvalidProcessingProvenance,
+    #[error("cost is invalid")]
+    InvalidCost,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -626,6 +640,322 @@ impl ExtractedValue {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct StableCode(String);
+
+impl StableCode {
+    pub fn new(value: &str) -> Result<Self> {
+        let mut bytes = value.bytes();
+        let valid = (1..=64).contains(&value.len())
+            && bytes.next().is_some_and(|byte| byte.is_ascii_lowercase())
+            && bytes.all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'_');
+        if valid {
+            Ok(Self(value.to_owned()))
+        } else {
+            Err(Error::InvalidStableCode)
+        }
+    }
+}
+
+impl TryFrom<String> for StableCode {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self> {
+        Self::new(&value)
+    }
+}
+
+impl From<StableCode> for String {
+    fn from(value: StableCode) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(try_from = "String", into = "String")]
+pub struct TableId(String);
+
+impl TableId {
+    pub fn new(value: &str) -> Result<Self> {
+        validated_id(value, "tbl_", Error::InvalidTableId).map(Self)
+    }
+}
+
+impl TryFrom<String> for TableId {
+    type Error = Error;
+
+    fn try_from(value: String) -> Result<Self> {
+        Self::new(&value)
+    }
+}
+
+impl From<TableId> for String {
+    fn from(value: TableId) -> Self {
+        value.0
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawTableCell")]
+pub struct TableCell {
+    pub row: u32,
+    pub column: u32,
+    pub text: String,
+    pub confidence: Confidence,
+    pub evidence: Vec<Evidence>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawTableCell {
+    row: u32,
+    column: u32,
+    text: String,
+    confidence: Confidence,
+    evidence: Vec<Evidence>,
+}
+
+impl TryFrom<RawTableCell> for TableCell {
+    type Error = Error;
+
+    fn try_from(value: RawTableCell) -> Result<Self> {
+        Self::new(
+            value.row,
+            value.column,
+            value.text,
+            value.confidence,
+            value.evidence,
+        )
+    }
+}
+
+impl TableCell {
+    pub fn new(
+        row: u32,
+        column: u32,
+        text: impl Into<String>,
+        confidence: Confidence,
+        evidence: Vec<Evidence>,
+    ) -> Result<Self> {
+        if evidence.is_empty() {
+            return Err(Error::MissingEvidence);
+        }
+        Ok(Self {
+            row,
+            column,
+            text: text.into(),
+            confidence,
+            evidence,
+        })
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+#[serde(try_from = "RawDocumentTable")]
+pub struct DocumentTable {
+    pub table_id: TableId,
+    pub cells: Vec<TableCell>,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawDocumentTable {
+    table_id: TableId,
+    cells: Vec<TableCell>,
+}
+
+impl TryFrom<RawDocumentTable> for DocumentTable {
+    type Error = Error;
+
+    fn try_from(value: RawDocumentTable) -> Result<Self> {
+        Self::new(value.table_id, value.cells)
+    }
+}
+
+impl DocumentTable {
+    pub fn new(table_id: TableId, cells: Vec<TableCell>) -> Result<Self> {
+        if cells.is_empty() || cells.len() > 10_000 {
+            return Err(Error::InvalidTable);
+        }
+        Ok(Self { table_id, cells })
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Serialize, Deserialize)]
+pub struct ConfidenceDimensions {
+    pub input_quality: Confidence,
+    pub ocr: Confidence,
+    pub classification: Confidence,
+    pub extraction: Confidence,
+    pub validation: Confidence,
+    pub overall: Confidence,
+}
+
+impl ConfidenceDimensions {
+    pub fn new(
+        input_quality: f64,
+        ocr: f64,
+        classification: f64,
+        extraction: f64,
+        validation: f64,
+        overall: f64,
+    ) -> Result<Self> {
+        Ok(Self {
+            input_quality: Confidence::new(input_quality)?,
+            ocr: Confidence::new(ocr)?,
+            classification: Confidence::new(classification)?,
+            extraction: Confidence::new(extraction)?,
+            validation: Confidence::new(validation)?,
+            overall: Confidence::new(overall)?,
+        })
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ValidationSeverity {
+    Warning,
+    Error,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct ValidationFailure {
+    pub code: StableCode,
+    pub severity: ValidationSeverity,
+}
+
+impl ValidationFailure {
+    pub fn new(code: StableCode, severity: ValidationSeverity) -> Self {
+        Self { code, severity }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawProcessingProvenance")]
+pub struct ProcessingProvenance {
+    pub provider: String,
+    pub model_version: String,
+    pub processing_profile_version: String,
+    pub duration_ms: u64,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawProcessingProvenance {
+    provider: String,
+    model_version: String,
+    processing_profile_version: String,
+    duration_ms: u64,
+}
+
+impl TryFrom<RawProcessingProvenance> for ProcessingProvenance {
+    type Error = Error;
+
+    fn try_from(value: RawProcessingProvenance) -> Result<Self> {
+        Self::new(
+            value.provider,
+            value.model_version,
+            value.processing_profile_version,
+            value.duration_ms,
+        )
+    }
+}
+
+impl ProcessingProvenance {
+    pub fn new(
+        provider: impl Into<String>,
+        model_version: impl Into<String>,
+        processing_profile_version: impl Into<String>,
+        duration_ms: u64,
+    ) -> Result<Self> {
+        let provider = provider.into();
+        let model_version = model_version.into();
+        let processing_profile_version = processing_profile_version.into();
+        if !valid_version_name(&provider)
+            || !valid_version_name(&model_version)
+            || !valid_version_name(&processing_profile_version)
+        {
+            return Err(Error::InvalidProcessingProvenance);
+        }
+        Ok(Self {
+            provider,
+            model_version,
+            processing_profile_version,
+            duration_ms,
+        })
+    }
+}
+
+fn valid_version_name(value: &str) -> bool {
+    (1..=128).contains(&value.len())
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b'-'))
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawCost")]
+pub struct Cost {
+    pub currency: String,
+    pub decimal: String,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawCost {
+    currency: String,
+    decimal: String,
+}
+
+impl TryFrom<RawCost> for Cost {
+    type Error = Error;
+
+    fn try_from(value: RawCost) -> Result<Self> {
+        Self::new(value.currency, value.decimal)
+    }
+}
+
+impl Cost {
+    pub fn new(currency: impl Into<String>, decimal: impl Into<String>) -> Result<Self> {
+        let currency = currency.into();
+        let decimal = decimal.into();
+        let valid_currency =
+            currency.len() == 3 && currency.bytes().all(|byte| byte.is_ascii_uppercase());
+        let mut parts = decimal.split('.');
+        let whole = parts.next().unwrap_or_default();
+        let fraction = parts.next();
+        let valid_decimal = !whole.is_empty()
+            && whole.bytes().all(|byte| byte.is_ascii_digit())
+            && fraction.is_none_or(|part| {
+                !part.is_empty() && part.bytes().all(|byte| byte.is_ascii_digit())
+            })
+            && parts.next().is_none();
+        if !valid_currency || !valid_decimal {
+            return Err(Error::InvalidCost);
+        }
+        Ok(Self { currency, decimal })
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq)]
+pub struct DocumentResultPayload {
+    pub text: String,
+    pub markdown: String,
+    pub fields: BTreeMap<String, ExtractedValue>,
+    pub tables: Vec<DocumentTable>,
+    pub confidence: Option<ConfidenceDimensions>,
+    pub citations: Vec<Evidence>,
+    pub warnings: Vec<StableCode>,
+    pub validation_failures: Vec<ValidationFailure>,
+    pub provenance: Option<ProcessingProvenance>,
+    pub cost: Option<Cost>,
+}
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 enum ContentTrust {
@@ -639,7 +969,19 @@ pub struct DocumentResult {
     pub document_id: DocumentId,
     pub document_version: DocumentVersion,
     content_trust: ContentTrust,
+    pub text: String,
+    pub markdown: String,
     pub fields: BTreeMap<String, ExtractedValue>,
+    pub tables: Vec<DocumentTable>,
+    pub confidence: Option<ConfidenceDimensions>,
+    pub citations: Vec<Evidence>,
+    pub warnings: Vec<StableCode>,
+    pub validation_failures: Vec<ValidationFailure>,
+    pub provider: Option<String>,
+    pub model_version: Option<String>,
+    pub processing_profile_version: Option<String>,
+    pub duration_ms: Option<u64>,
+    pub cost: Option<Cost>,
 }
 
 #[derive(Deserialize)]
@@ -649,7 +991,26 @@ struct RawDocumentResult {
     document_id: DocumentId,
     document_version: DocumentVersion,
     content_trust: ContentTrust,
+    #[serde(default)]
+    text: String,
+    #[serde(default)]
+    markdown: String,
+    #[serde(default)]
     fields: BTreeMap<String, ExtractedValue>,
+    #[serde(default)]
+    tables: Vec<DocumentTable>,
+    confidence: Option<ConfidenceDimensions>,
+    #[serde(default)]
+    citations: Vec<Evidence>,
+    #[serde(default)]
+    warnings: Vec<StableCode>,
+    #[serde(default)]
+    validation_failures: Vec<ValidationFailure>,
+    provider: Option<String>,
+    model_version: Option<String>,
+    processing_profile_version: Option<String>,
+    duration_ms: Option<u64>,
+    cost: Option<Cost>,
 }
 
 impl TryFrom<RawDocumentResult> for DocumentResult {
@@ -659,13 +1020,35 @@ impl TryFrom<RawDocumentResult> for DocumentResult {
         if value.schema_version != RESULT_SCHEMA_VERSION {
             return Err(Error::UnsupportedResultSchemaVersion);
         }
-        Ok(Self {
-            schema_version: value.schema_version,
-            document_id: value.document_id,
-            document_version: value.document_version,
-            content_trust: value.content_trust,
-            fields: value.fields,
-        })
+        let ContentTrust::Untrusted = value.content_trust;
+        let provenance = match (
+            value.provider,
+            value.model_version,
+            value.processing_profile_version,
+            value.duration_ms,
+        ) {
+            (None, None, None, None) => None,
+            (Some(provider), Some(model), Some(profile), Some(duration_ms)) => Some(
+                ProcessingProvenance::new(provider, model, profile, duration_ms)?,
+            ),
+            _ => return Err(Error::InvalidProcessingProvenance),
+        };
+        Self::new(
+            value.document_id,
+            value.document_version,
+            DocumentResultPayload {
+                text: value.text,
+                markdown: value.markdown,
+                fields: value.fields,
+                tables: value.tables,
+                confidence: value.confidence,
+                citations: value.citations,
+                warnings: value.warnings,
+                validation_failures: value.validation_failures,
+                provenance,
+                cost: value.cost,
+            },
+        )
     }
 }
 
@@ -673,14 +1056,41 @@ impl DocumentResult {
     pub fn new(
         document_id: DocumentId,
         document_version: DocumentVersion,
-        fields: BTreeMap<String, ExtractedValue>,
-    ) -> Self {
-        Self {
+        payload: DocumentResultPayload,
+    ) -> Result<Self> {
+        if (!payload.text.is_empty() || !payload.markdown.is_empty())
+            && payload.citations.is_empty()
+        {
+            return Err(Error::MissingDocumentEvidence);
+        }
+        if payload
+            .fields
+            .keys()
+            .any(|name| name.is_empty() || name.len() > 128)
+        {
+            return Err(Error::InvalidFieldName);
+        }
+        let provenance = payload.provenance;
+        Ok(Self {
             schema_version: RESULT_SCHEMA_VERSION.to_owned(),
             document_id,
             document_version,
             content_trust: ContentTrust::Untrusted,
-            fields,
-        }
+            text: payload.text,
+            markdown: payload.markdown,
+            fields: payload.fields,
+            tables: payload.tables,
+            confidence: payload.confidence,
+            citations: payload.citations,
+            warnings: payload.warnings,
+            validation_failures: payload.validation_failures,
+            provider: provenance.as_ref().map(|value| value.provider.clone()),
+            model_version: provenance.as_ref().map(|value| value.model_version.clone()),
+            processing_profile_version: provenance
+                .as_ref()
+                .map(|value| value.processing_profile_version.clone()),
+            duration_ms: provenance.map(|value| value.duration_ms),
+            cost: payload.cost,
+        })
     }
 }

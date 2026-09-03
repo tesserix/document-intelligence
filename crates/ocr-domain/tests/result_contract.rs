@@ -1,8 +1,9 @@
 use std::collections::BTreeMap;
 
 use ocr_domain::{
-    Confidence, DocumentId, DocumentResult, DocumentVersion, Evidence, ExtractedValue,
-    NormalizedPoint, PageNumber, Polygon,
+    Confidence, ConfidenceDimensions, Cost, DocumentId, DocumentResult, DocumentResultPayload,
+    DocumentTable, DocumentVersion, Evidence, ExtractedValue, NormalizedPoint, PageNumber, Polygon,
+    ProcessingProvenance, StableCode, TableCell, TableId, ValidationFailure, ValidationSeverity,
 };
 use serde_json::json;
 
@@ -35,8 +36,12 @@ fn result_serializes_untrusted_content_with_source_evidence() {
     let result = DocumentResult::new(
         DocumentId::new("doc_01JTEST").unwrap(),
         DocumentVersion::new(&format!("sha256:{}", "a".repeat(64))).unwrap(),
-        fields,
-    );
+        DocumentResultPayload {
+            fields,
+            ..DocumentResultPayload::default()
+        },
+    )
+    .unwrap();
 
     let encoded = serde_json::to_value(result).unwrap();
     assert_eq!(encoded["schema_version"], "1.0");
@@ -112,4 +117,76 @@ fn deserialization_cannot_bypass_domain_invariants() {
         "fields": {}
     }))
     .is_err());
+}
+
+#[test]
+fn result_serializes_the_complete_provider_neutral_contract() {
+    let source = evidence();
+    let result = DocumentResult::new(
+        DocumentId::new("doc_01JCOMPLETE").unwrap(),
+        DocumentVersion::new(&format!("sha256:{}", "b".repeat(64))).unwrap(),
+        DocumentResultPayload {
+            text: "Invoice INV-1048".to_owned(),
+            markdown: "# Invoice INV-1048".to_owned(),
+            fields: BTreeMap::new(),
+            tables: vec![DocumentTable::new(
+                TableId::new("tbl_TOTALS").unwrap(),
+                vec![TableCell::new(
+                    0,
+                    0,
+                    "Total",
+                    Confidence::new(0.97).unwrap(),
+                    vec![source.clone()],
+                )
+                .unwrap()],
+            )
+            .unwrap()],
+            confidence: Some(ConfidenceDimensions::new(0.95, 0.96, 0.97, 0.98, 1.0, 0.96).unwrap()),
+            citations: vec![source],
+            warnings: vec![StableCode::new("low_input_quality").unwrap()],
+            validation_failures: vec![ValidationFailure::new(
+                StableCode::new("subtotal_mismatch").unwrap(),
+                ValidationSeverity::Warning,
+            )],
+            provenance: Some(
+                ProcessingProvenance::new(
+                    "tesserix-native",
+                    "detector-recognizer-1.0.0",
+                    "printed-en-cpu-1",
+                    1234,
+                )
+                .unwrap(),
+            ),
+            cost: Some(Cost::new("AUD", "0.0125").unwrap()),
+        },
+    )
+    .unwrap();
+
+    let encoded = serde_json::to_value(result).unwrap();
+    assert_eq!(encoded["text"], "Invoice INV-1048");
+    assert_eq!(encoded["tables"][0]["cells"][0]["text"], "Total");
+    assert_eq!(encoded["confidence"]["overall"], 0.96);
+    assert_eq!(encoded["validation_failures"][0]["severity"], "warning");
+    assert_eq!(encoded["provider"], "tesserix-native");
+    assert_eq!(encoded["processing_profile_version"], "printed-en-cpu-1");
+    assert_eq!(encoded["duration_ms"], 1234);
+    assert_eq!(encoded["cost"]["currency"], "AUD");
+}
+
+#[test]
+fn complete_result_rejects_uncited_content_and_invalid_metadata() {
+    let empty = DocumentResultPayload {
+        text: "uncited".to_owned(),
+        ..DocumentResultPayload::default()
+    };
+    assert!(DocumentResult::new(
+        DocumentId::new("doc_UNCITED").unwrap(),
+        DocumentVersion::new(&format!("sha256:{}", "c".repeat(64))).unwrap(),
+        empty,
+    )
+    .is_err());
+    assert!(StableCode::new("Not Stable").is_err());
+    assert!(Cost::new("usd", "NaN").is_err());
+    assert!(ProcessingProvenance::new("", "model", "profile", 1).is_err());
+    assert!(TableCell::new(0, 0, "Total", Confidence::new(0.9).unwrap(), vec![]).is_err());
 }
