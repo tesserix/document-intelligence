@@ -43,6 +43,21 @@ Every case records document type, languages/scripts, acquisition type, quality d
 
 Critical gates fail closed on unmeasured values. Initial numeric thresholds are set only after the first reviewed baseline; the target must be per cohort and include zero tolerance for cross-tenant access, missing critical evidence, and unsafe auto-accept in known-invalid cases.
 
+### Deterministic text metric policy
+
+The `ocr-eval` crate owns `unicode-nfc-whitespace-v1`. CER counts Unicode scalar
+edits after NFC normalization; WER applies the same normalization and Unicode
+whitespace tokenization. Each result retains exact edit and reference-unit
+counts, with the floating rate derived from those counts. An empty reference and
+non-empty candidate has an undefined denominator rather than a false zero.
+
+Corpus rates are `sum(edits) / sum(reference_units)` and never the arithmetic
+mean of document percentages. Evaluation refuses inputs beyond the configured
+unit limits or a 100-million-cell absolute dynamic-programming ceiling. The
+implementation keeps only one edit-distance row and returns counts only; raw
+reference and candidate text are not retained in metric values, errors, logs or
+trace attributes.
+
 ## Evaluation tiers
 
 1. **Pull request, deterministic:** parsers, normalization, validation, routing, security bounds, provider contract fixtures, and recorded provider responses. No live provider spend.

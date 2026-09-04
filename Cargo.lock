@@ -1629,6 +1629,14 @@ dependencies = [
 ]
 
 [[package]]
+name = "ocr-eval"
+version = "0.1.0"
+dependencies = [
+ "thiserror",
+ "unicode-normalization",
+]
+
+[[package]]
 name = "ocr-parser-sandbox"
 version = "0.1.0"
 dependencies = [

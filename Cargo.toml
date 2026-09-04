@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ocr-domain", "crates/ocr-engine", "crates/ocr-parser-sandbox", "crates/ocr-service", "crates/ocr-store"]
+members = ["crates/ocr-domain", "crates/ocr-engine", "crates/ocr-eval", "crates/ocr-parser-sandbox", "crates/ocr-service", "crates/ocr-store"]
 resolver = "2"
 
 [workspace.package]
@@ -38,3 +38,4 @@ reqwest = { version = "0.13", default-features = false, features = ["json", "rus
 url = "2.5"
 lopdf = { version = "0.44", default-features = false }
 fred = { version = "=10.1.0", default-features = false, features = ["enable-rustls", "i-keys"] }
+unicode-normalization = "0.1"
