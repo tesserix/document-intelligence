@@ -1906,6 +1906,7 @@ dependencies = [
  "futures-util",
  "hmac 0.12.1",
  "http-body-util",
+ "libc",
  "object_store",
  "ocr-domain",
  "ocr-store",

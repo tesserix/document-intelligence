@@ -17,6 +17,7 @@ tokio = { version = "1.47", features = ["io-util", "macros", "net", "process", "
 bytes = "1.10"
 futures-util = "0.3"
 futures = "0.3"
+libc = "0.2"
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["limit", "request-id", "timeout", "trace"] }
