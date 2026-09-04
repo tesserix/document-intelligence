@@ -17,7 +17,7 @@ RUN apt-get update \
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN cargo build --locked --release \
-    -p ocr-service \
+    -p ocr-service --bin ocr-service \
     -p ocr-parser-sandbox --bin ocr-parser-sandbox \
     -p ocr-temporal --bin ocr-dispatch-worker --bin ocr-execution-worker
 
