@@ -37,7 +37,7 @@ On 2026-09-04, `scripts/test-temporal-qualification.sh` ran against Temporal CLI
 
 The 0.8.0 high-level start API generates its own request ID and does not expose a caller-supplied start request ID. Workflow-ID reuse policy therefore provides start idempotency; the deterministic outbox request ID remains available for cancellation and audit correlation. This API limitation must be re-evaluated during upgrade qualification.
 
-The qualification worker has a stable build ID but does not yet opt into deployment versioning. A local experiment enabling versioning without first setting a current deployment version caused the isolated activity worker to receive no work in the 300-page worker-loss case. The SDK's current-version operation must wait for every expected task-queue poller and retain its missing-poller protection; a future qualification harness must prove that protocol with old and candidate workers before enabling it in any runtime.
+The qualification worker has a stable build ID but does not yet opt into deployment versioning. A local experiment enabling versioning without first setting a current deployment version caused the isolated activity worker to receive no work in the 300-page worker-loss case. The harness now proves initial routing by registering a versioned worker, waiting for Temporal to observe its poller, then setting it current with both missing-poller protections enabled. This proves only initial current-version routing; old-to-candidate compatibility and the 24-hour soak remain required before enabling it in any runtime.
 
 ## Required integration matrix
 

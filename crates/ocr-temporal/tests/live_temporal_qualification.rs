@@ -20,11 +20,15 @@ use ocr_temporal::{
     WorkflowResultMetadata, WorkflowRunInput,
 };
 use temporalio_client::{
-    errors::WorkflowGetResultError, WorkflowCancelOptions, WorkflowFetchHistoryOptions,
-    WorkflowGetResultOptions, WorkflowStartOptions,
+    errors::WorkflowGetResultError, grpc::WorkflowService, Client, WorkflowCancelOptions,
+    WorkflowFetchHistoryOptions, WorkflowGetResultOptions, WorkflowStartOptions,
 };
 use temporalio_common::protos::temporal::api::enums::v1::EventType;
 use temporalio_common::protos::temporal::api::history::v1::history_event::Attributes;
+use temporalio_common::{
+    protos::temporal::api::workflowservice::v1::SetWorkerDeploymentCurrentVersionRequest,
+    worker::{VersioningBehavior, WorkerDeploymentOptions, WorkerDeploymentVersion},
+};
 use temporalio_sdk::{
     testing::{
         DevServerLogLevel, EphemeralExe, LocalWorkflowEnvironmentOptions, WorkflowEnvironment,
@@ -125,6 +129,49 @@ fn unused_loopback_port() -> u16 {
         .local_addr()
         .unwrap()
         .port()
+}
+
+const QUALIFICATION_DEPLOYMENT_NAME: &str = "ocr-temporal-qualification";
+
+fn qualification_versioned_deployment_options(build_id: &str) -> WorkerDeploymentOptions {
+    WorkerDeploymentOptions::new(
+        WorkerDeploymentVersion::builder()
+            .deployment_name(QUALIFICATION_DEPLOYMENT_NAME)
+            .build_id(build_id)
+            .build(),
+    )
+    .use_worker_versioning(true)
+    .default_versioning_behavior(VersioningBehavior::Pinned)
+    .build()
+}
+
+async fn set_current_qualification_deployment(client: &Client, build_id: &str) {
+    let deadline = tokio::time::Instant::now() + Duration::from_secs(15);
+    loop {
+        let request = SetWorkerDeploymentCurrentVersionRequest {
+            namespace: "default".to_owned(),
+            deployment_name: QUALIFICATION_DEPLOYMENT_NAME.to_owned(),
+            build_id: build_id.to_owned(),
+            identity: "ocr-temporal-qualification-test".to_owned(),
+            ignore_missing_task_queues: false,
+            allow_no_pollers: false,
+            ..Default::default()
+        };
+        let mut workflow_service = client.clone();
+        match workflow_service
+            .set_worker_deployment_current_version(temporalio_client::tonic::Request::new(request))
+            .await
+        {
+            Ok(_) => return,
+            Err(error)
+                if error.code() == temporalio_client::tonic::Code::FailedPrecondition
+                    && tokio::time::Instant::now() < deadline =>
+            {
+                tokio::time::sleep(Duration::from_millis(100)).await;
+            }
+            Err(error) => panic!("Temporal did not observe the versioned worker: {error}"),
+        }
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -515,10 +562,13 @@ async fn cancellation_before_start_and_after_completion_is_idempotent() {
                 )
                 .await
                 .unwrap();
-            let result: WorkflowResultMetadata = handle
-                .get_result(WorkflowGetResultOptions::default())
-                .await
-                .unwrap();
+            let result: WorkflowResultMetadata = tokio::time::timeout(
+                Duration::from_secs(15),
+                handle.get_result(WorkflowGetResultOptions::default()),
+            )
+            .await
+            .expect("versioned workflow did not complete")
+            .unwrap();
             assert_eq!(result.pages_processed, 1);
 
             for request_id in [
@@ -536,6 +586,65 @@ async fn cancellation_before_start_and_after_completion_is_idempotent() {
                     GatewayOutcome::Accepted
                 );
             }
+
+            shutdown();
+            worker_task.await.unwrap().unwrap();
+            env.shutdown().await.unwrap();
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires scripts/test-temporal-qualification.sh"]
+async fn current_deployment_routes_a_versioned_qualified_workflow() {
+    let Ok(cli) = std::env::var("TEMPORAL_CLI_PATH") else {
+        return;
+    };
+    let env = WorkflowEnvironment::start_local(
+        LocalWorkflowEnvironmentOptions::builder()
+            .server_executable(EphemeralExe::ExistingPath(cli))
+            .log_level(DevServerLogLevel::Never)
+            .build(),
+    )
+    .await
+    .unwrap();
+    let runtime = Runtime::new_assume_tokio(Default::default()).unwrap();
+    let task_queue = "ocr-temporal-versioned-qualification";
+    let worker_options = WorkerOptions::new(task_queue)
+        .deployment_options(qualification_versioned_deployment_options("v1"))
+        .register_workflow::<OcrDocumentWorkflow>()
+        .unwrap()
+        .register_activities(QualificationPageActivities::default())
+        .build();
+    let mut worker = Worker::new(&runtime, env.client().clone(), worker_options).unwrap();
+    let shutdown = worker.shutdown_handle();
+
+    tokio::task::LocalSet::new()
+        .run_until(async move {
+            let worker_task = tokio::task::spawn_local(async move { worker.run().await });
+            set_current_qualification_deployment(env.client(), "v1").await;
+
+            let handle = env
+                .client()
+                .start_workflow(
+                    OcrDocumentWorkflow::run,
+                    workflow_input(1),
+                    WorkflowStartOptions::new(
+                        task_queue,
+                        "ocr-temporal-versioned-qualification-1-page",
+                    )
+                    .build(),
+                )
+                .await
+                .unwrap();
+            let result: WorkflowResultMetadata = tokio::time::timeout(
+                Duration::from_secs(15),
+                handle.get_result(WorkflowGetResultOptions::default()),
+            )
+            .await
+            .expect("versioned workflow did not complete")
+            .unwrap();
+            assert_eq!(result.pages_processed, 1);
 
             shutdown();
             worker_task.await.unwrap().unwrap();
