@@ -38,4 +38,6 @@ jobs:
         env:
           GITHUB_SHA: ${{ github.sha }}
         run: |
+          git fetch origin deploy
+          git merge-base --is-ancestor origin/deploy "${GITHUB_SHA}"
           git push origin "${GITHUB_SHA}:refs/heads/deploy"
