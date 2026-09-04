@@ -3,6 +3,7 @@
 mod deskew;
 mod detection;
 mod geometry;
+mod model_profile;
 mod page;
 mod recognition;
 
@@ -11,6 +12,10 @@ pub use deskew::{
 };
 pub use detection::{select_regions, DetectionCandidate, DetectionLimits};
 pub use geometry::{CropRegion, DeskewAngle, Rotation, TransformChain, TransformStep};
+pub use model_profile::{
+    ArtifactLimits, ExecutionProfile, ModelProfileVerifier, ModelStage, TensorContract,
+    TensorDataType, TensorDimension, TrustedModelKey, VerifiedModelProfile,
+};
 pub use page::build_page_observations;
 pub use recognition::{assemble_recognitions, RecognitionAlternative, RecognizedRegion};
 
@@ -56,6 +61,20 @@ pub enum Error {
     InvalidRecognitionBatch,
     #[error("page observation output is invalid")]
     InvalidPageObservation,
+    #[error("model profile is invalid")]
+    InvalidModelProfile,
+    #[error("trusted model signing key is invalid")]
+    InvalidTrustedModelKey,
+    #[error("model signing key is unknown")]
+    UnknownModelSigningKey,
+    #[error("model profile signature is invalid")]
+    InvalidModelSignature,
+    #[error("model profile exceeds the configured byte limit")]
+    ModelProfileByteLimitExceeded { bytes: usize, limit: usize },
+    #[error("model artifact exceeds the configured byte limit")]
+    ModelArtifactByteLimitExceeded { bytes: usize, limit: usize },
+    #[error("model artifact does not match the signed digest")]
+    ModelArtifactDigestMismatch,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
