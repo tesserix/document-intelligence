@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ocr-domain", "crates/ocr-engine", "crates/ocr-parser-sandbox", "crates/ocr-service", "crates/ocr-store", "crates/ocr-temporal"]
+members = ["crates/ocr-domain", "crates/ocr-engine", "crates/ocr-eval", "crates/ocr-parser-sandbox", "crates/ocr-service", "crates/ocr-store", "crates/ocr-temporal"]
 resolver = "2"
 
 [workspace.package]
@@ -44,3 +44,4 @@ temporalio-common = { version = "=0.8.0", default-features = false, features = [
 temporalio-macros = "=0.8.0"
 temporalio-sdk = { version = "=0.8.0", default-features = false }
 temporalio-workflow = "=0.8.0"
+unicode-normalization = "0.1"
