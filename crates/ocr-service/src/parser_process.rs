@@ -36,6 +36,10 @@ impl ParserProcessGroup {
             self.active = false;
         }
     }
+
+    fn disarm(&mut self) {
+        self.active = false;
+    }
 }
 
 #[cfg(unix)]
@@ -172,7 +176,11 @@ impl ParserProcess {
         };
 
         let (_, output, status) = match timeout(self.deadline, operation).await {
-            Ok(Ok(result)) => result,
+            Ok(Ok(result)) => {
+                #[cfg(unix)]
+                process_group.disarm();
+                result
+            }
             Ok(Err(error)) => {
                 #[cfg(unix)]
                 process_group.terminate();
