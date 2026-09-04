@@ -65,6 +65,12 @@ pub struct StoredJob {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredDocumentIdentity {
+    pub document_id: DocumentId,
+    pub document_version: DocumentVersion,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredPageWorkflow {
     pub workflow: PageWorkflow,
     pub revision: i64,
@@ -1303,6 +1309,42 @@ impl PgJobStore {
         transaction.commit().await?;
 
         row.map(stored_job).transpose()
+    }
+
+    pub async fn load_document_identity(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        job_id: &JobId,
+    ) -> Result<Option<StoredDocumentIdentity>> {
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let row = sqlx::query(
+            "select uploads.source_digest from ocr_jobs as jobs \
+             join ocr_uploads as uploads on uploads.upload_id = jobs.upload_id \
+               and uploads.product_id = jobs.product_id and uploads.tenant_id = jobs.tenant_id \
+             where jobs.product_id = $1 and jobs.tenant_id = $2 and jobs.job_id = $3 \
+               and uploads.status = 'accepted'",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(job_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        let Some(row) = row else {
+            return Ok(None);
+        };
+        let suffix = job_id
+            .as_str()
+            .strip_prefix("job_")
+            .ok_or(Error::InvalidStoredJob)?;
+        Ok(Some(StoredDocumentIdentity {
+            document_id: DocumentId::new(&format!("doc_{suffix}"))
+                .map_err(|_| Error::InvalidStoredJob)?,
+            document_version: DocumentVersion::new(row.try_get("source_digest")?)
+                .map_err(|_| Error::InvalidStoredUpload)?,
+        }))
     }
 
     pub async fn cancel(
