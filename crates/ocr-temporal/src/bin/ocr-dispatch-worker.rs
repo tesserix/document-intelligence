@@ -112,6 +112,8 @@ async fn temporal_client() -> Result<Client> {
     {
         anyhow::bail!("TEMPORAL_TARGET is invalid");
     }
+    let namespace_value = required("TEMPORAL_NAMESPACE")?;
+    let namespace = temporal_namespace(&namespace_value)?;
     let connection = Connection::connect(
         ConnectionOptions::new(target)
             .identity(&required("WORKER_ID")?)
@@ -120,11 +122,24 @@ async fn temporal_client() -> Result<Client> {
     )
     .await
     .context("Temporal connection failed")?;
-    Client::new(
-        connection,
-        ClientOptions::new(&required("TEMPORAL_NAMESPACE")?).build(),
-    )
-    .context("Temporal client configuration is invalid")
+    Client::new(connection, ClientOptions::new(namespace).build())
+        .context("Temporal client configuration is invalid")
+}
+
+fn temporal_namespace(value: &str) -> Result<&str> {
+    let environment = value
+        .strip_prefix("document-intelligence-")
+        .context("TEMPORAL_NAMESPACE must be dedicated to document intelligence")?;
+    if !(2..=32).contains(&environment.len())
+        || !environment
+            .bytes()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || byte == b'-')
+        || environment.starts_with('-')
+        || environment.ends_with('-')
+    {
+        anyhow::bail!("TEMPORAL_NAMESPACE must include a valid environment suffix");
+    }
+    Ok(value)
 }
 
 fn product_buckets(name: &str) -> Result<HashMap<String, String>> {
@@ -223,7 +238,7 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::source_routes;
+    use super::{source_routes, temporal_namespace};
     use std::collections::HashMap;
 
     #[test]
@@ -231,5 +246,16 @@ mod tests {
         let quarantine = HashMap::from([("product-a".to_owned(), "quarantine-a".to_owned())]);
         let sources = HashMap::from([("product-b".to_owned(), "source-b".to_owned())]);
         assert!(source_routes(&quarantine, &sources).is_err());
+    }
+
+    #[test]
+    fn temporal_namespace_requires_a_dedicated_document_intelligence_namespace() {
+        assert_eq!(
+            temporal_namespace("document-intelligence-sandbox").unwrap(),
+            "document-intelligence-sandbox"
+        );
+        assert!(temporal_namespace("default").is_err());
+        assert!(temporal_namespace("other-workload-prod").is_err());
+        assert!(temporal_namespace("document-intelligence-").is_err());
     }
 }

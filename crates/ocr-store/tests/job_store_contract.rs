@@ -276,6 +276,54 @@ async fn seed_accepted_upload(admin_pool: &PgPool, tenant_id: &str) {
     set_upload_state(admin_pool, tenant_id, "accepted").await;
 }
 
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn accepted_job_source_is_scoped_and_preserves_immutable_locator() {
+    let (store, admin_pool, _) = store().await;
+    clear_fixture(&admin_pool, &["job_SOURCE_BINDING"]).await;
+    seed_accepted_upload(&admin_pool, "ten_SOURCE_BINDING").await;
+
+    let tenant = TenantId::new("ten_SOURCE_BINDING").unwrap();
+    let foreign_tenant = TenantId::new("ten_SOURCE_FOREIGN").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let job = JobId::new("job_SOURCE_BINDING").unwrap();
+    store
+        .create(request(
+            job.as_str(),
+            tenant.as_str(),
+            "source-binding",
+            'a',
+        ))
+        .await
+        .unwrap();
+
+    let source = store
+        .load_accepted_source(&tenant, &product, &job)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(source.bucket, "dev-kora-ocr-source");
+    assert_eq!(
+        source.object_name,
+        "products/kora/tenants/ten_SOURCE_BINDING/quarantine/upl_SOURCE_BINDING/accepted"
+    );
+    assert_eq!(source.generation, 2);
+    assert_eq!(source.digest, format!("sha256:{}", "f".repeat(64)));
+    assert_eq!(source.content_length, 8);
+    assert_eq!(source.content_type, "application/pdf");
+    assert_eq!(source.page_count, 1);
+    assert_eq!(source.maximum_page_pixels, 1_000_000);
+    assert_eq!(source.total_page_pixels, 1_000_000);
+    assert_eq!(source.parser_profile, "strict-v1");
+    assert_eq!(source.parser_version, "1.0.0");
+
+    assert!(store
+        .load_accepted_source(&foreign_tenant, &product, &job)
+        .await
+        .unwrap()
+        .is_none());
+}
+
 async fn store() -> (PgJobStore, PgPool, PgPool) {
     let url = std::env::var("TEST_DATABASE_URL").expect("TEST_DATABASE_URL must be set");
     let admin_url =

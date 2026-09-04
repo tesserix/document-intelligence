@@ -73,6 +73,21 @@ pub struct StoredDocumentIdentity {
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredAcceptedSource {
+    pub bucket: String,
+    pub object_name: String,
+    pub generation: i64,
+    pub digest: String,
+    pub content_length: i64,
+    pub content_type: String,
+    pub page_count: u32,
+    pub maximum_page_pixels: u64,
+    pub total_page_pixels: u64,
+    pub parser_profile: String,
+    pub parser_version: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoredPageWorkflow {
     pub workflow: PageWorkflow,
     pub revision: i64,
@@ -1467,6 +1482,35 @@ impl PgJobStore {
         }))
     }
 
+    pub async fn load_accepted_source(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        job_id: &JobId,
+    ) -> Result<Option<StoredAcceptedSource>> {
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let row = sqlx::query(
+            "select uploads.source_bucket, uploads.source_object_name, \
+             uploads.source_object_generation, uploads.source_digest, \
+             uploads.source_content_length, uploads.expected_content_type, \
+             uploads.parser_page_count, uploads.parser_maximum_page_pixels, \
+             uploads.parser_total_page_pixels, uploads.parser_profile, uploads.parser_version \
+             from ocr_jobs as jobs join ocr_uploads as uploads \
+             on uploads.upload_id = jobs.upload_id and uploads.product_id = jobs.product_id \
+             and uploads.tenant_id = jobs.tenant_id \
+             where jobs.product_id = $1 and jobs.tenant_id = $2 and jobs.job_id = $3 \
+             and uploads.status = 'accepted'",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(job_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        row.map(stored_accepted_source).transpose()
+    }
+
     pub async fn cancel(
         &self,
         tenant_id: &TenantId,
@@ -1930,6 +1974,27 @@ fn stored_upload(row: sqlx::postgres::PgRow) -> Result<StoredUpload> {
     Ok(upload)
 }
 
+fn stored_accepted_source(row: sqlx::postgres::PgRow) -> Result<StoredAcceptedSource> {
+    let source = StoredAcceptedSource {
+        bucket: row.try_get("source_bucket")?,
+        object_name: row.try_get("source_object_name")?,
+        generation: row.try_get("source_object_generation")?,
+        digest: row.try_get("source_digest")?,
+        content_length: row.try_get("source_content_length")?,
+        content_type: row.try_get("expected_content_type")?,
+        page_count: u32::try_from(row.try_get::<i32, _>("parser_page_count")?)
+            .map_err(|_| Error::InvalidStoredUpload)?,
+        maximum_page_pixels: u64::try_from(row.try_get::<i64, _>("parser_maximum_page_pixels")?)
+            .map_err(|_| Error::InvalidStoredUpload)?,
+        total_page_pixels: u64::try_from(row.try_get::<i64, _>("parser_total_page_pixels")?)
+            .map_err(|_| Error::InvalidStoredUpload)?,
+        parser_profile: row.try_get("parser_profile")?,
+        parser_version: row.try_get("parser_version")?,
+    };
+    validate_accepted_source_locator(&source)?;
+    Ok(source)
+}
+
 fn parse_upload_state(value: &str) -> Result<UploadState> {
     Ok(match value {
         "reserved" => UploadState::Reserved,
@@ -1985,6 +2050,36 @@ fn validate_accepted_source(source: &AcceptUpload) -> Result<()> {
             .contains(&source.parser_inspection.total_page_pixels)
         || !is_valid_parser_identifier(&source.parser_inspection.profile)
         || !is_valid_parser_identifier(&source.parser_inspection.version)
+    {
+        return Err(Error::InvalidStoredUpload);
+    }
+    Ok(())
+}
+
+fn validate_accepted_source_locator(source: &StoredAcceptedSource) -> Result<()> {
+    let digest = source.digest.strip_prefix("sha256:");
+    let valid_digest = digest.is_some_and(|value| {
+        value.len() == 64
+            && value
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    });
+    let valid_content_type = matches!(
+        source.content_type.as_str(),
+        "application/pdf" | "image/jpeg" | "image/png" | "image/tiff" | "image/webp"
+    );
+    if !(3..=63).contains(&source.bucket.len())
+        || source.object_name.is_empty()
+        || source.object_name.len() > 1024
+        || source.generation <= 0
+        || !(1..=104_857_600).contains(&source.content_length)
+        || !valid_digest
+        || !valid_content_type
+        || !(1..=300).contains(&source.page_count)
+        || !(1..=100_000_000).contains(&source.maximum_page_pixels)
+        || !(source.maximum_page_pixels..=1_000_000_000).contains(&source.total_page_pixels)
+        || !is_valid_parser_identifier(&source.parser_profile)
+        || !is_valid_parser_identifier(&source.parser_version)
     {
         return Err(Error::InvalidStoredUpload);
     }

@@ -1,5 +1,6 @@
 //! HTTP boundary for the document intelligence service.
 
+mod accepted_source_reader;
 mod document_finalizer;
 mod document_reader;
 mod importer;
@@ -25,6 +26,10 @@ pub use job_status_cache::{
     CacheConfigurationError, CacheOperationError, CachePolicy, CacheReadFuture, CacheRecord,
     CacheRecordError, CacheScope, CacheWriteFuture, JobStatusCache, UnavailableJobStatusCache,
     ValkeyCacheConfigurationError, ValkeyJobStatusCache,
+};
+
+pub use accepted_source_reader::{
+    AcceptedSourceReadError, AcceptedSourceReaderConfigurationError, GcsAcceptedSourceReader,
 };
 
 pub use document_finalizer::{DocumentFinalizeError, DocumentFinalizer};
