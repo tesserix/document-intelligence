@@ -483,6 +483,12 @@ struct UploadCompletionResponse {
     status: &'static str,
 }
 
+#[derive(Debug, Serialize)]
+struct UploadStatusResponse {
+    upload_id: UploadId,
+    status: &'static str,
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct Source {
@@ -726,6 +732,7 @@ fn build_router(store: PgJobStore, dependencies: RouterDependencies) -> Router {
         .route("/healthz", get(|| async { StatusCode::OK }))
         .route("/readyz", get(readiness))
         .route("/v1/ocr/uploads", post(create_upload))
+        .route("/v1/ocr/uploads/{upload_id}", get(get_upload))
         .route(
             "/v1/ocr/uploads/{upload_id}/complete",
             post(complete_upload),
@@ -899,6 +906,38 @@ async fn complete_upload(
             request_id,
         )),
         RecordUploadOutcome::NotFound => Err(ApiError::upload_not_found(request_id)),
+    }
+}
+
+async fn get_upload(
+    State(state): State<AppState>,
+    identity: VerifiedIdentity,
+    Path(upload_id): Path<String>,
+    request: axum::extract::Request,
+) -> Result<Json<UploadStatusResponse>, ApiError> {
+    let request_id = request_id_from_extensions(request.extensions());
+    let upload_id =
+        UploadId::new(&upload_id).map_err(|_| ApiError::upload_not_found(request_id.clone()))?;
+    let upload = state
+        .jobs
+        .find_upload(&identity.0.tenant_id, &identity.0.product_id, &upload_id)
+        .await
+        .map_err(|_| ApiError::unavailable(request_id.clone()))?
+        .ok_or_else(|| ApiError::upload_not_found(request_id))?;
+    Ok(Json(UploadStatusResponse {
+        upload_id: upload.upload_id,
+        status: upload_status(upload.state),
+    }))
+}
+
+fn upload_status(state: UploadState) -> &'static str {
+    match state {
+        UploadState::Reserved => "reserved",
+        UploadState::Uploaded => "uploaded",
+        UploadState::Inspecting => "inspecting",
+        UploadState::Accepted => "accepted",
+        UploadState::Rejected => "rejected",
+        UploadState::Expired => "expired",
     }
 }
 
