@@ -7,12 +7,12 @@ use hmac::{Hmac, Mac};
 use http_body_util::BodyExt;
 use ocr_domain::{ProductId, TenantId, UploadId};
 use ocr_service::{
-    router, router_with_job_status_cache, router_with_result_reader, router_with_upload_issuer,
-    router_with_upload_services, with_workload_identity, CacheOperationError, CachePolicy,
-    CacheReadFuture, CacheRecord, CacheScope, CacheWriteFuture, IssuedUpload, JobStatusCache,
-    ResultArtifactReader, ResultReadFuture, StoredUpload, TrustedIdentity,
-    UploadArtifactReadFuture, UploadArtifactReader, UploadIntentIssuer, UploadIssueFuture,
-    VerifiedUploadArtifact, WorkloadIdentityVerifier,
+    router, router_with_dependencies, router_with_job_status_cache, router_with_result_reader,
+    router_with_upload_issuer, router_with_upload_services, with_workload_identity,
+    CacheOperationError, CachePolicy, CacheReadFuture, CacheRecord, CacheScope, CacheWriteFuture,
+    IssuedUpload, JobStatusCache, ResultArtifactReader, ResultReadFuture, StoredUpload,
+    TrustedIdentity, UploadArtifactReadFuture, UploadArtifactReader, UploadIntentIssuer,
+    UploadIssueFuture, VerifiedUploadArtifact, WorkloadIdentityVerifier,
 };
 use ocr_store::{
     AcceptUpload, ClaimUploadInspection, ParserInspectionMetadata, PgJobStore, StoredResultLocator,
@@ -1316,8 +1316,9 @@ async fn a_second_product_uses_the_same_contract_without_cross_product_visibilit
     let digest = format!("sha256:{:x}", Sha256::digest(bytes));
     let calls = Arc::new(AtomicUsize::new(0));
     let store = PgJobStore::new(PgPoolOptions::new().connect(&url).await.unwrap());
-    let application = router_with_upload_services(
+    let application = router_with_dependencies(
         store.clone(),
+        Arc::new(StaticResultReader(Vec::new())),
         [
             ("kora".to_owned(), "dev-kora-ocr-quarantine".to_owned()),
             ("atlas".to_owned(), "dev-atlas-ocr-quarantine".to_owned()),
