@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ocr-domain", "crates/ocr-engine", "crates/ocr-eval", "crates/ocr-parser-sandbox", "crates/ocr-service", "crates/ocr-store"]
+members = ["crates/ocr-domain", "crates/ocr-engine", "crates/ocr-eval", "crates/ocr-parser-sandbox", "crates/ocr-service", "crates/ocr-store", "crates/ocr-temporal"]
 resolver = "2"
 
 [workspace.package]
@@ -16,6 +16,8 @@ sqlx = { version = "0.9", default-features = false, features = ["runtime-tokio",
 tokio = { version = "1.47", features = ["io-util", "macros", "net", "process", "rt-multi-thread", "signal", "sync", "test-util", "time"] }
 bytes = "1.10"
 futures-util = "0.3"
+futures = "0.3"
+libc = "0.2"
 axum = "0.8"
 tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.6", features = ["limit", "request-id", "timeout", "trace"] }
@@ -38,5 +40,10 @@ object_store = { version = "0.14.1", default-features = false, features = ["gcp"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }
 url = "2.5"
 lopdf = { version = "0.44", default-features = false }
+temporalio-client = { version = "=0.8.0", default-features = false }
+temporalio-common = { version = "=0.8.0", default-features = false, features = ["serde_serialize"] }
+temporalio-macros = "=0.8.0"
+temporalio-sdk = { version = "=0.8.0", default-features = false }
+temporalio-workflow = "=0.8.0"
 fred = { version = "=10.1.0", default-features = false, features = ["enable-rustls", "i-keys"] }
 unicode-normalization = "0.1"

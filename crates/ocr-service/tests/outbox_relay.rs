@@ -128,7 +128,10 @@ async fn relay_dispatches_a_deterministic_workflow_once_then_acknowledges() {
     );
     let dispatches = starter.dispatches.lock().await;
     assert_eq!(dispatches.len(), 1);
-    assert_eq!(dispatches[0].workflow_id, "ocr-job-job_RELAY");
+    assert_eq!(
+        dispatches[0].workflow_id,
+        "ocr-v1-93c8e4e4759aa062d8f7e317c3278149"
+    );
     assert_eq!(dispatches[0].job_id, JobId::new("job_RELAY").unwrap());
     assert_eq!(dispatches[0].page_count, 3);
     assert_eq!(dispatches[0].action, WorkflowAction::Start);

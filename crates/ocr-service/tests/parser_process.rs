@@ -52,7 +52,11 @@ async fn parser_process_maps_stable_failures_and_bounds_output_and_time() {
 
     let directory = tempfile::tempdir().unwrap();
     let path = directory.path().join("slow-parser");
-    fs::write(&path, "#!/bin/sh\ncat >/dev/null; sleep 5\n").unwrap();
+    fs::write(
+        &path,
+        "#!/bin/sh\ncat >/dev/null; sleep 5 >/dev/null 2>&1\n",
+    )
+    .unwrap();
     let mut permissions = fs::metadata(&path).unwrap().permissions();
     permissions.set_mode(0o700);
     fs::set_permissions(&path, permissions).unwrap();

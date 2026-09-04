@@ -3,7 +3,9 @@
 mod page_workflow;
 mod semantic_memory;
 
-pub use page_workflow::{PageTask, PageWorkflow, PageWorkflowStatus};
+pub use page_workflow::{
+    PageTask, PageWorkflow, PageWorkflowStatus, MAXIMUM_PAGE_ATTEMPTS, MAXIMUM_PAGE_COUNT,
+};
 pub use semantic_memory::{
     ChunkId, EmbeddingVersion, MemoryRecordId, MemoryRecordVersion, SemanticCollection,
     SemanticQueryScope, VectorPointId, VectorPointMetadata, VectorPointMetadataInput,

@@ -14,12 +14,13 @@ concurrency:
 
 jobs:
   rust:
-    uses: tesserix/tesserix-workflows/.github/workflows/rust-ci.yml@62f7f663a98d5ef92567850dd03c8c2513c9068e
+    uses: tesserix/tesserix-workflows/.github/workflows/rust-ci.yml@299a1ee2ced322a825cc0f0838235c6c3269610f
     with:
       toolchain: 1.94.0
       coverage_min_lines: 70
       database_enabled: true
       database_setup_script: scripts/setup-test-database.sh
+      protoc_enabled: true
 
   secret-scan:
     uses: tesserix/tesserix-workflows/.github/workflows/secret-scan.yml@62f7f663a98d5ef92567850dd03c8c2513c9068e

@@ -8,6 +8,43 @@ use tokio::{
     time::timeout,
 };
 
+#[cfg(unix)]
+#[derive(Debug)]
+struct ParserProcessGroup {
+    identifier: i32,
+    active: bool,
+}
+
+#[cfg(unix)]
+impl ParserProcessGroup {
+    fn new(process_identifier: u32) -> Result<Self, ParserProcessError> {
+        let identifier =
+            i32::try_from(process_identifier).map_err(|_| ParserProcessError::Unavailable)?;
+        if identifier <= 0 {
+            return Err(ParserProcessError::Unavailable);
+        }
+        Ok(Self {
+            identifier,
+            active: true,
+        })
+    }
+
+    fn terminate(&mut self) {
+        if self.active {
+            // The parser is isolated in this group, so descendants cannot outlive cancellation.
+            let _ = unsafe { libc::kill(-self.identifier, libc::SIGKILL) };
+            self.active = false;
+        }
+    }
+}
+
+#[cfg(unix)]
+impl Drop for ParserProcessGroup {
+    fn drop(&mut self) {
+        self.terminate();
+    }
+}
+
 const MAXIMUM_INPUT_BYTES: usize = 100 * 1024 * 1024;
 const MAXIMUM_OUTPUT_BYTES: usize = 4096;
 pub const PARSER_PROFILE: &str = "intake-v1";
@@ -75,7 +112,8 @@ impl ParserProcess {
             return Err(ParserProcessError::InvalidDocument);
         }
 
-        let mut child = Command::new(&self.executable)
+        let mut command = Command::new(&self.executable);
+        command
             .args([
                 "--content-type",
                 content_type,
@@ -89,9 +127,15 @@ impl ParserProcess {
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())
             .stderr(Stdio::null())
-            .kill_on_drop(true)
+            .kill_on_drop(true);
+        #[cfg(unix)]
+        command.process_group(0);
+        let mut child = command
             .spawn()
             .map_err(|_| ParserProcessError::Unavailable)?;
+        #[cfg(unix)]
+        let mut process_group =
+            ParserProcessGroup::new(child.id().ok_or(ParserProcessError::Unavailable)?)?;
         let mut stdin = child.stdin.take().ok_or(ParserProcessError::Unavailable)?;
         let stdout = child.stdout.take().ok_or(ParserProcessError::Unavailable)?;
 
@@ -128,8 +172,19 @@ impl ParserProcess {
         };
 
         let (_, output, status) = match timeout(self.deadline, operation).await {
-            Ok(result) => result?,
+            Ok(Ok(result)) => result,
+            Ok(Err(error)) => {
+                #[cfg(unix)]
+                process_group.terminate();
+                #[cfg(not(unix))]
+                let _ = child.kill().await;
+                let _ = child.wait().await;
+                return Err(error);
+            }
             Err(_) => {
+                #[cfg(unix)]
+                process_group.terminate();
+                #[cfg(not(unix))]
                 let _ = child.kill().await;
                 let _ = child.wait().await;
                 return Err(ParserProcessError::Unavailable);

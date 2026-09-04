@@ -76,6 +76,24 @@ impl PageProcessor for RecordingProcessor {
     }
 }
 
+struct ExhaustingProcessor {
+    failed_page: u32,
+    calls: Mutex<Vec<PageTask>>,
+}
+
+impl PageProcessor for ExhaustingProcessor {
+    fn process<'a>(&'a self, task: PageTask) -> PageProcessFuture<'a> {
+        Box::pin(async move {
+            self.calls.lock().unwrap().push(task.clone());
+            if task.page == self.failed_page {
+                Err(PageProcessError::Retryable)
+            } else {
+                Ok(page_artifact(&task))
+            }
+        })
+    }
+}
+
 #[derive(Default)]
 struct CrashOnceProcessor {
     crashed: AtomicBool,
@@ -358,6 +376,104 @@ async fn retries_only_failed_page_and_preserves_stable_activity_key() {
     assert_eq!(
         calls[3].activity_key,
         "ocr-job-job_PAGE_RUNNER-page-2-attempt-2"
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn exhausted_page_preserves_completed_artifacts_and_publishes_partial_result() {
+    let (store, admin_pool) = store().await;
+    let tenant = TenantId::new("ten_PAGE_EXHAUSTED").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let job = JobId::new("job_PAGE_EXHAUSTED").unwrap();
+    seed_job(&store, &admin_pool, job.as_str(), tenant.as_str()).await;
+    store
+        .create_page_workflow(
+            &tenant,
+            &product,
+            &job,
+            PageWorkflow::new(job.clone(), 3, 3).unwrap(),
+        )
+        .await
+        .unwrap();
+    let processor = ExhaustingProcessor {
+        failed_page: 2,
+        calls: Mutex::new(Vec::new()),
+    };
+    let runner = CheckpointedPageRunner::new(&store, &processor, 3, 2).unwrap();
+
+    assert_eq!(
+        runner.run_once(&tenant, &product, &job).await.unwrap(),
+        PageRunnerOutcome::Progressed(PageWorkflowStatus::Running)
+    );
+    assert_eq!(
+        runner.run_once(&tenant, &product, &job).await.unwrap(),
+        PageRunnerOutcome::Progressed(PageWorkflowStatus::Running)
+    );
+    assert_eq!(
+        runner.run_once(&tenant, &product, &job).await.unwrap(),
+        PageRunnerOutcome::Progressed(PageWorkflowStatus::Partial)
+    );
+    assert_eq!(
+        processor
+            .calls
+            .lock()
+            .unwrap()
+            .iter()
+            .filter(|task| task.page == 2)
+            .map(|task| task.attempt)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    let artifacts = store
+        .load_page_artifacts(&tenant, &product, &job)
+        .await
+        .unwrap();
+    assert_eq!(
+        artifacts
+            .iter()
+            .map(|artifact| artifact.page)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+
+    let publisher = ResultPublisher::new(store.clone(), Arc::new(MatchingResultWriter));
+    let finalizer =
+        DocumentFinalizer::new(store.clone(), Arc::new(PageJsonReader), publisher, 2).unwrap();
+    assert!(matches!(
+        finalizer
+            .finalize_stored(&tenant, &product, &job)
+            .await
+            .unwrap(),
+        CommitResultOutcome::Committed(_)
+    ));
+    assert!(matches!(
+        finalizer
+            .finalize_stored(&tenant, &product, &job)
+            .await
+            .unwrap(),
+        CommitResultOutcome::Existing(_)
+    ));
+    assert_eq!(
+        store
+            .find(&tenant, &product, &job)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Partial
+    );
+    let ResultLookup::Ready(locator) = store.find_result(&tenant, &product, &job).await.unwrap()
+    else {
+        panic!("expected a published partial result");
+    };
+    assert_eq!(
+        locator.document_id,
+        DocumentId::new("doc_PAGE_EXHAUSTED").unwrap()
+    );
+    assert_eq!(
+        locator.document_version,
+        DocumentVersion::new(&format!("sha256:{}", "f".repeat(64))).unwrap()
     );
 }
 
