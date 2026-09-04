@@ -3,14 +3,16 @@ use axum::{
     http::{Request, StatusCode},
     Extension,
 };
+use hmac::{Hmac, Mac};
 use http_body_util::BodyExt;
 use ocr_domain::{ProductId, TenantId, UploadId};
 use ocr_service::{
     router, router_with_job_status_cache, router_with_result_reader, router_with_upload_issuer,
-    router_with_upload_services, CacheOperationError, CachePolicy, CacheReadFuture, CacheRecord,
-    CacheScope, CacheWriteFuture, IssuedUpload, JobStatusCache, ResultArtifactReader,
-    ResultReadFuture, StoredUpload, TrustedIdentity, UploadArtifactReadFuture,
-    UploadArtifactReader, UploadIntentIssuer, UploadIssueFuture, VerifiedUploadArtifact,
+    router_with_upload_services, with_workload_identity, CacheOperationError, CachePolicy,
+    CacheReadFuture, CacheRecord, CacheScope, CacheWriteFuture, IssuedUpload, JobStatusCache,
+    ResultArtifactReader, ResultReadFuture, StoredUpload, TrustedIdentity,
+    UploadArtifactReadFuture, UploadArtifactReader, UploadIntentIssuer, UploadIssueFuture,
+    VerifiedUploadArtifact, WorkloadIdentityVerifier,
 };
 use ocr_store::{
     AcceptUpload, ClaimUploadInspection, ParserInspectionMetadata, PgJobStore, StoredResultLocator,
@@ -27,6 +29,123 @@ use std::{
     time::Duration,
 };
 use tower::ServiceExt;
+
+type HmacSha256 = Hmac<Sha256>;
+
+fn sign_workload_identity(
+    key_id: &str,
+    tenant_id: &str,
+    timestamp: i64,
+    method: &str,
+    path_and_query: &str,
+) -> String {
+    let mut mac = HmacSha256::new_from_slice(b"0123456789abcdef0123456789abcdef").unwrap();
+    mac.update(
+        format!("{key_id}\n{tenant_id}\n{timestamp}\n{method}\n{path_and_query}").as_bytes(),
+    );
+    mac.finalize()
+        .into_bytes()
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect()
+}
+
+#[tokio::test]
+async fn signed_workload_identity_allows_only_its_registered_product() {
+    let verifier = WorkloadIdentityVerifier::new(
+        [(
+            "devai-v1",
+            "devai",
+            b"0123456789abcdef0123456789abcdef".as_slice(),
+        )],
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let timestamp = time::OffsetDateTime::now_utc().unix_timestamp();
+    let application = with_workload_identity(router(store_without_connection()), verifier);
+
+    let response = application
+        .oneshot(
+            Request::get("/v1/ocr/jobs/job_UNKNOWN")
+                .header("x-ocr-key-id", "devai-v1")
+                .header("x-ocr-tenant-id", "ten_DEVAI")
+                .header("x-ocr-timestamp", timestamp)
+                .header(
+                    "x-ocr-signature",
+                    sign_workload_identity(
+                        "devai-v1",
+                        "ten_DEVAI",
+                        timestamp,
+                        "GET",
+                        "/v1/ocr/jobs/job_UNKNOWN",
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
+async fn workload_identity_rejects_signature_replay_on_a_different_route() {
+    let verifier = WorkloadIdentityVerifier::new(
+        [(
+            "devai-v1",
+            "devai",
+            b"0123456789abcdef0123456789abcdef".as_slice(),
+        )],
+        Duration::from_secs(60),
+    )
+    .unwrap();
+    let timestamp = time::OffsetDateTime::now_utc().unix_timestamp();
+    let application = with_workload_identity(router(store_without_connection()), verifier);
+
+    let response = application
+        .oneshot(
+            Request::post("/v1/ocr/jobs")
+                .header("x-ocr-key-id", "devai-v1")
+                .header("x-ocr-tenant-id", "ten_DEVAI")
+                .header("x-ocr-timestamp", timestamp)
+                .header(
+                    "x-ocr-signature",
+                    sign_workload_identity(
+                        "devai-v1",
+                        "ten_DEVAI",
+                        timestamp,
+                        "GET",
+                        "/v1/ocr/jobs/job_UNKNOWN",
+                    ),
+                )
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+}
+
+#[test]
+fn workload_identity_configuration_rejects_short_or_malformed_keys() {
+    assert!(WorkloadIdentityVerifier::from_encoded_keys(
+        "devai-v1=devai:0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+        Duration::from_secs(60),
+    )
+    .is_ok());
+    assert!(WorkloadIdentityVerifier::from_encoded_keys(
+        "devai-v1=devai:not-hex",
+        Duration::from_secs(60),
+    )
+    .is_err());
+    assert!(WorkloadIdentityVerifier::from_encoded_keys(
+        "devai-v1=devai:0123456789abcdef",
+        Duration::from_secs(60),
+    )
+    .is_err());
+}
 
 fn store_without_connection() -> PgJobStore {
     let pool = PgPoolOptions::new()
