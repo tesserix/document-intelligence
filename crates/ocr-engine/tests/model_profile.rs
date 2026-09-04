@@ -104,6 +104,31 @@ fn verifier_rejects_unbounded_tensor_shapes_and_unsupported_fields() {
 }
 
 #[test]
+fn verifier_rejects_tensor_element_envelopes_that_exceed_runtime_bounds() {
+    let signing_key = SigningKey::from_bytes(&[13; 32]);
+    let artifact = b"approved-model-artifact";
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&signed_manifest(artifact)).unwrap();
+    manifest["inputs"][0]["dimensions"] = json!([
+        { "kind": "fixed", "value": 65536 },
+        { "kind": "fixed", "value": 65536 },
+        { "kind": "fixed", "value": 65536 },
+        { "kind": "fixed", "value": 65536 },
+        { "kind": "fixed", "value": 65536 },
+        { "kind": "fixed", "value": 65536 },
+        { "kind": "fixed", "value": 65536 },
+        { "kind": "fixed", "value": 65536 }
+    ]);
+    let manifest = serde_json::to_vec(&manifest).unwrap();
+    let signature = signing_key.sign(&manifest).to_bytes();
+
+    assert_eq!(
+        verifier(&signing_key).verify(KEY_ID, &manifest, &signature),
+        Err(Error::InvalidModelProfile)
+    );
+}
+
+#[test]
 fn artifact_must_match_the_signed_digest_and_stay_within_its_limit() {
     let signing_key = SigningKey::from_bytes(&[10; 32]);
     let artifact = b"approved-model-artifact";
