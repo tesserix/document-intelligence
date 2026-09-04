@@ -1,5 +1,12 @@
 //! Temporal qualification adapter for OCR workflow dispatch.
 
+mod work_scope_dispatcher;
+
+pub use work_scope_dispatcher::{
+    ReconcileFuture, UploadReconciler, WorkScopeDispatchError, WorkScopeDispatchOutcome,
+    WorkScopeDispatcher,
+};
+
 use std::{
     future::Future, net::SocketAddr, ops::RangeInclusive, pin::Pin, sync::Arc, time::Duration,
 };

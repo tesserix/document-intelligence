@@ -4,11 +4,11 @@ use ocr_domain::{
 };
 use ocr_store::{
     AcceptUpload, AcceptUploadOutcome, CancelOutcome, ClaimJobOutbox, ClaimUploadInspection,
-    ClaimUploadInspectionOutcome, CommitResult, CommitResultOutcome, CreateJob, CreateOutcome,
-    CreatePageWorkflowOutcome, CreateUpload, CreateUploadOutcome, Error, JobOutboxEventType,
-    ParserInspectionMetadata, PgJobStore, PublishJobOutboxOutcome, RecordUpload,
-    RecordUploadOutcome, RejectUploadOutcome, ResultLookup, SavePageWorkflowOutcome,
-    UploadRejectionReason, WebhookOutboxEventType,
+    ClaimUploadInspectionOutcome, ClaimWorkScopes, CommitResult, CommitResultOutcome, CreateJob,
+    CreateOutcome, CreatePageWorkflowOutcome, CreateUpload, CreateUploadOutcome, Error,
+    JobOutboxEventType, ParserInspectionMetadata, PgJobStore, PgWorkScopeDirectory,
+    PublishJobOutboxOutcome, RecordUpload, RecordUploadOutcome, RejectUploadOutcome, ResultLookup,
+    SavePageWorkflowOutcome, UploadRejectionReason, WebhookOutboxEventType,
 };
 use sqlx::PgPool;
 
@@ -677,6 +677,12 @@ async fn upload_intent_is_idempotent_and_scoped_to_the_verified_tenant() {
 #[ignore = "requires TEST_DATABASE_URL"]
 async fn verified_upload_generation_and_event_are_recorded_exactly_once() {
     let (store, admin_pool, _) = store().await;
+    sqlx::query(
+        "delete from ocr_work_scopes where product_id = 'kora' and tenant_id = 'ten_RECONCILE'",
+    )
+    .execute(&admin_pool)
+    .await
+    .unwrap();
     sqlx::query("delete from ocr_upload_outbox where upload_id = 'upl_RECONCILE'")
         .execute(&admin_pool)
         .await
@@ -738,6 +744,13 @@ async fn verified_upload_generation_and_event_are_recorded_exactly_once() {
     .await
     .unwrap();
     assert_eq!(event_count, 1);
+    let scope_count: i64 = sqlx::query_scalar(
+        "select count(*) from ocr_work_scopes where product_id = 'kora' and tenant_id = 'ten_RECONCILE'",
+    )
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(scope_count, 1);
 
     let foreign = store
         .record_uploaded(
@@ -1326,4 +1339,62 @@ async fn result_locator_is_immutable_and_hidden_across_tenant_boundaries() {
             .unwrap(),
         ResultLookup::NotFound
     ));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn work_scope_leases_expose_only_scope_ids_and_recover_after_release() {
+    let (store, admin_pool, application_pool) = store().await;
+    let tenant_id = TenantId::new("ten_WORK_SCOPE").unwrap();
+    let product_id = ProductId::new("kora").unwrap();
+    sqlx::query("delete from ocr_work_scopes where product_id = $1 and tenant_id = $2")
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+    seed_uploaded_upload(&admin_pool, tenant_id.as_str()).await;
+    sqlx::query(
+        "insert into ocr_work_scopes (product_id, tenant_id, upload_pending) values ($1, $2, true)",
+    )
+    .bind(product_id.as_str())
+    .bind(tenant_id.as_str())
+    .execute(&admin_pool)
+    .await
+    .unwrap();
+
+    let first = PgWorkScopeDirectory::new(application_pool.clone())
+        .claim(ClaimWorkScopes {
+            lease_owner: "runtime-worker-a".to_owned(),
+            limit: 100,
+        })
+        .await
+        .unwrap();
+    let claimed = first
+        .iter()
+        .find(|scope| scope.product_id == product_id && scope.tenant_id == tenant_id)
+        .unwrap();
+    assert_eq!(
+        store
+            .list_reconcilable_uploads(&tenant_id, &product_id, 10)
+            .await
+            .unwrap(),
+        vec![upload_id_for(tenant_id.as_str())]
+    );
+
+    let second = PgWorkScopeDirectory::new(application_pool.clone())
+        .claim(ClaimWorkScopes {
+            lease_owner: "runtime-worker-b".to_owned(),
+            limit: 100,
+        })
+        .await
+        .unwrap();
+    assert!(second
+        .iter()
+        .all(|scope| scope.product_id != product_id || scope.tenant_id != tenant_id));
+
+    assert!(PgWorkScopeDirectory::new(application_pool)
+        .release(claimed, "runtime-worker-a")
+        .await
+        .unwrap());
 }
