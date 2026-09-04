@@ -1,5 +1,5 @@
 ARG RUST_BUILDER=rust:1.94-slim-bookworm@sha256:cf9dd0ec73e75f827fe59123fff9dc65af1a1c8363c3c31ee8d7f8ad0b6a5fb2
-ARG TESSERIX_RUNTIME=ghcr.io/tesserix/base-debian-runtime:20260829@sha256:039b7701b5a0d01b63794ce2892e3d9f067f18884a96f9236d07e28cef6e0a74
+ARG TESSERIX_RUNTIME=ghcr.io/tesserix/base-debian-runtime:20260904@sha256:9edc0406416440a948a36613c8359a1a0edc3df74164f75b52dd2e3713b85719
 FROM ${RUST_BUILDER} AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./

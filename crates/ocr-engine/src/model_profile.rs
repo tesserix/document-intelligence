@@ -10,6 +10,8 @@ const MAXIMUM_MODEL_PROFILE_BYTES: usize = 64 * 1024;
 const MAXIMUM_TENSORS: usize = 16;
 const MAXIMUM_TENSOR_RANK: usize = 8;
 const MAXIMUM_TENSOR_DIMENSION: u32 = 65_536;
+const MAXIMUM_TENSOR_BYTES: u64 = 64 * 1024 * 1024;
+const MAXIMUM_PROFILE_TENSOR_BYTES: u64 = 128 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactLimits {
@@ -220,6 +222,7 @@ impl TryFrom<RawModelProfile> for ModelProfile {
 
         let inputs = validate_tensors(value.inputs)?;
         let outputs = validate_tensors(value.outputs)?;
+        validate_tensor_envelope(&inputs, &outputs)?;
         let supported_locales = validate_locales(value.supported_locales)?;
         if inputs
             .iter()
@@ -317,6 +320,15 @@ pub enum TensorDataType {
     Int64,
 }
 
+impl TensorDataType {
+    fn byte_width(self) -> u64 {
+        match self {
+            Self::Float32 => 4,
+            Self::Int64 => 8,
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum TensorDimension {
@@ -325,6 +337,13 @@ pub enum TensorDimension {
 }
 
 impl TensorDimension {
+    fn maximum(&self) -> u64 {
+        match self {
+            Self::Fixed { value } => u64::from(*value),
+            Self::Dynamic { maximum } => u64::from(*maximum),
+        }
+    }
+
     fn is_invalid(&self) -> bool {
         match self {
             Self::Fixed { value } => *value == 0 || *value > MAXIMUM_TENSOR_DIMENSION,
@@ -350,6 +369,31 @@ fn validate_tensors(values: Vec<RawTensorContract>) -> Result<Vec<TensorContract
         return Err(Error::InvalidModelProfile);
     }
     Ok(tensors)
+}
+
+fn validate_tensor_envelope(inputs: &[TensorContract], outputs: &[TensorContract]) -> Result<()> {
+    let mut total_bytes = 0_u64;
+    for tensor in inputs.iter().chain(outputs) {
+        let elements = tensor
+            .dimensions
+            .iter()
+            .map(TensorDimension::maximum)
+            .try_fold(1_u64, |total, dimension| total.checked_mul(dimension))
+            .ok_or(Error::InvalidModelProfile)?;
+        let bytes = elements
+            .checked_mul(tensor.data_type.byte_width())
+            .ok_or(Error::InvalidModelProfile)?;
+        if bytes > MAXIMUM_TENSOR_BYTES {
+            return Err(Error::InvalidModelProfile);
+        }
+        total_bytes = total_bytes
+            .checked_add(bytes)
+            .ok_or(Error::InvalidModelProfile)?;
+        if total_bytes > MAXIMUM_PROFILE_TENSOR_BYTES {
+            return Err(Error::InvalidModelProfile);
+        }
+    }
+    Ok(())
 }
 
 fn validate_locales(values: Vec<String>) -> Result<Vec<String>> {
