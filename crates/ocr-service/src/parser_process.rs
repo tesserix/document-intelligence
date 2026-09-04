@@ -1,5 +1,6 @@
 use std::{path::PathBuf, process::Stdio, time::Duration};
 
+use ocr_domain::PageGeometry;
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::{
@@ -50,15 +51,16 @@ impl Drop for ParserProcessGroup {
 }
 
 const MAXIMUM_INPUT_BYTES: usize = 100 * 1024 * 1024;
-const MAXIMUM_OUTPUT_BYTES: usize = 4096;
+const MAXIMUM_OUTPUT_BYTES: usize = 64 * 1024;
 pub const PARSER_PROFILE: &str = "intake-v1";
 pub const PARSER_VERSION: &str = env!("CARGO_PKG_VERSION");
 
-#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ParserInspectionReport {
     pub page_count: i32,
     pub maximum_page_pixels: i64,
     pub total_page_pixels: i64,
+    pub pages: Vec<PageGeometry>,
 }
 
 #[derive(Debug, Copy, Clone, Error, PartialEq, Eq)]
@@ -81,6 +83,7 @@ struct WireReport {
     page_count: u64,
     maximum_page_pixels: u64,
     total_page_pixels: u64,
+    pages: Vec<PageGeometry>,
     password_protected: bool,
 }
 
@@ -221,12 +224,35 @@ fn parse_report(output: &[u8]) -> Result<ParserInspectionReport, ParserProcessEr
         || !(1..=300).contains(&page_count)
         || !(1..=100_000_000).contains(&maximum_page_pixels)
         || !(maximum_page_pixels..=1_000_000_000).contains(&total_page_pixels)
+        || report.pages.len()
+            != usize::try_from(page_count).map_err(|_| ParserProcessError::Unavailable)?
     {
+        return Err(ParserProcessError::Unavailable);
+    }
+    let mut computed_maximum = 0_i64;
+    let mut computed_total = 0_i64;
+    for (index, page) in report.pages.iter().enumerate() {
+        let expected_page =
+            u32::try_from(index + 1).map_err(|_| ParserProcessError::Unavailable)?;
+        if u32::from(page.page) != expected_page {
+            return Err(ParserProcessError::Unavailable);
+        }
+        let pixels = i64::try_from(page.pixels()).map_err(|_| ParserProcessError::Unavailable)?;
+        if pixels > maximum_page_pixels {
+            return Err(ParserProcessError::Unavailable);
+        }
+        computed_maximum = computed_maximum.max(pixels);
+        computed_total = computed_total
+            .checked_add(pixels)
+            .ok_or(ParserProcessError::Unavailable)?;
+    }
+    if computed_maximum != maximum_page_pixels || computed_total != total_page_pixels {
         return Err(ParserProcessError::Unavailable);
     }
     Ok(ParserInspectionReport {
         page_count,
         maximum_page_pixels,
         total_page_pixels,
+        pages: report.pages,
     })
 }

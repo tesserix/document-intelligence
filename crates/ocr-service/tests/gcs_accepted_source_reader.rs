@@ -1,4 +1,4 @@
-use ocr_domain::{ProductId, TenantId};
+use ocr_domain::{PageGeometry, PageNumber, ProductId, TenantId};
 use ocr_service::{AcceptedSourceReadError, GcsAcceptedSourceReader};
 use ocr_store::StoredAcceptedSource;
 
@@ -16,6 +16,7 @@ fn source() -> StoredAcceptedSource {
         page_count: 1,
         maximum_page_pixels: 1_000_000,
         total_page_pixels: 1_000_000,
+        page_geometries: vec![PageGeometry::new(PageNumber::new(1).unwrap(), 1_000, 1_000).unwrap()],
         parser_profile: "strict-v1".to_owned(),
         parser_version: "1.0.0".to_owned(),
     }

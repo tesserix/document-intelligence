@@ -4,6 +4,7 @@ use std::{collections::HashSet, io::Cursor};
 
 use image::{ImageFormat, ImageReader};
 use lopdf::{DecompressError, Document, LoadOptions, Object, ObjectId};
+use ocr_domain::{PageGeometry, PageNumber};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
@@ -88,12 +89,13 @@ impl DocumentLimits {
     }
 }
 
-#[derive(Debug, Copy, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
 #[serde(deny_unknown_fields)]
 pub struct InspectionReport {
     pub page_count: usize,
     pub maximum_page_pixels: u64,
     pub total_page_pixels: u64,
+    pub pages: Vec<PageGeometry>,
     pub password_protected: bool,
 }
 
@@ -163,8 +165,10 @@ fn inspect_pdf(encoded: &[u8], limits: DocumentLimits) -> Result<InspectionRepor
     }
     let mut maximum_page_pixels = 0_u64;
     let mut total_page_pixels = 0_u64;
-    for page_id in pages.values() {
-        let pixels = page_pixels(&document, *page_id)?;
+    let mut page_geometries = Vec::with_capacity(pages.len());
+    for (page, page_id) in pages {
+        let geometry = page_geometry(&document, page_id, page)?;
+        let pixels = geometry.pixels();
         if pixels > limits.maximum_page_pixels {
             return Err(Error::PixelLimitExceeded {
                 pixels,
@@ -185,11 +189,13 @@ fn inspect_pdf(encoded: &[u8], limits: DocumentLimits) -> Result<InspectionRepor
             });
         }
         maximum_page_pixels = maximum_page_pixels.max(pixels);
+        page_geometries.push(geometry);
     }
     Ok(InspectionReport {
-        page_count: pages.len(),
+        page_count: page_geometries.len(),
         maximum_page_pixels,
         total_page_pixels,
+        pages: page_geometries,
         password_protected: false,
     })
 }
@@ -281,11 +287,17 @@ fn inspect_image(
         page_count: 1,
         maximum_page_pixels: pixels,
         total_page_pixels: pixels,
+        pages: vec![PageGeometry::new(
+            PageNumber::new(1).map_err(|_| Error::InvalidDocument)?,
+            width,
+            height,
+        )
+        .map_err(|_| Error::InvalidDocument)?],
         password_protected: false,
     })
 }
 
-fn page_pixels(document: &Document, page_id: ObjectId) -> Result<u64> {
+fn page_geometry(document: &Document, page_id: ObjectId, page: u32) -> Result<PageGeometry> {
     let media_box = inherited_value(document, page_id, b"MediaBox")?
         .as_array()
         .map_err(|_| Error::InvalidDocument)?;
@@ -313,18 +325,33 @@ fn page_pixels(document: &Document, page_id: ObjectId) -> Result<u64> {
     }
     let width_pixels = (width_points * RENDER_DPI / PDF_POINTS_PER_INCH).ceil();
     let height_pixels = (height_points * RENDER_DPI / PDF_POINTS_PER_INCH).ceil();
-    if width_pixels > u64::MAX as f64 || height_pixels > u64::MAX as f64 {
+    if width_pixels > u32::MAX as f64 || height_pixels > u32::MAX as f64 {
         return Err(Error::PixelLimitExceeded {
             pixels: u64::MAX,
             limit: u64::MAX,
         });
     }
-    (width_pixels as u64)
-        .checked_mul(height_pixels as u64)
-        .ok_or(Error::PixelLimitExceeded {
-            pixels: u64::MAX,
-            limit: u64::MAX,
-        })
+    let width = width_pixels as u32;
+    let height = height_pixels as u32;
+    let pixels =
+        u64::from(width)
+            .checked_mul(u64::from(height))
+            .ok_or(Error::PixelLimitExceeded {
+                pixels: u64::MAX,
+                limit: HARD_MAXIMUM_PAGE_PIXELS,
+            })?;
+    if pixels > HARD_MAXIMUM_PAGE_PIXELS {
+        return Err(Error::PixelLimitExceeded {
+            pixels,
+            limit: HARD_MAXIMUM_PAGE_PIXELS,
+        });
+    }
+    PageGeometry::new(
+        PageNumber::new(page).map_err(|_| Error::InvalidDocument)?,
+        width,
+        height,
+    )
+    .map_err(|_| Error::InvalidDocument)
 }
 
 fn inherited_optional_number(

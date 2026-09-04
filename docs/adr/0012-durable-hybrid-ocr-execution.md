@@ -61,9 +61,12 @@ CNPG stores an accepted source locator joined to the job's verified product,
 tenant and upload. It includes bucket, object name, immutable generation,
 SHA-256 digest, content length, verified MIME type and parser limits. The page
 runner obtains this locator from the scoped store, not from a workflow payload
-or request. GCS reads must pin the accepted generation and verify the expected
-digest before page rendering. A source lookup for another tenant or product
-returns no result.
+or request. The accepted record also stores a bounded, contiguous page-geometry
+plan whose page count, maximum and total pixel counts must exactly match the
+parser report. GCS reads must pin the accepted generation and verify the
+expected digest before page rendering. A source lookup for another tenant or
+product returns no result; a missing or inconsistent geometry plan fails
+closed.
 
 ### Recognition and provider routing
 

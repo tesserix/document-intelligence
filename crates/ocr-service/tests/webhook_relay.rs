@@ -124,14 +124,15 @@ async fn seed(admin: &PgPool) {
           verified_digest, uploaded_at, source_bucket, source_object_name, \
           source_object_generation, source_digest, source_content_length, accepted_at, \
           inspection_attempts, parser_page_count, parser_maximum_page_pixels, \
-          parser_total_page_pixels, parser_profile, parser_version) values \
+          parser_total_page_pixels, parser_page_geometries, parser_profile, parser_version) values \
          ('upl_WEBHOOK_RELAY', 'ten_WEBHOOK_RELAY', 'kora', 'webhook-relay-upload', $1, \
           'dev-kora-ocr-quarantine', \
           'products/kora/tenants/ten_WEBHOOK_RELAY/quarantine/upl_WEBHOOK_RELAY', \
           'application/pdf', 8, $1, 'accepted', now() + interval '10 minutes', 1, \
           'application/pdf', 8, $1, now(), 'dev-kora-ocr-source', \
           'products/kora/tenants/ten_WEBHOOK_RELAY/source/upl_WEBHOOK_RELAY', 2, $1, 8, now(), \
-          1, 1, 1000000, 1000000, 'strict-v1', '1.0.0')",
+          1, 1, 1000000, 1000000, \
+          '[{\"page\":1,\"width\":1000,\"height\":1000}]'::jsonb, 'strict-v1', '1.0.0')",
     )
     .bind(&digest)
     .execute(admin)

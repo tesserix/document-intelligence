@@ -25,6 +25,8 @@ pub enum Error {
     InvalidConfidence,
     #[error("page number must start at one")]
     InvalidPageNumber,
+    #[error("page geometry is invalid")]
+    InvalidPageGeometry,
     #[error("normalized point must be finite and inside the source page")]
     InvalidPoint,
     #[error("polygon must contain a non-degenerate source region")]
@@ -477,6 +479,50 @@ impl TryFrom<u32> for PageNumber {
 impl From<PageNumber> for u32 {
     fn from(value: PageNumber) -> Self {
         value.0
+    }
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(try_from = "RawPageGeometry")]
+pub struct PageGeometry {
+    pub page: PageNumber,
+    pub width: u32,
+    pub height: u32,
+}
+
+#[derive(Deserialize)]
+#[serde(deny_unknown_fields)]
+struct RawPageGeometry {
+    page: PageNumber,
+    width: u32,
+    height: u32,
+}
+
+impl TryFrom<RawPageGeometry> for PageGeometry {
+    type Error = Error;
+
+    fn try_from(value: RawPageGeometry) -> Result<Self> {
+        Self::new(value.page, value.width, value.height)
+    }
+}
+
+impl PageGeometry {
+    pub fn new(page: PageNumber, width: u32, height: u32) -> Result<Self> {
+        let pixels = u64::from(width)
+            .checked_mul(u64::from(height))
+            .ok_or(Error::InvalidPageGeometry)?;
+        if width == 0 || height == 0 || pixels > 100_000_000 {
+            return Err(Error::InvalidPageGeometry);
+        }
+        Ok(Self {
+            page,
+            width,
+            height,
+        })
+    }
+
+    pub fn pixels(self) -> u64 {
+        u64::from(self.width) * u64::from(self.height)
     }
 }
 
