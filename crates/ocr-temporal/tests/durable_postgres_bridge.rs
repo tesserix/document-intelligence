@@ -31,7 +31,13 @@ impl DurableFinalizationExecution for SuccessfulFinalization {
 }
 
 impl PageProcessor for ExhaustingProcessor {
-    fn process<'a>(&'a self, _task: PageTask) -> PageProcessFuture<'a> {
+    fn process<'a>(
+        &'a self,
+        _product_id: &'a ProductId,
+        _tenant_id: &'a TenantId,
+        _job_id: &'a JobId,
+        _task: PageTask,
+    ) -> PageProcessFuture<'a> {
         Box::pin(async { Err(PageProcessError::Retryable) })
     }
 }
@@ -155,7 +161,13 @@ async fn cnpg_owns_attempt_exhaustion_and_cross_tenant_access_is_denied() {
 struct PageTwoExhaustingProcessor;
 
 impl PageProcessor for PageTwoExhaustingProcessor {
-    fn process<'a>(&'a self, task: PageTask) -> PageProcessFuture<'a> {
+    fn process<'a>(
+        &'a self,
+        _product_id: &'a ProductId,
+        _tenant_id: &'a TenantId,
+        _job_id: &'a JobId,
+        task: PageTask,
+    ) -> PageProcessFuture<'a> {
         Box::pin(async move {
             if task.page == 2 {
                 return Err(PageProcessError::Retryable);

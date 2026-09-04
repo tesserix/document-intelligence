@@ -4,9 +4,15 @@ FROM ${RUST_BUILDER} AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-RUN cargo build --locked --release -p ocr-service
+RUN cargo build --locked --release \
+    -p ocr-service \
+    -p ocr-parser-sandbox --bin ocr-parser-sandbox \
+    -p ocr-temporal --bin ocr-dispatch-worker --bin ocr-execution-worker
 
 FROM ${TESSERIX_RUNTIME}
 COPY --from=build --chown=10001:10001 /src/target/release/ocr-service /app/ocr-service
+COPY --from=build --chown=10001:10001 /src/target/release/ocr-dispatch-worker /app/ocr-dispatch-worker
+COPY --from=build --chown=10001:10001 /src/target/release/ocr-execution-worker /app/ocr-execution-worker
+COPY --from=build --chown=10001:10001 /src/target/release/ocr-parser-sandbox /app/ocr-parser-sandbox
 EXPOSE 8080
 CMD ["/app/ocr-service"]

@@ -61,7 +61,13 @@ impl RecordingProcessor {
 }
 
 impl PageProcessor for RecordingProcessor {
-    fn process<'a>(&'a self, task: PageTask) -> PageProcessFuture<'a> {
+    fn process<'a>(
+        &'a self,
+        _product_id: &'a ProductId,
+        _tenant_id: &'a TenantId,
+        _job_id: &'a JobId,
+        task: PageTask,
+    ) -> PageProcessFuture<'a> {
         Box::pin(async move {
             self.calls.lock().unwrap().push(task.clone());
             let mut failures = self.failures_remaining.lock().unwrap();
@@ -82,7 +88,13 @@ struct ExhaustingProcessor {
 }
 
 impl PageProcessor for ExhaustingProcessor {
-    fn process<'a>(&'a self, task: PageTask) -> PageProcessFuture<'a> {
+    fn process<'a>(
+        &'a self,
+        _product_id: &'a ProductId,
+        _tenant_id: &'a TenantId,
+        _job_id: &'a JobId,
+        task: PageTask,
+    ) -> PageProcessFuture<'a> {
         Box::pin(async move {
             self.calls.lock().unwrap().push(task.clone());
             if task.page == self.failed_page {
@@ -101,7 +113,13 @@ struct CrashOnceProcessor {
 }
 
 impl PageProcessor for CrashOnceProcessor {
-    fn process<'a>(&'a self, task: PageTask) -> PageProcessFuture<'a> {
+    fn process<'a>(
+        &'a self,
+        _product_id: &'a ProductId,
+        _tenant_id: &'a TenantId,
+        _job_id: &'a JobId,
+        task: PageTask,
+    ) -> PageProcessFuture<'a> {
         Box::pin(async move {
             self.calls.lock().unwrap().push(task.clone());
             if task.page == 2 && !self.crashed.swap(true, Ordering::SeqCst) {
@@ -120,7 +138,13 @@ struct CancelOnProcess<'a> {
 }
 
 impl PageProcessor for CancelOnProcess<'_> {
-    fn process<'a>(&'a self, task: PageTask) -> PageProcessFuture<'a> {
+    fn process<'a>(
+        &'a self,
+        _product_id: &'a ProductId,
+        _tenant_id: &'a TenantId,
+        _job_id: &'a JobId,
+        task: PageTask,
+    ) -> PageProcessFuture<'a> {
         Box::pin(async move {
             let mut stored = self
                 .store

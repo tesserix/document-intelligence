@@ -19,13 +19,16 @@ pub type PageRecognitionFuture<'a> =
     Pin<Box<dyn Future<Output = Result<DocumentPage, PageRecognitionError>> + Send + 'a>>;
 
 pub trait PageRecognizer: Send + Sync {
-    fn recognize<'a>(&'a self, task: &'a PageTask) -> PageRecognitionFuture<'a>;
+    fn recognize<'a>(
+        &'a self,
+        product_id: &'a ProductId,
+        tenant_id: &'a TenantId,
+        job_id: &'a JobId,
+        task: &'a PageTask,
+    ) -> PageRecognitionFuture<'a>;
 }
 
 pub struct ArtifactPageProcessor<R, W> {
-    product_id: ProductId,
-    tenant_id: TenantId,
-    job_id: JobId,
     recognizer: Arc<R>,
     writer: Arc<W>,
 }
@@ -35,20 +38,8 @@ where
     R: PageRecognizer,
     W: PageArtifactWriter,
 {
-    pub fn new(
-        product_id: ProductId,
-        tenant_id: TenantId,
-        job_id: JobId,
-        recognizer: Arc<R>,
-        writer: Arc<W>,
-    ) -> Self {
-        Self {
-            product_id,
-            tenant_id,
-            job_id,
-            recognizer,
-            writer,
-        }
+    pub fn new(recognizer: Arc<R>, writer: Arc<W>) -> Self {
+        Self { recognizer, writer }
     }
 }
 
@@ -57,11 +48,17 @@ where
     R: PageRecognizer,
     W: PageArtifactWriter,
 {
-    fn process<'a>(&'a self, task: PageTask) -> PageProcessFuture<'a> {
+    fn process<'a>(
+        &'a self,
+        product_id: &'a ProductId,
+        tenant_id: &'a TenantId,
+        job_id: &'a JobId,
+        task: PageTask,
+    ) -> PageProcessFuture<'a> {
         Box::pin(async move {
             let expected_key = format!(
                 "ocr-job-{}-page-{}-attempt-{}",
-                self.job_id.as_str(),
+                job_id.as_str(),
                 task.page,
                 task.attempt
             );
@@ -70,7 +67,7 @@ where
             }
             let page = self
                 .recognizer
-                .recognize(&task)
+                .recognize(product_id, tenant_id, job_id, &task)
                 .await
                 .map_err(|error| match error {
                     PageRecognitionError::Retryable => PageProcessError::Retryable,
@@ -81,13 +78,7 @@ where
             }
             let artifact = self
                 .writer
-                .write(
-                    &self.product_id,
-                    &self.tenant_id,
-                    &self.job_id,
-                    &task,
-                    &page,
-                )
+                .write(product_id, tenant_id, job_id, &task, &page)
                 .await
                 .map_err(|error| match error {
                     PageArtifactWriteError::Unavailable => PageProcessError::Retryable,

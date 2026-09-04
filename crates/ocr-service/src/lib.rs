@@ -1,6 +1,7 @@
 //! HTTP boundary for the document intelligence service.
 
 mod accepted_source_reader;
+mod document_ai;
 mod document_finalizer;
 mod document_reader;
 mod importer;
@@ -10,6 +11,7 @@ mod outbox_relay;
 mod page_artifacts;
 mod page_processor;
 mod page_runner;
+mod page_source;
 mod parser_process;
 mod result_artifacts;
 mod result_assembly;
@@ -29,7 +31,13 @@ pub use job_status_cache::{
 };
 
 pub use accepted_source_reader::{
-    AcceptedSourceReadError, AcceptedSourceReaderConfigurationError, GcsAcceptedSourceReader,
+    AcceptedSourceBytesReader, AcceptedSourceBytesReaderFuture, AcceptedSourceReadError,
+    AcceptedSourceReaderConfigurationError, GcsAcceptedSourceReader,
+};
+
+pub use document_ai::{
+    DocumentAiConfiguration, DocumentAiConfigurationError, DocumentAiPageRecognizer,
+    DocumentAiTransport, DocumentAiTransportError, MetadataDocumentAiTransport,
 };
 
 pub use document_finalizer::{DocumentFinalizeError, DocumentFinalizer};
@@ -44,6 +52,10 @@ pub use page_processor::{
 pub use page_runner::{
     CheckpointedPageRunner, PageProcessError, PageProcessFuture, PageProcessor, PageRunnerError,
     PageRunnerOutcome,
+};
+pub use page_source::{
+    AcceptedPageSource, AcceptedPageSourceLoader, AcceptedSourceRepository,
+    AcceptedSourceRepositoryFuture, PageSourceError, PageSourceFuture, PageSourceResolver,
 };
 pub use parser_process::{
     ParserInspectionReport, ParserProcess, ParserProcessError, PARSER_PROFILE, PARSER_VERSION,
