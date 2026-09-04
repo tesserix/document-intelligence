@@ -45,6 +45,7 @@ consumer integrations around the shared service.
 - [ADR-0005: CNPG, Qdrant, and Valkey](docs/adr/0005-data-platform.md)
 - [ADR-0006: Kora runtime storage as a consumer integration](docs/adr/0006-kora-runtime-storage.md)
 - [ADR-0007: sandbox, training, and held-out evaluation boundaries](docs/adr/0007-sandbox-evaluation-training-boundaries.md)
+- [ADR-0009: signed workload identity envelope](docs/adr/0009-signed-workload-identity-envelope.md)
 
 ## Design checkpoint
 
@@ -59,6 +60,14 @@ Both adapters use Application Default Credentials and GKE Workload Identity;
 service-account key files are not accepted as application configuration. A
 missing adapter leaves liveness available for diagnostics but keeps readiness
 at `503`.
+
+`OCR_WORKLOAD_IDENTITY_KEYS` is required and is supplied only from Secret
+Manager to the OCR workload. It maps each rotation-safe key ID to its registered
+product and 32-byte-or-longer hexadecimal HMAC key as
+`key_id=product:hex_key`. Product adapters hold only their own key and sign the
+tenant, timestamp, method, and URI after authenticating the user session. The
+service rejects missing, malformed, stale, or mismatched envelopes; see
+[ADR-0009](docs/adr/0009-signed-workload-identity-envelope.md).
 
 `VALKEY_URL` optionally enables the degradable job-status cache. Cache entries
 are schema-, product-, tenant-, and job-scoped; contain only status and creation

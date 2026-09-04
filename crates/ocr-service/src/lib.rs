@@ -19,6 +19,7 @@ mod upload_artifacts;
 mod upload_intents;
 mod webhook;
 mod webhook_relay;
+mod workload_identity;
 
 pub use job_status_cache::{
     CacheConfigurationError, CacheOperationError, CachePolicy, CacheReadFuture, CacheRecord,
@@ -57,6 +58,9 @@ pub use webhook::{
 pub use webhook_relay::{
     WebhookOutboxRelay, WebhookPublishError, WebhookPublishFuture, WebhookPublishOutcome,
     WebhookPublisher, WebhookRelayError, WebhookRelayOutcome,
+};
+pub use workload_identity::{
+    with_workload_identity, WorkloadIdentityConfigurationError, WorkloadIdentityVerifier,
 };
 
 use std::{

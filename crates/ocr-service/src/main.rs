@@ -3,9 +3,10 @@ use std::{collections::HashMap, env, str::FromStr, sync::Arc};
 use anyhow::{Context, Result};
 use ocr_domain::ProductId;
 use ocr_service::{
-    router_with_runtime_dependencies, CachePolicy, GcsResultReader, GcsUploadArtifactReader,
-    GcsUploadIssuer, JobStatusCache, ResultArtifactReader, TelemetryConfig, TelemetryRuntime,
-    UploadArtifactReader, UploadIntentIssuer, ValkeyJobStatusCache,
+    router_with_runtime_dependencies, with_workload_identity, CachePolicy, GcsResultReader,
+    GcsUploadArtifactReader, GcsUploadIssuer, JobStatusCache, ResultArtifactReader,
+    TelemetryConfig, TelemetryRuntime, UploadArtifactReader, UploadIntentIssuer,
+    ValkeyJobStatusCache, WorkloadIdentityVerifier,
 };
 use ocr_store::PgJobStore;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -22,6 +23,8 @@ async fn main() -> Result<()> {
         EnvFilter::try_from_default_env().unwrap_or_else(|_| "info".into()),
     )
     .context("telemetry initialization failed")?;
+    let workload_identity = WorkloadIdentityVerifier::from_process_environment()
+        .context("workload identity configuration invalid")?;
 
     let database_url = env::var("DATABASE_URL").context("DATABASE_URL is required")?;
     let bind_address = env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".to_owned());
@@ -56,13 +59,16 @@ async fn main() -> Result<()> {
         None => (HashMap::new(), None, None),
     };
     let job_status_cache = optional_job_status_cache().await?;
-    let application = router_with_runtime_dependencies(
-        PgJobStore::new(pool),
-        results,
-        upload_buckets,
-        uploads,
-        upload_artifacts,
-        job_status_cache,
+    let application = with_workload_identity(
+        router_with_runtime_dependencies(
+            PgJobStore::new(pool),
+            results,
+            upload_buckets,
+            uploads,
+            upload_artifacts,
+            job_status_cache,
+        ),
+        workload_identity,
     );
     let listener = TcpListener::bind(&bind_address)
         .await
