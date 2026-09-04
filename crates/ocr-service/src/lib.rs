@@ -1107,13 +1107,10 @@ fn validate_issued_upload(
 ) -> std::result::Result<(), UploadIssueError> {
     let uri: Uri = issued.upload_url.parse().map_err(|_| UploadIssueError)?;
     let valid_url = uri.scheme_str() == Some("https") && uri.authority().is_some();
-    let expected_headers = BTreeMap::from([
-        (
-            "content-type".to_owned(),
-            upload.expected_content_type.clone(),
-        ),
-        ("x-goog-if-generation-match".to_owned(), "0".to_owned()),
-    ]);
+    let expected_headers = BTreeMap::from([(
+        "content-type".to_owned(),
+        upload.expected_content_type.clone(),
+    )]);
     if !valid_url || issued.required_headers != expected_headers {
         return Err(UploadIssueError);
     }

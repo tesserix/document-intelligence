@@ -1,4 +1,7 @@
-use std::{collections::HashMap, time::Duration};
+use std::{
+    collections::{BTreeMap, HashMap},
+    time::Duration,
+};
 
 use axum::http::Method;
 use object_store::{
@@ -47,6 +50,12 @@ impl GcsUploadIssuer {
     }
 }
 
+fn required_upload_headers(content_type: String) -> BTreeMap<String, String> {
+    [("content-type".to_owned(), content_type)]
+        .into_iter()
+        .collect()
+}
+
 impl UploadIntentIssuer for GcsUploadIssuer {
     fn issue<'a>(&'a self, upload: &'a StoredUpload) -> UploadIssueFuture<'a> {
         Box::pin(async move {
@@ -67,16 +76,23 @@ impl UploadIntentIssuer for GcsUploadIssuer {
                 .to_string();
             Ok(IssuedUpload {
                 upload_url,
-                required_headers: [
-                    (
-                        "content-type".to_owned(),
-                        upload.expected_content_type.clone(),
-                    ),
-                    ("x-goog-if-generation-match".to_owned(), "0".to_owned()),
-                ]
-                .into_iter()
-                .collect(),
+                required_headers: required_upload_headers(upload.expected_content_type.clone()),
             })
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use std::collections::BTreeMap;
+
+    use super::required_upload_headers;
+
+    #[test]
+    fn signed_upload_contract_requires_only_the_signed_content_type_header() {
+        assert_eq!(
+            required_upload_headers("application/pdf".to_owned()),
+            BTreeMap::from([("content-type".to_owned(), "application/pdf".to_owned())])
+        );
     }
 }
