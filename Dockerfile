@@ -7,7 +7,10 @@ WORKDIR /src
 # managed-provider and Temporal dependency graph compiles native code, so keep
 # the compiler available only in this disposable build stage.
 RUN apt-get update \
-    && apt-get install --no-install-recommends -y build-essential pkg-config \
+    && apt-get install --no-install-recommends -y \
+        build-essential \
+        pkg-config \
+        protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
 
 COPY Cargo.toml Cargo.lock ./
