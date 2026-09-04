@@ -1,6 +1,12 @@
-use std::{fs, os::unix::fs::PermissionsExt, time::Duration};
+use std::{fs, os::unix::fs::PermissionsExt, sync::OnceLock, time::Duration};
 
 use ocr_service::{ParserProcess, ParserProcessError};
+use tokio::sync::Mutex;
+
+fn parser_test_guard() -> &'static Mutex<()> {
+    static GUARD: OnceLock<Mutex<()>> = OnceLock::new();
+    GUARD.get_or_init(|| Mutex::new(()))
+}
 
 fn fixture(script: &str) -> (tempfile::TempDir, ParserProcess) {
     let directory = tempfile::tempdir().unwrap();
@@ -15,6 +21,7 @@ fn fixture(script: &str) -> (tempfile::TempDir, ParserProcess) {
 
 #[tokio::test]
 async fn parser_process_returns_only_valid_bounded_metadata() {
+    let _guard = parser_test_guard().lock().await;
     let (_directory, parser) = fixture(
         "cat >/dev/null; printf '{\"page_count\":2,\"maximum_page_pixels\":8500000,\"total_page_pixels\":16000000,\"password_protected\":false}'",
     );
@@ -31,6 +38,7 @@ async fn parser_process_returns_only_valid_bounded_metadata() {
 
 #[tokio::test]
 async fn parser_process_maps_stable_failures_and_bounds_output_and_time() {
+    let _guard = parser_test_guard().lock().await;
     for (status, expected) in [
         (10, ParserProcessError::InvalidDocument),
         (11, ParserProcessError::LimitsExceeded),
