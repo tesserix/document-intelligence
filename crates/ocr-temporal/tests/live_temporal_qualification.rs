@@ -12,10 +12,12 @@ use ocr_domain::{JobId, ProductId, TenantId};
 use ocr_service::{WorkflowAction, WorkflowDispatch};
 use ocr_temporal::{
     qualification_deployment_options, DurableActivityInput, DurableActivityOutput,
-    DurableActivityStatus, DurableDocumentWorkflow, DurablePageActivities, DurablePageExecution,
-    DurablePageExecutionFuture, DurableWorkflowResultMetadata, DurableWorkflowRunInput,
-    GatewayOutcome, OcrDocumentWorkflow, OfficialTemporalGateway, QualificationPageActivities,
-    TemporalCommand, TemporalGateway, WorkflowInput, WorkflowResultMetadata, WorkflowRunInput,
+    DurableActivityStatus, DurableDocumentWorkflow, DurableFinalizationActivities,
+    DurableFinalizationExecution, DurableFinalizationFuture, DurablePageActivities,
+    DurablePageExecution, DurablePageExecutionFuture, DurableWorkflowResultMetadata,
+    DurableWorkflowRunInput, GatewayOutcome, OcrDocumentWorkflow, OfficialTemporalGateway,
+    QualificationPageActivities, TemporalCommand, TemporalGateway, WorkflowInput,
+    WorkflowResultMetadata, WorkflowRunInput,
 };
 use temporalio_client::{
     errors::WorkflowGetResultError, WorkflowCancelOptions, WorkflowFetchHistoryOptions,
@@ -71,6 +73,14 @@ impl DurablePageExecution for PartialAfterFiftyIterations {
             };
             Ok(DurableActivityOutput::new(status))
         })
+    }
+}
+
+struct SuccessfulFinalization;
+
+impl DurableFinalizationExecution for SuccessfulFinalization {
+    fn finalize<'a>(&'a self, _input: DurableActivityInput) -> DurableFinalizationFuture<'a> {
+        Box::pin(async { Ok(()) })
     }
 }
 
@@ -202,6 +212,9 @@ async fn durable_runner_activity_continues_as_new_and_replays_without_document_c
         .unwrap()
         .register_activities(DurablePageActivities::new(Arc::new(
             PartialAfterFiftyIterations::default(),
+        )))
+        .register_activities(DurableFinalizationActivities::new(Arc::new(
+            SuccessfulFinalization,
         )))
         .build();
     let mut worker = Worker::new(&runtime, env.client().clone(), worker_options).unwrap();

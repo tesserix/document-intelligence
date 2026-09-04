@@ -7,7 +7,8 @@ use ocr_service::{PageProcessError, PageProcessFuture, PageProcessor};
 use ocr_store::{CreateJob, CreatePageWorkflowOutcome, PgJobStore, StoredPageArtifact};
 use ocr_temporal::{
     CheckpointedPageExecutor, DurableActivityInput, DurableActivityStatus, DurableDocumentWorkflow,
-    DurableExecutionErrorKind, DurablePageActivities, DurablePageExecution,
+    DurableExecutionErrorKind, DurableFinalizationActivities, DurableFinalizationExecution,
+    DurableFinalizationFuture, DurablePageActivities, DurablePageExecution,
     DurableWorkflowResultMetadata, DurableWorkflowRunInput,
 };
 use sqlx::PgPool;
@@ -20,6 +21,14 @@ use temporalio_sdk::{
 };
 
 struct ExhaustingProcessor;
+
+struct SuccessfulFinalization;
+
+impl DurableFinalizationExecution for SuccessfulFinalization {
+    fn finalize<'a>(&'a self, _input: DurableActivityInput) -> DurableFinalizationFuture<'a> {
+        Box::pin(async { Ok(()) })
+    }
+}
 
 impl PageProcessor for ExhaustingProcessor {
     fn process<'a>(&'a self, _task: PageTask) -> PageProcessFuture<'a> {
@@ -193,6 +202,9 @@ async fn temporal_sdk_activity_exhaustion_preserves_successful_page_artifacts() 
         .register_workflow::<DurableDocumentWorkflow>()
         .unwrap()
         .register_activities(DurablePageActivities::new(Arc::new(executor)))
+        .register_activities(DurableFinalizationActivities::new(Arc::new(
+            SuccessfulFinalization,
+        )))
         .build();
     let mut worker = Worker::new(&runtime, env.client().clone(), worker_options).unwrap();
     let shutdown = worker.shutdown_handle();

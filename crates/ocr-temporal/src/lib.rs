@@ -489,6 +489,13 @@ pub trait DurablePageExecution: Send + Sync {
     fn execute<'a>(&'a self, input: DurableActivityInput) -> DurablePageExecutionFuture<'a>;
 }
 
+pub type DurableFinalizationFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<(), DurableExecutionError>> + Send + 'a>>;
+
+pub trait DurableFinalizationExecution: Send + Sync {
+    fn finalize<'a>(&'a self, input: DurableActivityInput) -> DurableFinalizationFuture<'a>;
+}
+
 pub struct CheckpointedPageExecutor<P> {
     store: PgJobStore,
     processor: P,
@@ -566,6 +573,16 @@ pub fn durable_activity_options(iteration: u32) -> Option<ActivityOptions> {
 
 pub struct DurablePageActivities {
     execution: Arc<dyn DurablePageExecution>,
+}
+
+pub struct DurableFinalizationActivities {
+    execution: Arc<dyn DurableFinalizationExecution>,
+}
+
+impl DurableFinalizationActivities {
+    pub fn new(execution: Arc<dyn DurableFinalizationExecution>) -> Self {
+        Self { execution }
+    }
 }
 
 impl DurablePageActivities {
@@ -708,6 +725,21 @@ impl DurableDocumentWorkflow {
                 )
                 .await?;
             if outcome.status() != DurableActivityStatus::Running {
+                if matches!(
+                    outcome.status(),
+                    DurableActivityStatus::Completed | DurableActivityStatus::Partial
+                ) {
+                    ctx.execute_activity(
+                        DurableFinalizationActivities::finalize_document,
+                        input.activity_input(),
+                        durable_activity_options(iteration).ok_or_else(|| {
+                            ApplicationFailure::non_retryable(DurableExecutionError::new(
+                                DurableExecutionErrorKind::InvalidInput,
+                            ))
+                        })?,
+                    )
+                    .await?;
+                }
                 return Ok(DurableWorkflowResultMetadata {
                     status: outcome.status(),
                     runner_iterations: iteration,
@@ -746,6 +778,23 @@ impl DurablePageActivities {
                 _ = ctx.cancelled() => return Err(ActivityError::cancelled()),
                 _ = heartbeat.tick() => ctx.record_heartbeat(()).await?,
             }
+        }
+    }
+}
+
+#[activities]
+impl DurableFinalizationActivities {
+    #[activity(name = "finalize_document_v1")]
+    pub async fn finalize_document(
+        self: Arc<Self>,
+        ctx: ActivityContext,
+        input: DurableActivityInput,
+    ) -> Result<(), ActivityError> {
+        let execution = self.execution.finalize(input);
+        tokio::pin!(execution);
+        tokio::select! {
+            result = &mut execution => result.map_err(DurableExecutionError::into_activity_error),
+            _ = ctx.cancelled() => Err(ActivityError::cancelled()),
         }
     }
 }
