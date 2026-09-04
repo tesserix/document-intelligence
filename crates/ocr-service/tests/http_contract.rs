@@ -335,6 +335,66 @@ async fn create_rejects_an_untrusted_webhook_destination_before_database_work() 
     assert_eq!(body["code"], "invalid_webhook_subscription_id");
 }
 
+#[tokio::test]
+async fn create_rejects_unbounded_extraction_inputs_before_database_work() {
+    let cases = [
+        (
+            "too many language hints",
+            serde_json::json!({
+                "source": {"upload_id": "upl_ALPHA"},
+                "document_type": "auto",
+                "language_hints": ["en", "fr", "de", "it", "es", "pt", "nl", "sv", "da"]
+            }),
+        ),
+        (
+            "duplicate language hints",
+            serde_json::json!({
+                "source": {"upload_id": "upl_ALPHA"},
+                "document_type": "auto",
+                "language_hints": ["en-AU", "en-AU"]
+            }),
+        ),
+        (
+            "invalid language hint",
+            serde_json::json!({
+                "source": {"upload_id": "upl_ALPHA"},
+                "document_type": "auto",
+                "language_hints": ["not_a_language"]
+            }),
+        ),
+        (
+            "empty extraction schema id",
+            serde_json::json!({
+                "source": {"upload_id": "upl_ALPHA"},
+                "document_type": "auto",
+                "extraction": {"schema_id": "", "schema_version": "1.0"}
+            }),
+        ),
+    ];
+
+    for (index, (name, body)) in cases.into_iter().enumerate() {
+        let response = router(store_without_connection())
+            .layer(Extension(
+                TrustedIdentity::new("kora", "ten_ALPHA").unwrap(),
+            ))
+            .oneshot(
+                Request::post("/v1/ocr/jobs")
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", format!("invalid-bounds-{index}"))
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "case {name}");
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["code"], "invalid_job_request", "case {name}");
+    }
+}
+
 #[test]
 fn trusted_identity_rejects_noncanonical_scope() {
     assert!(TrustedIdentity::new("prod/kora", "ten_ALPHA").is_err());

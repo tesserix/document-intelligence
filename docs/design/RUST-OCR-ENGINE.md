@@ -27,6 +27,21 @@ flowchart LR
 
 Each stage consumes and produces typed, versioned artefacts. The original page is immutable. Geometry operations append an invertible transform so every derived polygon maps back to the original page.
 
+### Implemented bounded deskew profile
+
+The deterministic preprocessing profile searches correction angles from `-12°`
+through `+12°` in `0.25°` steps. It evaluates at most 50,000 sampled pixels
+using horizontal projection concentration, reports the chosen angle and
+confidence, and applies a correction only when both the confidence and material
+angle policy thresholds pass. Low-confidence and negligible-angle inputs remain
+byte-for-byte unchanged with an explicit decision.
+
+Applied correction uses same-size bilinear grayscale rotation with a white
+background. The transform chain records the exact correction angle and inverts
+it around the normalized page centre when mapping observations back to the
+immutable source. This profile is preprocessing only; it does not approve a
+detector, recognizer, model artefact or production runtime.
+
 ## Cargo workspace
 
 | Crate | Responsibility |

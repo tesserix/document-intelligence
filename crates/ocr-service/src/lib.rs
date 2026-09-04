@@ -419,6 +419,42 @@ struct CreateJobRequest {
     webhook_subscription_id: Option<String>,
 }
 
+impl CreateJobRequest {
+    fn has_valid_bounds(&self) -> bool {
+        let language_hints_are_valid = self.language_hints.len() <= 8
+            && self
+                .language_hints
+                .iter()
+                .all(|hint| valid_language_hint(hint))
+            && self
+                .language_hints
+                .iter()
+                .enumerate()
+                .all(|(index, hint)| !self.language_hints[..index].contains(hint));
+        let extraction_is_valid = self.extraction.as_ref().is_none_or(|extraction| {
+            (1..=128).contains(&extraction.schema_id.len())
+                && (1..=64).contains(&extraction.schema_version.len())
+        });
+        language_hints_are_valid && extraction_is_valid
+    }
+}
+
+fn valid_language_hint(value: &str) -> bool {
+    if !(2..=35).contains(&value.len()) {
+        return false;
+    }
+    let mut segments = value.split('-');
+    let Some(language) = segments.next() else {
+        return false;
+    };
+    (2..=8).contains(&language.len())
+        && language.bytes().all(|byte| byte.is_ascii_alphabetic())
+        && segments.all(|segment| {
+            (1..=8).contains(&segment.len())
+                && segment.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CreateUploadRequest {
@@ -1020,6 +1056,13 @@ async fn create_job(
             request_id.clone(),
         )
     })?;
+    if !command.has_valid_bounds() {
+        return Err(ApiError::bad_request(
+            "invalid_job_request",
+            "job request is invalid",
+            request_id,
+        ));
+    }
     let upload_id = UploadId::new(&command.source.upload_id).map_err(|_| {
         ApiError::bad_request(
             "invalid_request",

@@ -1,0 +1,107 @@
+{
+  "$id": "https://schemas.tesserix.app/document-intelligence/v1/create-job.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "properties": {
+    "document_type": {
+      "enum": [
+        "auto",
+        "general",
+        "invoice",
+        "receipt",
+        "purchase_order",
+        "identity_document",
+        "contract",
+        "bank_statement",
+        "medical_form",
+        "application_form",
+        "resume"
+      ]
+    },
+    "extraction": {
+      "additionalProperties": false,
+      "properties": {
+        "schema_id": {
+          "maxLength": 128,
+          "minLength": 1,
+          "type": "string"
+        },
+        "schema_version": {
+          "maxLength": 64,
+          "minLength": 1,
+          "type": "string"
+        }
+      },
+      "required": [
+        "schema_id",
+        "schema_version"
+      ],
+      "type": "object"
+    },
+    "language_hints": {
+      "items": {
+        "maxLength": 35,
+        "minLength": 2,
+        "pattern": "^[A-Za-z]{2,8}(?:-[A-Za-z0-9]{1,8})*$",
+        "type": "string"
+      },
+      "maxItems": 8,
+      "type": "array",
+      "uniqueItems": true
+    },
+    "output": {
+      "additionalProperties": false,
+      "properties": {
+        "evidence": {
+          "type": "boolean"
+        },
+        "layout": {
+          "type": "boolean"
+        },
+        "markdown": {
+          "type": "boolean"
+        },
+        "text": {
+          "type": "boolean"
+        }
+      },
+      "required": [
+        "text",
+        "markdown",
+        "layout",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "processing_class": {
+      "enum": [
+        "interactive",
+        "priority",
+        "batch"
+      ]
+    },
+    "source": {
+      "additionalProperties": false,
+      "properties": {
+        "upload_id": {
+          "pattern": "^upl_[A-Za-z0-9_]{1,64}$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "upload_id"
+      ],
+      "type": "object"
+    },
+    "webhook_subscription_id": {
+      "pattern": "^whs_[A-Za-z0-9_]{1,64}$",
+      "type": "string"
+    }
+  },
+  "required": [
+    "source",
+    "document_type"
+  ],
+  "title": "Create document intelligence job",
+  "type": "object"
+}

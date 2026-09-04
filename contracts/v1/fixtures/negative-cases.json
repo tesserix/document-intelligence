@@ -1,0 +1,95 @@
+[
+  {
+    "base_fixture": "fixtures/product-alpha/document-result.json",
+    "name": "document content cannot become trusted",
+    "pointer": "/content_trust",
+    "schema": "document-result.schema.json",
+    "value": "trusted"
+  },
+  {
+    "base_fixture": "fixtures/product-alpha/document-result.json",
+    "name": "structured fields require evidence",
+    "pointer": "/fields/total/evidence",
+    "schema": "document-result.schema.json",
+    "value": []
+  },
+  {
+    "base_fixture": "fixtures/product-alpha/document-result.json",
+    "name": "confidence is normalized",
+    "pointer": "/confidence/overall",
+    "schema": "document-result.schema.json",
+    "value": 1.01
+  },
+  {
+    "base_fixture": "fixtures/product-alpha/document-result.json",
+    "name": "geometry remains within the page",
+    "pointer": "/citations/0/polygon/points/0/x",
+    "schema": "document-result.schema.json",
+    "value": -0.01
+  },
+  {
+    "base_fixture": "fixtures/product-alpha/document-result.json",
+    "name": "geometry has at least three points",
+    "pointer": "/citations/0/polygon/points",
+    "schema": "document-result.schema.json",
+    "value": [
+      {
+        "x": 0,
+        "y": 0
+      },
+      {
+        "x": 1,
+        "y": 1
+      }
+    ]
+  },
+  {
+    "base_fixture": "fixtures/product-alpha/document-result.json",
+    "name": "cost is never a binary float",
+    "pointer": "/cost/decimal",
+    "schema": "document-result.schema.json",
+    "value": 0.0012
+  },
+  {
+    "base_fixture": "fixtures/product-alpha/document-result.json",
+    "name": "results never expose storage locators",
+    "pointer": "/bucket",
+    "schema": "document-result.schema.json",
+    "value": "private-source"
+  },
+  {
+    "base_fixture": "fixtures/product-alpha/create-job.json",
+    "name": "requests never accept product identity",
+    "pointer": "/product_id",
+    "schema": "create-job.schema.json",
+    "value": "product-alpha"
+  },
+  {
+    "base_fixture": "fixtures/product-alpha/create-job.json",
+    "name": "requests never accept tenant identity",
+    "pointer": "/tenant_id",
+    "schema": "create-job.schema.json",
+    "value": "ten_OTHER"
+  },
+  {
+    "base_fixture": "fixtures/product-alpha/create-job.json",
+    "name": "requests never accept arbitrary source URLs",
+    "pointer": "/document_uri",
+    "schema": "create-job.schema.json",
+    "value": "https://attacker.invalid/document"
+  },
+  {
+    "base_fixture": "fixtures/product-alpha/create-job.json",
+    "name": "requests never accept callback URLs",
+    "pointer": "/callback_url",
+    "schema": "create-job.schema.json",
+    "value": "https://attacker.invalid/callback"
+  },
+  {
+    "base_fixture": "fixtures/product-alpha/create-job.json",
+    "name": "requests never accept provider credentials",
+    "pointer": "/provider_api_key",
+    "schema": "create-job.schema.json",
+    "value": "not-a-real-secret"
+  }
+]
