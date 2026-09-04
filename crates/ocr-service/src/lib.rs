@@ -808,10 +808,11 @@ async fn readiness(
     request: axum::extract::Request,
 ) -> Result<StatusCode, ApiError> {
     let request_id = request_id_from_extensions(request.extensions());
-    if !state.result_artifacts_configured
-        || !state.upload_intents_configured
-        || !state.upload_artifacts_configured
-    {
+    if !runtime_dependencies_ready(
+        state.result_artifacts_configured,
+        state.upload_intents_configured,
+        state.upload_artifacts_configured,
+    ) {
         return Err(ApiError::unavailable(request_id));
     }
     state
@@ -820,6 +821,14 @@ async fn readiness(
         .await
         .map_err(|_| ApiError::unavailable(request_id))?;
     Ok(StatusCode::OK)
+}
+
+fn runtime_dependencies_ready(
+    result_artifacts_configured: bool,
+    upload_intents_configured: bool,
+    upload_artifacts_configured: bool,
+) -> bool {
+    result_artifacts_configured || (upload_intents_configured && upload_artifacts_configured)
 }
 
 async fn complete_upload(
@@ -1371,6 +1380,7 @@ fn request_id_from_headers(headers: &HeaderMap) -> String {
         .map(str::to_owned)
         .unwrap_or_else(|| Uuid::new_v4().to_string())
 }
+
 pub use document_reader::{GcsDocumentReaderConfigurationError, GcsUploadDocumentReader};
 pub use importer::{
     DocumentParseError, DocumentParser, DocumentReadError, ImportError, ImportOutcome, Importer,
@@ -1386,3 +1396,24 @@ pub use outbox_relay::{
     WorkflowDispatchOutcome, WorkflowStarter,
 };
 pub use source_promotion::{GcsSourcePromoter, PromotedSource, SourcePromotionError};
+
+#[cfg(test)]
+mod tests {
+    use super::runtime_dependencies_ready;
+
+    #[test]
+    fn readiness_accepts_a_result_only_api() {
+        assert!(runtime_dependencies_ready(true, false, false));
+    }
+
+    #[test]
+    fn readiness_accepts_a_complete_upload_api() {
+        assert!(runtime_dependencies_ready(false, true, true));
+    }
+
+    #[test]
+    fn readiness_rejects_an_incomplete_runtime_configuration() {
+        assert!(!runtime_dependencies_ready(false, false, false));
+        assert!(!runtime_dependencies_ready(false, true, false));
+    }
+}
