@@ -1,0 +1,520 @@
+{
+  "$defs": {
+    "confidence": {
+      "maximum": 1,
+      "minimum": 0,
+      "type": "number"
+    },
+    "confidenceDimensions": {
+      "additionalProperties": false,
+      "properties": {
+        "classification": {
+          "$ref": "#/$defs/confidence"
+        },
+        "extraction": {
+          "$ref": "#/$defs/confidence"
+        },
+        "input_quality": {
+          "$ref": "#/$defs/confidence"
+        },
+        "ocr": {
+          "$ref": "#/$defs/confidence"
+        },
+        "overall": {
+          "$ref": "#/$defs/confidence"
+        },
+        "validation": {
+          "$ref": "#/$defs/confidence"
+        }
+      },
+      "required": [
+        "input_quality",
+        "ocr",
+        "classification",
+        "extraction",
+        "validation",
+        "overall"
+      ],
+      "type": "object"
+    },
+    "cost": {
+      "additionalProperties": false,
+      "properties": {
+        "currency": {
+          "pattern": "^[A-Z]{3}$",
+          "type": "string"
+        },
+        "decimal": {
+          "pattern": "^[0-9]+(?:\\.[0-9]+)?$",
+          "type": "string"
+        }
+      },
+      "required": [
+        "currency",
+        "decimal"
+      ],
+      "type": "object"
+    },
+    "digest": {
+      "pattern": "^sha256:[a-f0-9]{64}$",
+      "type": "string"
+    },
+    "documentId": {
+      "pattern": "^doc_[A-Za-z0-9_]{1,64}$",
+      "type": "string"
+    },
+    "evidence": {
+      "additionalProperties": false,
+      "properties": {
+        "observation_id": {
+          "$ref": "#/$defs/observationId"
+        },
+        "page": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "polygon": {
+          "$ref": "#/$defs/polygon"
+        }
+      },
+      "required": [
+        "page",
+        "polygon",
+        "observation_id"
+      ],
+      "type": "object"
+    },
+    "extractedValue": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/evidence"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "value": true
+      },
+      "required": [
+        "value",
+        "confidence",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "nullableVersionName": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/versionName"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "observation": {
+      "additionalProperties": false,
+      "properties": {
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "level": {
+          "enum": [
+            "page",
+            "paragraph",
+            "line",
+            "word"
+          ]
+        },
+        "observation_id": {
+          "$ref": "#/$defs/observationId"
+        },
+        "parent_observation_id": {
+          "oneOf": [
+            {
+              "$ref": "#/$defs/observationId"
+            },
+            {
+              "type": "null"
+            }
+          ]
+        },
+        "polygon": {
+          "$ref": "#/$defs/polygon"
+        },
+        "reading_order": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "maxLength": 65536,
+          "minLength": 1,
+          "pattern": "\\S",
+          "type": "string"
+        }
+      },
+      "required": [
+        "observation_id",
+        "level",
+        "text",
+        "confidence",
+        "polygon",
+        "reading_order",
+        "parent_observation_id"
+      ],
+      "type": "object"
+    },
+    "observationId": {
+      "pattern": "^obs_[A-Za-z0-9_]{1,64}$",
+      "type": "string"
+    },
+    "page": {
+      "additionalProperties": false,
+      "properties": {
+        "height": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "observations": {
+          "items": {
+            "$ref": "#/$defs/observation"
+          },
+          "maxItems": 100000,
+          "type": "array"
+        },
+        "page": {
+          "minimum": 1,
+          "type": "integer"
+        },
+        "width": {
+          "minimum": 1,
+          "type": "integer"
+        }
+      },
+      "required": [
+        "page",
+        "width",
+        "height",
+        "observations"
+      ],
+      "type": "object"
+    },
+    "point": {
+      "additionalProperties": false,
+      "properties": {
+        "x": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        },
+        "y": {
+          "maximum": 1,
+          "minimum": 0,
+          "type": "number"
+        }
+      },
+      "required": [
+        "x",
+        "y"
+      ],
+      "type": "object"
+    },
+    "polygon": {
+      "additionalProperties": false,
+      "properties": {
+        "points": {
+          "items": {
+            "$ref": "#/$defs/point"
+          },
+          "minItems": 3,
+          "type": "array"
+        }
+      },
+      "required": [
+        "points"
+      ],
+      "type": "object"
+    },
+    "stableCode": {
+      "pattern": "^[a-z][a-z0-9_]{0,63}$",
+      "type": "string"
+    },
+    "table": {
+      "additionalProperties": false,
+      "properties": {
+        "cells": {
+          "items": {
+            "$ref": "#/$defs/tableCell"
+          },
+          "maxItems": 10000,
+          "minItems": 1,
+          "type": "array"
+        },
+        "table_id": {
+          "$ref": "#/$defs/tableId"
+        }
+      },
+      "required": [
+        "table_id",
+        "cells"
+      ],
+      "type": "object"
+    },
+    "tableCell": {
+      "additionalProperties": false,
+      "properties": {
+        "column": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "confidence": {
+          "$ref": "#/$defs/confidence"
+        },
+        "evidence": {
+          "items": {
+            "$ref": "#/$defs/evidence"
+          },
+          "minItems": 1,
+          "type": "array"
+        },
+        "row": {
+          "minimum": 0,
+          "type": "integer"
+        },
+        "text": {
+          "type": "string"
+        }
+      },
+      "required": [
+        "row",
+        "column",
+        "text",
+        "confidence",
+        "evidence"
+      ],
+      "type": "object"
+    },
+    "tableId": {
+      "pattern": "^tbl_[A-Za-z0-9_]{1,64}$",
+      "type": "string"
+    },
+    "validationFailure": {
+      "additionalProperties": false,
+      "properties": {
+        "code": {
+          "$ref": "#/$defs/stableCode"
+        },
+        "severity": {
+          "enum": [
+            "warning",
+            "error"
+          ]
+        }
+      },
+      "required": [
+        "code",
+        "severity"
+      ],
+      "type": "object"
+    },
+    "versionName": {
+      "maxLength": 128,
+      "minLength": 1,
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._-]{0,127}$",
+      "type": "string"
+    }
+  },
+  "$id": "https://schemas.tesserix.app/document-intelligence/v1/document-result.schema.json",
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "additionalProperties": false,
+  "allOf": [
+    {
+      "if": {
+        "anyOf": [
+          {
+            "properties": {
+              "text": {
+                "minLength": 1
+              }
+            }
+          },
+          {
+            "properties": {
+              "markdown": {
+                "minLength": 1
+              }
+            }
+          }
+        ]
+      },
+      "then": {
+        "properties": {
+          "citations": {
+            "minItems": 1
+          }
+        }
+      }
+    },
+    {
+      "oneOf": [
+        {
+          "properties": {
+            "duration_ms": {
+              "type": "null"
+            },
+            "model_version": {
+              "type": "null"
+            },
+            "processing_profile_version": {
+              "type": "null"
+            },
+            "provider": {
+              "type": "null"
+            }
+          }
+        },
+        {
+          "properties": {
+            "duration_ms": {
+              "minimum": 0,
+              "type": "integer"
+            },
+            "model_version": {
+              "$ref": "#/$defs/versionName"
+            },
+            "processing_profile_version": {
+              "$ref": "#/$defs/versionName"
+            },
+            "provider": {
+              "$ref": "#/$defs/versionName"
+            }
+          }
+        }
+      ]
+    }
+  ],
+  "description": "Provider-neutral OCR and extraction result. All document-derived content is untrusted data.",
+  "properties": {
+    "citations": {
+      "items": {
+        "$ref": "#/$defs/evidence"
+      },
+      "type": "array"
+    },
+    "confidence": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/confidenceDimensions"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "content_trust": {
+      "const": "untrusted"
+    },
+    "cost": {
+      "oneOf": [
+        {
+          "$ref": "#/$defs/cost"
+        },
+        {
+          "type": "null"
+        }
+      ]
+    },
+    "document_id": {
+      "$ref": "#/$defs/documentId"
+    },
+    "document_version": {
+      "$ref": "#/$defs/digest"
+    },
+    "duration_ms": {
+      "minimum": 0,
+      "type": [
+        "integer",
+        "null"
+      ]
+    },
+    "fields": {
+      "additionalProperties": {
+        "$ref": "#/$defs/extractedValue"
+      },
+      "propertyNames": {
+        "maxLength": 128,
+        "minLength": 1
+      },
+      "type": "object"
+    },
+    "markdown": {
+      "type": "string"
+    },
+    "model_version": {
+      "$ref": "#/$defs/nullableVersionName"
+    },
+    "pages": {
+      "items": {
+        "$ref": "#/$defs/page"
+      },
+      "maxItems": 300,
+      "type": "array"
+    },
+    "processing_profile_version": {
+      "$ref": "#/$defs/nullableVersionName"
+    },
+    "provider": {
+      "$ref": "#/$defs/nullableVersionName"
+    },
+    "schema_version": {
+      "const": "1.0"
+    },
+    "tables": {
+      "items": {
+        "$ref": "#/$defs/table"
+      },
+      "type": "array"
+    },
+    "text": {
+      "type": "string"
+    },
+    "validation_failures": {
+      "items": {
+        "$ref": "#/$defs/validationFailure"
+      },
+      "type": "array"
+    },
+    "warnings": {
+      "items": {
+        "$ref": "#/$defs/stableCode"
+      },
+      "type": "array"
+    }
+  },
+  "required": [
+    "schema_version",
+    "document_id",
+    "document_version",
+    "content_trust",
+    "text",
+    "markdown",
+    "pages",
+    "fields",
+    "tables",
+    "confidence",
+    "citations",
+    "warnings",
+    "validation_failures",
+    "provider",
+    "model_version",
+    "processing_profile_version",
+    "duration_ms",
+    "cost"
+  ],
+  "title": "Document intelligence result",
+  "type": "object"
+}

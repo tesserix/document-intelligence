@@ -1,6 +1,14 @@
 # Contract design
 
-This is the review draft from which OpenAPI and JSON Schema are generated after approval. It does not grant backward-compatibility status before review issue #4 closes.
+The machine-readable pre-release contract is published under `contracts/v1/`:
+
+- `openapi.json` is the HTTP boundary.
+- `create-job.schema.json` is the reusable job command.
+- `document-result.schema.json` is the provider-neutral result.
+- `fixtures/` contains positive fixtures for two product consumers and reusable negative mutations.
+- `manifest.json` pins every artifact by SHA-256.
+
+The manifest remains `pre-release`; publishing these review artifacts does not grant backward-compatibility status before review issue #4 closes.
 
 ## Reusable consumption modes
 
@@ -190,22 +198,26 @@ generations, and cloud credentials are never exposed in the public response.
   "document_id": "doc_01...",
   "document_version": "sha256:...",
   "content_trust": "untrusted",
-  "status": "review_required",
-  "pages": [],
-  "text": {"plain": "...", "reading_order": []},
-  "classification": {"type": "invoice", "confidence": 0.97, "calibration_version": "..."},
+  "text": "...",
+  "markdown": "...",
+  "pages": [{"page": 1, "width": 1200, "height": 1600, "observations": []}],
   "fields": {
     "total": {
       "value": {"currency": "AUD", "decimal": "1280.50"},
       "confidence": 0.96,
-      "evidence": [{"page": 1, "polygon": [[0.70,0.80],[0.90,0.80],[0.90,0.85],[0.70,0.85]], "observation_id": "obs_..."}]
+      "evidence": [{"page": 1, "polygon": {"points": [{"x": 0.70, "y": 0.80}, {"x": 0.90, "y": 0.80}, {"x": 0.90, "y": 0.85}]}, "observation_id": "obs_..."}]
     }
   },
-  "validations": [],
-  "reliability": {},
-  "processing": {},
+  "tables": [],
+  "confidence": null,
+  "citations": [{"page": 1, "polygon": {"points": [{"x": 0.70, "y": 0.80}, {"x": 0.90, "y": 0.80}, {"x": 0.90, "y": 0.85}]}, "observation_id": "obs_..."}],
   "warnings": [],
-  "review": {"required": true, "reason_codes": ["critical_field_low_confidence"]}
+  "validation_failures": [],
+  "provider": null,
+  "model_version": null,
+  "processing_profile_version": null,
+  "duration_ms": null,
+  "cost": null
 }
 ```
 
