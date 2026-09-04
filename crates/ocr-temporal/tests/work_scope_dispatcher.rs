@@ -101,7 +101,8 @@ async fn dispatcher_claims_an_opaque_scope_then_reconciles_only_its_upload() {
     .await
     .unwrap();
     sqlx::query(
-        "insert into ocr_work_scopes (product_id, tenant_id, upload_pending) values ($1, $2, true)",
+        "insert into ocr_work_scopes (product_id, tenant_id, upload_pending, updated_at) \
+         values ($1, $2, true, '2000-01-01T00:00:00Z')",
     )
     .bind(product.as_str())
     .bind(tenant.as_str())
@@ -119,14 +120,14 @@ async fn dispatcher_claims_an_opaque_scope_then_reconciles_only_its_upload() {
         Arc::clone(&reconciler),
         Arc::new(JobOutboxRelay::new(jobs, Arc::new(NoopStarter))),
         "scope-dispatcher",
-        100,
+        1,
         100,
     )
     .unwrap();
 
     let outcome = dispatcher.dispatch_once().await.unwrap();
-    assert!(outcome.scopes >= 1);
-    assert!(outcome.uploads >= 1);
+    assert_eq!(outcome.scopes, 1);
+    assert_eq!(outcome.uploads, 1);
     assert!(reconciler
         .uploads
         .lock()
