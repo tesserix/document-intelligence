@@ -1,8 +1,13 @@
 //! Provider-neutral document intelligence contracts.
 
 mod page_workflow;
+mod semantic_memory;
 
 pub use page_workflow::{PageTask, PageWorkflow, PageWorkflowStatus};
+pub use semantic_memory::{
+    ChunkId, EmbeddingVersion, MemoryRecordId, MemoryRecordVersion, SemanticCollection,
+    SemanticQueryScope, VectorPointId, VectorPointMetadata, VectorPointMetadataInput,
+};
 
 use std::collections::BTreeMap;
 
@@ -72,6 +77,20 @@ pub enum Error {
     InvalidPageWorkflow,
     #[error("page task does not match active workflow state")]
     StalePageTask,
+    #[error("memory record id is invalid")]
+    InvalidMemoryRecordId,
+    #[error("memory record version must be a lowercase sha256 digest")]
+    InvalidMemoryRecordVersion,
+    #[error("embedding version is invalid")]
+    InvalidEmbeddingVersion,
+    #[error("semantic collection version is invalid")]
+    InvalidSemanticCollection,
+    #[error("semantic query scope is invalid")]
+    InvalidSemanticQueryScope,
+    #[error("chunk id is invalid")]
+    InvalidChunkId,
+    #[error("vector point metadata is invalid")]
+    InvalidVectorPointMetadata,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
