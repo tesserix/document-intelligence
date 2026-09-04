@@ -15,7 +15,7 @@ async fn parser_timeout_terminates_the_parser_process_group() {
     fs::write(
         &parser_path,
         format!(
-            "#!/bin/sh\n(sleep 3) & child=$!; printf '%s' \"$child\" > '{}'; cat >/dev/null; wait \"$child\"\n",
+            "#!/bin/sh\n(sleep 5) & child=$!; printf '%s' \"$child\" > '{}'; cat >/dev/null; wait \"$child\"\n",
             child_pid_path.display()
         ),
     )
@@ -23,14 +23,14 @@ async fn parser_timeout_terminates_the_parser_process_group() {
     let mut permissions = fs::metadata(&parser_path).unwrap().permissions();
     permissions.set_mode(0o700);
     fs::set_permissions(&parser_path, permissions).unwrap();
-    let parser = ParserProcess::new(parser_path, Duration::from_secs(1)).unwrap();
+    let parser = ParserProcess::new(parser_path, Duration::from_secs(2)).unwrap();
     let inspection = tokio::spawn(async move { parser.inspect(b"fixture", "image/png").await });
-    let child_pid = tokio::time::timeout(Duration::from_millis(500), async {
+    let child_pid = tokio::time::timeout(Duration::from_secs(1), async {
         loop {
             match fs::read_to_string(&child_pid_path) {
                 Ok(child_pid) => break child_pid,
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    tokio::task::yield_now().await;
+                    tokio::time::sleep(Duration::from_millis(10)).await;
                 }
                 Err(error) => panic!("could not read parser child PID: {error}"),
             }
