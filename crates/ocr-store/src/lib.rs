@@ -28,6 +28,8 @@ pub enum Error {
     InvalidStoredPageWorkflow,
     #[error("stored page artifact is invalid")]
     InvalidStoredPageArtifact,
+    #[error("work scope is invalid")]
+    InvalidWorkScope,
 }
 
 pub type Result<T> = std::result::Result<T, Error>;
@@ -107,6 +109,18 @@ pub enum SavePageWorkflowOutcome {
 pub struct ClaimJobOutbox {
     pub lease_owner: String,
     pub limit: i64,
+}
+
+#[derive(Debug)]
+pub struct ClaimWorkScopes {
+    pub lease_owner: String,
+    pub limit: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoredWorkScope {
+    pub product_id: ProductId,
+    pub tenant_id: TenantId,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -323,6 +337,42 @@ pub enum ResultLookup {
 #[derive(Debug, Clone)]
 pub struct PgJobStore {
     pool: PgPool,
+}
+
+#[derive(Debug, Clone)]
+pub struct PgWorkScopeDirectory {
+    pool: PgPool,
+}
+
+impl PgWorkScopeDirectory {
+    pub fn new(pool: PgPool) -> Self {
+        Self { pool }
+    }
+
+    pub async fn claim(&self, claim: ClaimWorkScopes) -> Result<Vec<StoredWorkScope>> {
+        validate_lease_owner(&claim.lease_owner)?;
+        if !(1..=100).contains(&claim.limit) {
+            return Err(Error::InvalidWorkScope);
+        }
+        let rows =
+            sqlx::query("select product_id, tenant_id from ocr_claim_work_scopes($1, $2::integer)")
+                .bind(&claim.lease_owner)
+                .bind(claim.limit)
+                .fetch_all(&self.pool)
+                .await?;
+        rows.into_iter().map(stored_work_scope).collect()
+    }
+
+    pub async fn release(&self, scope: &StoredWorkScope, lease_owner: &str) -> Result<bool> {
+        validate_lease_owner(lease_owner)?;
+        let released = sqlx::query_scalar("select ocr_release_work_scope($1, $2, $3)")
+            .bind(scope.product_id.as_str())
+            .bind(scope.tenant_id.as_str())
+            .bind(lease_owner)
+            .fetch_optional(&self.pool)
+            .await?;
+        Ok(released.unwrap_or(false))
+    }
 }
 
 impl PgJobStore {
@@ -612,6 +662,20 @@ impl PgJobStore {
         .bind(claim.limit)
         .fetch_all(&mut *transaction)
         .await?;
+        if rows.is_empty() {
+            let pending: bool = sqlx::query_scalar(
+                "select exists(select 1 from ocr_outbox where product_id = $1 and tenant_id = $2 \
+                 and event_type in ('ocr.job.accepted.v1', \
+                     'ocr.job.cancellation_requested.v1') and published_at is null \
+                 and dead_lettered_at is null and delivery_attempts < 20)",
+            )
+            .bind(product_id.as_str())
+            .bind(tenant_id.as_str())
+            .fetch_one(&mut *transaction)
+            .await?;
+            set_work_scope_pending(&mut transaction, product_id, tenant_id, "dispatch", pending)
+                .await?;
+        }
         let events = rows
             .into_iter()
             .map(stored_job_outbox_event)
@@ -710,6 +774,18 @@ impl PgJobStore {
         .fetch_optional(&mut *transaction)
         .await?;
         if updated.is_some() {
+            let pending: bool = sqlx::query_scalar(
+                "select exists(select 1 from ocr_outbox where product_id = $1 and tenant_id = $2 \
+                 and event_type in ('ocr.job.accepted.v1', \
+                     'ocr.job.cancellation_requested.v1') and published_at is null \
+                 and dead_lettered_at is null and delivery_attempts < 20)",
+            )
+            .bind(product_id.as_str())
+            .bind(tenant_id.as_str())
+            .fetch_one(&mut *transaction)
+            .await?;
+            set_work_scope_pending(&mut transaction, product_id, tenant_id, "dispatch", pending)
+                .await?;
             transaction.commit().await?;
             return Ok(PublishJobOutboxOutcome::Published);
         }
@@ -812,6 +888,36 @@ impl PgJobStore {
         row.map(stored_upload).transpose()
     }
 
+    pub async fn list_reconcilable_uploads(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        limit: i64,
+    ) -> Result<Vec<UploadId>> {
+        if !(1..=100).contains(&limit) {
+            return Err(Error::InvalidStoredUpload);
+        }
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let rows = sqlx::query(
+            "select upload_id from ocr_uploads where product_id = $1 and tenant_id = $2 \
+             and (status = 'uploaded' or (status = 'inspecting' \
+                 and inspection_lease_expires_at <= now())) \
+             order by uploaded_at, upload_id limit $3",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(limit)
+        .fetch_all(&mut *transaction)
+        .await?;
+        transaction.commit().await?;
+        rows.into_iter()
+            .map(|row| {
+                UploadId::new(row.try_get("upload_id")?).map_err(|_| Error::InvalidStoredUpload)
+            })
+            .collect()
+    }
+
     pub async fn load_claimed_upload(
         &self,
         tenant_id: &TenantId,
@@ -884,6 +990,7 @@ impl PgJobStore {
             .bind(upload_id.as_str())
             .execute(&mut *transaction)
             .await?;
+            register_work_scope(&mut transaction, product_id, tenant_id, "upload").await?;
             let upload = stored_upload(updated)?;
             transaction.commit().await?;
             return Ok(RecordUploadOutcome::Recorded(upload));
@@ -984,6 +1091,8 @@ impl PgJobStore {
             .bind(upload_id.as_str())
             .execute(&mut *transaction)
             .await?;
+            set_work_scope_pending(&mut transaction, product_id, tenant_id, "upload", false)
+                .await?;
             transaction.commit().await?;
             return Ok(AcceptUploadOutcome::Accepted);
         }
@@ -1124,6 +1233,8 @@ impl PgJobStore {
                 .bind(upload_id.as_str())
                 .execute(&mut *transaction)
                 .await?;
+                set_work_scope_pending(&mut transaction, product_id, tenant_id, "upload", false)
+                    .await?;
                 sqlx::query(
                     "insert into ocr_upload_outbox \
                      (product_id, tenant_id, upload_id, event_type, payload) \
@@ -1184,6 +1295,8 @@ impl PgJobStore {
             .bind(reason.as_str())
             .execute(&mut *transaction)
             .await?;
+            set_work_scope_pending(&mut transaction, product_id, tenant_id, "upload", false)
+                .await?;
             transaction.commit().await?;
             return Ok(RejectUploadOutcome::Rejected);
         }
@@ -1251,6 +1364,13 @@ impl PgJobStore {
             .bind(request.tenant_id.as_str())
             .bind(request.job_id.as_str())
             .execute(&mut *transaction)
+            .await?;
+            register_work_scope(
+                &mut transaction,
+                &request.product_id,
+                &request.tenant_id,
+                "dispatch",
+            )
             .await?;
             let job = stored_job(inserted)?;
             transaction.commit().await?;
@@ -1379,6 +1499,7 @@ impl PgJobStore {
             .bind(job_id.as_str())
             .execute(&mut *transaction)
             .await?;
+            register_work_scope(&mut transaction, product_id, tenant_id, "dispatch").await?;
             let job = stored_job(updated)?;
             transaction.commit().await?;
             return Ok(CancelOutcome::Requested(job));
@@ -1616,6 +1737,38 @@ async fn set_scope(
     Ok(())
 }
 
+async fn register_work_scope(
+    transaction: &mut Transaction<'_, Postgres>,
+    product_id: &ProductId,
+    tenant_id: &TenantId,
+    work_kind: &str,
+) -> Result<()> {
+    sqlx::query("select ocr_register_work_scope($1, $2, $3)")
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(work_kind)
+        .execute(&mut **transaction)
+        .await?;
+    Ok(())
+}
+
+async fn set_work_scope_pending(
+    transaction: &mut Transaction<'_, Postgres>,
+    product_id: &ProductId,
+    tenant_id: &TenantId,
+    work_kind: &str,
+    is_pending: bool,
+) -> Result<()> {
+    sqlx::query("select ocr_set_work_scope_pending($1, $2, $3, $4)")
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(work_kind)
+        .bind(is_pending)
+        .execute(&mut **transaction)
+        .await?;
+    Ok(())
+}
+
 async fn load_page_workflow_row(
     transaction: &mut Transaction<'_, Postgres>,
     tenant_id: &TenantId,
@@ -1698,6 +1851,14 @@ fn stored_job(row: sqlx::postgres::PgRow) -> Result<StoredJob> {
         job_id,
         state,
         created_at,
+    })
+}
+
+fn stored_work_scope(row: sqlx::postgres::PgRow) -> Result<StoredWorkScope> {
+    Ok(StoredWorkScope {
+        product_id: ProductId::new(row.try_get("product_id")?)
+            .map_err(|_| Error::InvalidWorkScope)?,
+        tenant_id: TenantId::new(row.try_get("tenant_id")?).map_err(|_| Error::InvalidWorkScope)?,
     })
 }
 

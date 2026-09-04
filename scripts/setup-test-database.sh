@@ -25,6 +25,8 @@ psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0011_job_outbox_deli
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0012_page_workflow_checkpoints.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0013_page_artifacts.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0014_webhook_subscription.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0015_work_scope_leases.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0015_work_scope_leases.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0014_webhook_subscription.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0013_page_artifacts.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0012_page_workflow_checkpoints.down.sql >/dev/null
@@ -53,6 +55,7 @@ psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0011_job_outbox_deli
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0012_page_workflow_checkpoints.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0013_page_artifacts.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0014_webhook_subscription.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0015_work_scope_leases.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 <<SQL >/dev/null
 grant usage on schema public to ${application_role};
 grant select, insert, update, delete on ocr_jobs, ocr_outbox to ${application_role};
@@ -63,6 +66,10 @@ grant select, insert, update, delete on ocr_page_workflows to ${application_role
 grant select, insert on ocr_page_artifacts to ${application_role};
 grant usage, select on sequence ocr_upload_outbox_event_id_seq to ${application_role};
 grant usage, select on sequence ocr_outbox_event_id_seq to ${application_role};
+grant execute on function ocr_claim_work_scopes(text, integer) to ${application_role};
+grant execute on function ocr_release_work_scope(text, text, text) to ${application_role};
+grant execute on function ocr_register_work_scope(text, text, text) to ${application_role};
+grant execute on function ocr_set_work_scope_pending(text, text, text, boolean) to ${application_role};
 SQL
 
 echo "TEST_DATABASE_URL=postgres://${application_role}:local@127.0.0.1:5432/${database_name}"

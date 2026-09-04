@@ -248,8 +248,10 @@ deterministic `evt_` outbox ID, and `v1=` HMAC-SHA-256 signature over
 from debug output, zeroized on drop, and resolved only from the registered
 subscription after authorization.
 
-The job outbox relay polls explicit product/tenant scopes through RLS; it has no
-cross-tenant bypass role. Claims use `FOR UPDATE SKIP LOCKED`, at most 100 rows,
+The job outbox relay receives opaque product/tenant scopes from the content-free
+CNPG work-scope directory, then polls each scope through RLS; it has no
+cross-tenant bypass role. Directory claim/release grants cannot read document,
+upload, result or outbox rows. Claims use `FOR UPDATE SKIP LOCKED`, at most 100 rows,
 a five-minute lease and 20 delivery attempts. The same owner renews without
 incrementing an attempt, expired work is reclaimed, and exhaustion is
 dead-lettered for alerting. Temporal start/cancel happens after claim commit.
