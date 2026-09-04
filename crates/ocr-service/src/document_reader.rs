@@ -80,12 +80,19 @@ impl UploadDocumentReader for GcsUploadDocumentReader {
         if result.meta.version.as_deref() != Some(expected_generation.as_str()) {
             return Err(DocumentReadError::Invalid);
         }
-        collect_verified(upload, result.meta.size, result.into_stream()).await
+        collect_verified(
+            upload.expected_content_length,
+            &upload.expected_digest,
+            result.meta.size,
+            result.into_stream(),
+        )
+        .await
     }
 }
 
-async fn collect_verified<S>(
-    upload: &StoredUpload,
+pub(crate) async fn collect_verified<S>(
+    expected_content_length: i64,
+    expected_digest: &str,
     size: u64,
     mut stream: S,
 ) -> Result<Vec<u8>, DocumentReadError>
@@ -93,7 +100,7 @@ where
     S: Stream<Item = object_store::Result<Bytes>> + Unpin,
 {
     let expected_length =
-        u64::try_from(upload.expected_content_length).map_err(|_| DocumentReadError::Invalid)?;
+        u64::try_from(expected_content_length).map_err(|_| DocumentReadError::Invalid)?;
     let maximum_length =
         u64::try_from(MAXIMUM_UPLOAD_BYTES).map_err(|_| DocumentReadError::Invalid)?;
     if size != expected_length || size > maximum_length {
@@ -117,7 +124,7 @@ where
     })
     .await
     .map_err(|_| DocumentReadError::Unavailable)?;
-    if digest != upload.expected_digest {
+    if digest != expected_digest {
         return Err(DocumentReadError::Invalid);
     }
     Ok(bytes)
@@ -163,16 +170,24 @@ mod tests {
             Ok(Bytes::from_static(b"fixture")),
         ]);
         assert_eq!(
-            collect_verified(&upload, u64::try_from(bytes.len()).unwrap(), valid)
-                .await
-                .unwrap(),
+            collect_verified(
+                upload.expected_content_length,
+                &upload.expected_digest,
+                u64::try_from(bytes.len()).unwrap(),
+                valid,
+            )
+            .await
+            .unwrap(),
             bytes
         );
         let wrong = stream::iter([Ok(Bytes::from_static(b"%PDF-1.7 changed"))]);
-        assert!(
-            collect_verified(&upload, u64::try_from(bytes.len()).unwrap(), wrong)
-                .await
-                .is_err()
-        );
+        assert!(collect_verified(
+            upload.expected_content_length,
+            &upload.expected_digest,
+            u64::try_from(bytes.len()).unwrap(),
+            wrong,
+        )
+        .await
+        .is_err());
     }
 }

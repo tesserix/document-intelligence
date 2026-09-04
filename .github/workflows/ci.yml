@@ -14,7 +14,7 @@ concurrency:
 
 jobs:
   rust:
-    uses: tesserix/tesserix-workflows/.github/workflows/rust-ci.yml@299a1ee2ced322a825cc0f0838235c6c3269610f
+    uses: tesserix/tesserix-workflows/.github/workflows/rust-ci.yml@57cebb53e06629dab4fe88268810360623a19e0f
     with:
       toolchain: 1.94.0
       coverage_min_lines: 70
@@ -23,10 +23,10 @@ jobs:
       protoc_enabled: true
 
   secret-scan:
-    uses: tesserix/tesserix-workflows/.github/workflows/secret-scan.yml@62f7f663a98d5ef92567850dd03c8c2513c9068e
+    uses: tesserix/tesserix-workflows/.github/workflows/secret-scan.yml@57cebb53e06629dab4fe88268810360623a19e0f
 
   container:
-    uses: tesserix/tesserix-workflows/.github/workflows/container-ci.yml@e362210c07126fb7b24403946d721b802c7df8e2
+    uses: tesserix/tesserix-workflows/.github/workflows/container-ci.yml@57cebb53e06629dab4fe88268810360623a19e0f
     with:
       images: >-
         [{"name":"ocr-service","context":".","dockerfile":"Dockerfile","target":"","source_root":"crates/ocr-service","smoke_path":"/healthz","smoke_port":8080,"smoke_environment_file":"ci/ocr-service-smoke.env","trivy_ignore_file":"","build_args":"","requires_application_build_secret":false},{"name":"ocr-parser-sandbox","context":".","dockerfile":"Dockerfile.parser","target":"","source_root":"crates/ocr-parser-sandbox","smoke_path":"/","smoke_port":0,"smoke_environment_file":"","trivy_ignore_file":"","build_args":"","requires_application_build_secret":false}]
