@@ -9,6 +9,7 @@ WORKDIR /src
 RUN apt-get update \
     && apt-get install --no-install-recommends -y \
         build-essential \
+        libprotobuf-dev \
         pkg-config \
         protobuf-compiler \
     && rm -rf /var/lib/apt/lists/*
