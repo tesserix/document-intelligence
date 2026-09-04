@@ -262,12 +262,9 @@ impl UploadIntentIssuer for StaticUploadIssuer {
         Box::pin(async move {
             Ok(IssuedUpload {
                 upload_url: "https://storage.googleapis.test/signed-upload".to_owned(),
-                required_headers: [
-                    ("content-type".to_owned(), content_type),
-                    ("x-goog-if-generation-match".to_owned(), "0".to_owned()),
-                ]
-                .into_iter()
-                .collect(),
+                required_headers: [("content-type".to_owned(), content_type)]
+                    .into_iter()
+                    .collect(),
             })
         })
     }
@@ -1016,10 +1013,9 @@ async fn upload_intent_is_created_for_the_verified_scope_without_exposing_storag
         created["required_headers"]["content-type"],
         "application/pdf"
     );
-    assert_eq!(
-        created["required_headers"]["x-goog-if-generation-match"],
-        "0"
-    );
+    assert!(created["required_headers"]
+        .get("x-goog-if-generation-match")
+        .is_none());
     assert!(created.get("object_bucket").is_none());
     assert!(created.get("object_name").is_none());
 
