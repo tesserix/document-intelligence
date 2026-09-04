@@ -310,6 +310,60 @@ async fn health_is_public_and_does_not_probe_dependencies() {
 }
 
 #[tokio::test]
+async fn upload_capability_does_not_expose_job_routes() {
+    let application = router_with_upload_services(
+        store_without_connection(),
+        std::collections::HashMap::from([(String::from("kora"), String::from("quarantine"))]),
+        Arc::new(StaticUploadIssuer),
+        Arc::new(StaticUploadArtifactReader {
+            artifact: VerifiedUploadArtifact {
+                object_generation: 1,
+                content_type: "application/pdf".to_owned(),
+                content_length: 1,
+                digest: "sha256:00".to_owned(),
+            },
+            calls: Arc::new(AtomicUsize::new(0)),
+        }),
+    );
+
+    let response = application
+        .layer(Extension(
+            TrustedIdentity::new("kora", "ten_UPLOAD").unwrap(),
+        ))
+        .oneshot(
+            Request::get("/v1/ocr/jobs/job_PRIVATE")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
+async fn job_capability_does_not_expose_upload_routes() {
+    let application = router_with_result_reader(
+        store_without_connection(),
+        Arc::new(StaticResultReader(Vec::new())),
+    );
+
+    let response = application
+        .layer(Extension(
+            TrustedIdentity::new("kora", "ten_RESULT").unwrap(),
+        ))
+        .oneshot(
+            Request::post("/v1/ocr/uploads")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::NOT_FOUND);
+}
+
+#[tokio::test]
 async fn job_status_cache_hit_is_accepted_only_for_the_verified_scope() {
     let scope = CacheScope::new(
         ProductId::new("kora").unwrap(),

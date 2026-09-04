@@ -219,8 +219,26 @@ impl ResultArtifactReader for UnavailableResultReader {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ApiCapability {
+    Uploads,
+    Jobs,
+    Full,
+}
+
+impl ApiCapability {
+    fn serves_uploads(self) -> bool {
+        matches!(self, Self::Uploads | Self::Full)
+    }
+
+    fn serves_jobs(self) -> bool {
+        matches!(self, Self::Jobs | Self::Full)
+    }
+}
+
 #[derive(Clone)]
 struct AppState {
+    capability: ApiCapability,
     jobs: PgJobStore,
     job_status_cache: Arc<dyn JobStatusCache>,
     job_status_cache_policy: CachePolicy,
@@ -567,6 +585,7 @@ pub fn router(store: PgJobStore) -> Router {
     build_router(
         store,
         RouterDependencies {
+            capability: ApiCapability::Full,
             job_status_cache: Arc::new(UnavailableJobStatusCache),
             job_status_cache_policy: default_job_status_cache_policy(),
             results: Arc::new(UnavailableResultReader),
@@ -587,6 +606,7 @@ pub fn router_with_result_reader(
     build_router(
         store,
         RouterDependencies {
+            capability: ApiCapability::Jobs,
             job_status_cache: Arc::new(UnavailableJobStatusCache),
             job_status_cache_policy: default_job_status_cache_policy(),
             results,
@@ -608,6 +628,7 @@ pub fn router_with_upload_issuer(
     build_router(
         store,
         RouterDependencies {
+            capability: ApiCapability::Uploads,
             job_status_cache: Arc::new(UnavailableJobStatusCache),
             job_status_cache_policy: default_job_status_cache_policy(),
             results: Arc::new(UnavailableResultReader),
@@ -630,6 +651,7 @@ pub fn router_with_upload_services(
     build_router(
         store,
         RouterDependencies {
+            capability: ApiCapability::Uploads,
             job_status_cache: Arc::new(UnavailableJobStatusCache),
             job_status_cache_policy: default_job_status_cache_policy(),
             results: Arc::new(UnavailableResultReader),
@@ -653,6 +675,7 @@ pub fn router_with_dependencies(
     build_router(
         store,
         RouterDependencies {
+            capability: ApiCapability::Full,
             job_status_cache: Arc::new(UnavailableJobStatusCache),
             job_status_cache_policy: default_job_status_cache_policy(),
             results,
@@ -674,6 +697,7 @@ pub fn router_with_job_status_cache(
     build_router(
         store,
         RouterDependencies {
+            capability: ApiCapability::Jobs,
             job_status_cache,
             job_status_cache_policy,
             results: Arc::new(UnavailableResultReader),
@@ -689,6 +713,7 @@ pub fn router_with_job_status_cache(
 
 pub fn router_with_runtime_dependencies(
     store: PgJobStore,
+    capability: ApiCapability,
     results: Option<Arc<dyn ResultArtifactReader>>,
     upload_buckets: HashMap<String, String>,
     uploads: Option<Arc<dyn UploadIntentIssuer>>,
@@ -707,6 +732,7 @@ pub fn router_with_runtime_dependencies(
     build_router(
         store,
         RouterDependencies {
+            capability,
             job_status_cache,
             job_status_cache_policy,
             results: results.unwrap_or_else(|| Arc::new(UnavailableResultReader)),
@@ -732,6 +758,7 @@ fn default_job_status_cache_policy() -> CachePolicy {
 }
 
 struct RouterDependencies {
+    capability: ApiCapability,
     job_status_cache: Arc<dyn JobStatusCache>,
     job_status_cache_policy: CachePolicy,
     results: Arc<dyn ResultArtifactReader>,
@@ -745,20 +772,28 @@ struct RouterDependencies {
 
 fn build_router(store: PgJobStore, dependencies: RouterDependencies) -> Router {
     let request_id_header = HeaderName::from_static(REQUEST_ID_HEADER);
-    Router::new()
+    let mut router = Router::new()
         .route("/healthz", get(|| async { StatusCode::OK }))
-        .route("/readyz", get(readiness))
-        .route("/v1/ocr/uploads", post(create_upload))
-        .route("/v1/ocr/uploads/{upload_id}", get(get_upload))
-        .route(
-            "/v1/ocr/uploads/{upload_id}/complete",
-            post(complete_upload),
-        )
-        .route("/v1/ocr/jobs", post(create_job))
-        .route("/v1/ocr/jobs/{job_id}", get(get_job))
-        .route("/v1/ocr/jobs/{job_id}/result", get(get_result))
-        .route("/v1/ocr/jobs/{job_id}/cancel", post(cancel_job))
+        .route("/readyz", get(readiness));
+    if dependencies.capability.serves_uploads() {
+        router = router
+            .route("/v1/ocr/uploads", post(create_upload))
+            .route("/v1/ocr/uploads/{upload_id}", get(get_upload))
+            .route(
+                "/v1/ocr/uploads/{upload_id}/complete",
+                post(complete_upload),
+            );
+    }
+    if dependencies.capability.serves_jobs() {
+        router = router
+            .route("/v1/ocr/jobs", post(create_job))
+            .route("/v1/ocr/jobs/{job_id}", get(get_job))
+            .route("/v1/ocr/jobs/{job_id}/result", get(get_result))
+            .route("/v1/ocr/jobs/{job_id}/cancel", post(cancel_job));
+    }
+    router
         .with_state(AppState {
+            capability: dependencies.capability,
             jobs: store,
             job_status_cache: dependencies.job_status_cache,
             job_status_cache_policy: dependencies.job_status_cache_policy,
@@ -820,9 +855,9 @@ async fn readiness(
     request: axum::extract::Request,
 ) -> Result<StatusCode, ApiError> {
     let request_id = request_id_from_extensions(request.extensions());
-    if !state.result_artifacts_configured
-        || !state.upload_intents_configured
-        || !state.upload_artifacts_configured
+    if (state.capability.serves_jobs() && !state.result_artifacts_configured)
+        || (state.capability.serves_uploads()
+            && (!state.upload_intents_configured || !state.upload_artifacts_configured))
     {
         return Err(ApiError::unavailable(request_id));
     }
