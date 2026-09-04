@@ -6,11 +6,12 @@ use std::{
 
 use ocr_domain::{JobId, ProductId, TenantId, MAXIMUM_PAGE_ATTEMPTS, MAXIMUM_PAGE_COUNT};
 use ocr_service::{
-    scoped_workflow_id, CheckpointedPageRunner, PageProcessor, PageRunnerError, PageRunnerOutcome,
+    scoped_workflow_id, CheckpointedPageRunner, DocumentFinalizeError, DocumentFinalizer,
+    PageArtifactReader, PageProcessor, PageRunnerError, PageRunnerOutcome, ResultArtifactWriter,
     WorkflowAction, WorkflowDispatch, WorkflowDispatchError, WorkflowDispatchOutcome,
     WorkflowStarter,
 };
-use ocr_store::PgJobStore;
+use ocr_store::{CommitResultOutcome, PgJobStore};
 use serde::{Deserialize, Deserializer, Serialize};
 use temporalio_client::{
     errors::{WorkflowInteractionError, WorkflowStartError},
@@ -494,6 +495,59 @@ pub type DurableFinalizationFuture<'a> =
 
 pub trait DurableFinalizationExecution: Send + Sync {
     fn finalize<'a>(&'a self, input: DurableActivityInput) -> DurableFinalizationFuture<'a>;
+}
+
+pub struct DocumentFinalizerExecutor<R, W> {
+    finalizer: DocumentFinalizer<R, W>,
+}
+
+impl<R, W> DocumentFinalizerExecutor<R, W>
+where
+    R: PageArtifactReader,
+    W: ResultArtifactWriter,
+{
+    pub fn new(finalizer: DocumentFinalizer<R, W>) -> Self {
+        Self { finalizer }
+    }
+
+    async fn run(&self, input: &DurableActivityInput) -> Result<(), DurableExecutionError> {
+        match self
+            .finalizer
+            .finalize_stored(&input.tenant_id, &input.product_id, &input.job_id)
+            .await
+        {
+            Ok(CommitResultOutcome::Committed(_) | CommitResultOutcome::Existing(_)) => Ok(()),
+            Ok(CommitResultOutcome::Conflict | CommitResultOutcome::NotCommittable) => Err(
+                DurableExecutionError::new(DurableExecutionErrorKind::InvalidInput),
+            ),
+            Ok(CommitResultOutcome::NotFound) => Err(DurableExecutionError::new(
+                DurableExecutionErrorKind::ScopeNotFound,
+            )),
+            Err(error) => Err(DurableExecutionError::new(match error {
+                DocumentFinalizeError::Cancelled => DurableExecutionErrorKind::ScopeNotFound,
+                DocumentFinalizeError::InvalidConfiguration
+                | DocumentFinalizeError::InvalidPageArtifact
+                | DocumentFinalizeError::Assembly(_) => DurableExecutionErrorKind::InvalidInput,
+                DocumentFinalizeError::NotReady
+                | DocumentFinalizeError::IncompleteArtifacts
+                | DocumentFinalizeError::PageArtifact(_)
+                | DocumentFinalizeError::Publish(_)
+                | DocumentFinalizeError::Store(_) => {
+                    DurableExecutionErrorKind::DependencyUnavailable
+                }
+            })),
+        }
+    }
+}
+
+impl<R, W> DurableFinalizationExecution for DocumentFinalizerExecutor<R, W>
+where
+    R: PageArtifactReader,
+    W: ResultArtifactWriter,
+{
+    fn finalize<'a>(&'a self, input: DurableActivityInput) -> DurableFinalizationFuture<'a> {
+        Box::pin(async move { self.run(&input).await })
+    }
 }
 
 pub struct CheckpointedPageExecutor<P> {
