@@ -6,10 +6,11 @@ use axum::{
 use http_body_util::BodyExt;
 use ocr_domain::{ProductId, TenantId, UploadId};
 use ocr_service::{
-    router, router_with_result_reader, router_with_upload_issuer, router_with_upload_services,
-    IssuedUpload, ResultArtifactReader, ResultReadFuture, StoredUpload, TrustedIdentity,
-    UploadArtifactReadFuture, UploadArtifactReader, UploadIntentIssuer, UploadIssueFuture,
-    VerifiedUploadArtifact,
+    router, router_with_job_status_cache, router_with_result_reader, router_with_upload_issuer,
+    router_with_upload_services, CacheOperationError, CachePolicy, CacheReadFuture, CacheRecord,
+    CacheScope, CacheWriteFuture, IssuedUpload, JobStatusCache, ResultArtifactReader,
+    ResultReadFuture, StoredUpload, TrustedIdentity, UploadArtifactReadFuture,
+    UploadArtifactReader, UploadIntentIssuer, UploadIssueFuture, VerifiedUploadArtifact,
 };
 use ocr_store::{
     AcceptUpload, ClaimUploadInspection, ParserInspectionMetadata, PgJobStore, StoredResultLocator,
@@ -18,9 +19,10 @@ use serde_json::Value;
 use sha2::{Digest, Sha256};
 use sqlx::postgres::PgPoolOptions;
 use std::{
+    future::pending,
     sync::{
         atomic::{AtomicUsize, Ordering},
-        Arc,
+        Arc, Mutex,
     },
     time::Duration,
 };
@@ -35,6 +37,75 @@ fn store_without_connection() -> PgJobStore {
 }
 
 struct StaticResultReader(Vec<u8>);
+
+struct StaticJobStatusCache {
+    value: Result<Option<CacheRecord>, CacheOperationError>,
+    reads: Arc<AtomicUsize>,
+}
+
+struct PendingJobStatusCache;
+
+impl JobStatusCache for PendingJobStatusCache {
+    fn get<'a>(&'a self, _scope: &'a CacheScope) -> CacheReadFuture<'a> {
+        Box::pin(pending())
+    }
+
+    fn put<'a>(
+        &'a self,
+        _scope: &'a CacheScope,
+        _record: &'a CacheRecord,
+        _ttl: Duration,
+    ) -> CacheWriteFuture<'a> {
+        Box::pin(pending())
+    }
+}
+
+struct RecordingJobStatusCache {
+    writes: Arc<Mutex<Vec<(ocr_domain::JobState, Duration)>>>,
+}
+
+impl JobStatusCache for RecordingJobStatusCache {
+    fn get<'a>(&'a self, _scope: &'a CacheScope) -> CacheReadFuture<'a> {
+        Box::pin(async { Ok(None) })
+    }
+
+    fn put<'a>(
+        &'a self,
+        _scope: &'a CacheScope,
+        record: &'a CacheRecord,
+        ttl: Duration,
+    ) -> CacheWriteFuture<'a> {
+        self.writes.lock().unwrap().push((record.status(), ttl));
+        Box::pin(async { Ok(()) })
+    }
+}
+
+impl JobStatusCache for StaticJobStatusCache {
+    fn get<'a>(&'a self, _scope: &'a CacheScope) -> CacheReadFuture<'a> {
+        self.reads.fetch_add(1, Ordering::SeqCst);
+        let value = self.value.clone();
+        Box::pin(async move { value })
+    }
+
+    fn put<'a>(
+        &'a self,
+        _scope: &'a CacheScope,
+        _record: &'a CacheRecord,
+        _ttl: Duration,
+    ) -> CacheWriteFuture<'a> {
+        Box::pin(async { Ok(()) })
+    }
+}
+
+fn cache_policy() -> CachePolicy {
+    CachePolicy::new(
+        Duration::from_secs(10),
+        Duration::from_secs(300),
+        Duration::from_millis(25),
+        512,
+    )
+    .unwrap()
+}
 
 impl ResultArtifactReader for StaticResultReader {
     fn read<'a>(
@@ -103,6 +174,106 @@ async fn health_is_public_and_does_not_probe_dependencies() {
 }
 
 #[tokio::test]
+async fn job_status_cache_hit_is_accepted_only_for_the_verified_scope() {
+    let scope = CacheScope::new(
+        ProductId::new("kora").unwrap(),
+        TenantId::new("ten_CACHE").unwrap(),
+        ocr_domain::JobId::new("job_CACHE").unwrap(),
+    );
+    let record = CacheRecord::new(
+        &scope,
+        ocr_domain::JobState::Processing,
+        time::OffsetDateTime::from_unix_timestamp(1_725_000_000).unwrap(),
+    );
+    let reads = Arc::new(AtomicUsize::new(0));
+    let application = router_with_job_status_cache(
+        store_without_connection(),
+        Arc::new(StaticJobStatusCache {
+            value: Ok(Some(record)),
+            reads: reads.clone(),
+        }),
+        cache_policy(),
+    );
+
+    let response = application
+        .layer(Extension(
+            TrustedIdentity::new("kora", "ten_CACHE").unwrap(),
+        ))
+        .oneshot(
+            Request::get("/v1/ocr/jobs/job_CACHE")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(reads.load(Ordering::SeqCst), 1);
+    let body: Value =
+        serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(body["job_id"], "job_CACHE");
+    assert_eq!(body["status"], "processing");
+}
+
+#[tokio::test]
+async fn foreign_scope_or_failed_cache_entry_falls_through_to_the_authoritative_store() {
+    let foreign_scope = CacheScope::new(
+        ProductId::new("kora").unwrap(),
+        TenantId::new("ten_FOREIGN").unwrap(),
+        ocr_domain::JobId::new("job_CACHE").unwrap(),
+    );
+    let foreign_record = CacheRecord::new(
+        &foreign_scope,
+        ocr_domain::JobState::Completed,
+        time::OffsetDateTime::from_unix_timestamp(1_725_000_000).unwrap(),
+    );
+
+    for value in [Ok(Some(foreign_record)), Err(CacheOperationError)] {
+        let response = router_with_job_status_cache(
+            store_without_connection(),
+            Arc::new(StaticJobStatusCache {
+                value,
+                reads: Arc::new(AtomicUsize::new(0)),
+            }),
+            cache_policy(),
+        )
+        .layer(Extension(
+            TrustedIdentity::new("kora", "ten_CACHE").unwrap(),
+        ))
+        .oneshot(
+            Request::get("/v1/ocr/jobs/job_CACHE")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+    }
+}
+
+#[tokio::test(start_paused = true)]
+async fn timed_out_cache_read_falls_through_without_hanging_the_request() {
+    let response = router_with_job_status_cache(
+        store_without_connection(),
+        Arc::new(PendingJobStatusCache),
+        cache_policy(),
+    )
+    .layer(Extension(
+        TrustedIdentity::new("kora", "ten_CACHE").unwrap(),
+    ))
+    .oneshot(
+        Request::get("/v1/ocr/jobs/job_CACHE")
+            .body(Body::empty())
+            .unwrap(),
+    )
+    .await
+    .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
 async fn job_routes_fail_closed_without_verified_identity() {
     let response = router(store_without_connection())
         .oneshot(
@@ -164,6 +335,66 @@ async fn create_rejects_an_untrusted_webhook_destination_before_database_work() 
     assert_eq!(body["code"], "invalid_webhook_subscription_id");
 }
 
+#[tokio::test]
+async fn create_rejects_unbounded_extraction_inputs_before_database_work() {
+    let cases = [
+        (
+            "too many language hints",
+            serde_json::json!({
+                "source": {"upload_id": "upl_ALPHA"},
+                "document_type": "auto",
+                "language_hints": ["en", "fr", "de", "it", "es", "pt", "nl", "sv", "da"]
+            }),
+        ),
+        (
+            "duplicate language hints",
+            serde_json::json!({
+                "source": {"upload_id": "upl_ALPHA"},
+                "document_type": "auto",
+                "language_hints": ["en-AU", "en-AU"]
+            }),
+        ),
+        (
+            "invalid language hint",
+            serde_json::json!({
+                "source": {"upload_id": "upl_ALPHA"},
+                "document_type": "auto",
+                "language_hints": ["not_a_language"]
+            }),
+        ),
+        (
+            "empty extraction schema id",
+            serde_json::json!({
+                "source": {"upload_id": "upl_ALPHA"},
+                "document_type": "auto",
+                "extraction": {"schema_id": "", "schema_version": "1.0"}
+            }),
+        ),
+    ];
+
+    for (index, (name, body)) in cases.into_iter().enumerate() {
+        let response = router(store_without_connection())
+            .layer(Extension(
+                TrustedIdentity::new("kora", "ten_ALPHA").unwrap(),
+            ))
+            .oneshot(
+                Request::post("/v1/ocr/jobs")
+                    .header("content-type", "application/json")
+                    .header("idempotency-key", format!("invalid-bounds-{index}"))
+                    .body(Body::from(serde_json::to_vec(&body).unwrap()))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "case {name}");
+        let body: Value =
+            serde_json::from_slice(&response.into_body().collect().await.unwrap().to_bytes())
+                .unwrap();
+        assert_eq!(body["code"], "invalid_job_request", "case {name}");
+    }
+}
+
 #[test]
 fn trusted_identity_rejects_noncanonical_scope() {
     assert!(TrustedIdentity::new("prod/kora", "ten_ALPHA").is_err());
@@ -221,7 +452,14 @@ async fn create_replay_read_and_cross_tenant_visibility_are_end_to_end() {
     .await
     .unwrap();
     let pool = PgPoolOptions::new().connect(&url).await.unwrap();
-    let application = router(PgJobStore::new(pool));
+    let writes = Arc::new(Mutex::new(Vec::new()));
+    let application = router_with_job_status_cache(
+        PgJobStore::new(pool),
+        Arc::new(RecordingJobStatusCache {
+            writes: writes.clone(),
+        }),
+        cache_policy(),
+    );
     let body = r#"{"source":{"upload_id":"upl_HTTPTEST"},"document_type":"auto"}"#;
 
     let create = application
@@ -340,6 +578,15 @@ async fn create_replay_read_and_cross_tenant_visibility_are_end_to_end() {
         .await
         .unwrap();
     assert_eq!(foreign_cancel.status(), StatusCode::NOT_FOUND);
+    assert_eq!(
+        *writes.lock().unwrap(),
+        vec![
+            (ocr_domain::JobState::Accepted, Duration::from_secs(10)),
+            (ocr_domain::JobState::Accepted, Duration::from_secs(10)),
+            (ocr_domain::JobState::Cancelling, Duration::from_secs(10)),
+            (ocr_domain::JobState::Cancelling, Duration::from_secs(10)),
+        ]
+    );
 }
 
 #[tokio::test]

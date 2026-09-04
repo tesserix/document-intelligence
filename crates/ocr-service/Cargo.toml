@@ -10,6 +10,7 @@ anyhow.workspace = true
 axum.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
+fred.workspace = true
 ocr-domain = { path = "../ocr-domain" }
 ocr-store = { path = "../ocr-store" }
 object_store.workspace = true
@@ -36,6 +37,7 @@ uuid.workspace = true
 
 [dev-dependencies]
 http-body-util.workspace = true
+jsonschema.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
 tempfile = "3.23"
 tokio.workspace = true

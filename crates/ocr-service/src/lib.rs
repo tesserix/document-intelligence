@@ -3,6 +3,7 @@
 mod document_finalizer;
 mod document_reader;
 mod importer;
+mod job_status_cache;
 mod malware;
 mod outbox_relay;
 mod page_artifacts;
@@ -18,6 +19,12 @@ mod upload_artifacts;
 mod upload_intents;
 mod webhook;
 mod webhook_relay;
+
+pub use job_status_cache::{
+    CacheConfigurationError, CacheOperationError, CachePolicy, CacheReadFuture, CacheRecord,
+    CacheRecordError, CacheScope, CacheWriteFuture, JobStatusCache, UnavailableJobStatusCache,
+    ValkeyCacheConfigurationError, ValkeyJobStatusCache,
+};
 
 pub use document_finalizer::{DocumentFinalizeError, DocumentFinalizer};
 pub use page_artifacts::{
@@ -85,7 +92,7 @@ use tower_http::{
     timeout::TimeoutLayer,
     trace::TraceLayer,
 };
-use tracing::{field, info_span, Span};
+use tracing::{field, info_span, warn, Span};
 use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
@@ -194,6 +201,8 @@ impl ResultArtifactReader for UnavailableResultReader {
 #[derive(Clone)]
 struct AppState {
     jobs: PgJobStore,
+    job_status_cache: Arc<dyn JobStatusCache>,
+    job_status_cache_policy: CachePolicy,
     results: Arc<dyn ResultArtifactReader>,
     result_artifacts_configured: bool,
     uploads: Arc<dyn UploadIntentIssuer>,
@@ -410,6 +419,42 @@ struct CreateJobRequest {
     webhook_subscription_id: Option<String>,
 }
 
+impl CreateJobRequest {
+    fn has_valid_bounds(&self) -> bool {
+        let language_hints_are_valid = self.language_hints.len() <= 8
+            && self
+                .language_hints
+                .iter()
+                .all(|hint| valid_language_hint(hint))
+            && self
+                .language_hints
+                .iter()
+                .enumerate()
+                .all(|(index, hint)| !self.language_hints[..index].contains(hint));
+        let extraction_is_valid = self.extraction.as_ref().is_none_or(|extraction| {
+            (1..=128).contains(&extraction.schema_id.len())
+                && (1..=64).contains(&extraction.schema_version.len())
+        });
+        language_hints_are_valid && extraction_is_valid
+    }
+}
+
+fn valid_language_hint(value: &str) -> bool {
+    if !(2..=35).contains(&value.len()) {
+        return false;
+    }
+    let mut segments = value.split('-');
+    let Some(language) = segments.next() else {
+        return false;
+    };
+    (2..=8).contains(&language.len())
+        && language.bytes().all(|byte| byte.is_ascii_alphabetic())
+        && segments.all(|segment| {
+            (1..=8).contains(&segment.len())
+                && segment.bytes().all(|byte| byte.is_ascii_alphanumeric())
+        })
+}
+
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct CreateUploadRequest {
@@ -495,6 +540,8 @@ pub fn router(store: PgJobStore) -> Router {
     build_router(
         store,
         RouterDependencies {
+            job_status_cache: Arc::new(UnavailableJobStatusCache),
+            job_status_cache_policy: default_job_status_cache_policy(),
             results: Arc::new(UnavailableResultReader),
             result_artifacts_configured: false,
             uploads: Arc::new(UnavailableUploadIssuer),
@@ -513,6 +560,8 @@ pub fn router_with_result_reader(
     build_router(
         store,
         RouterDependencies {
+            job_status_cache: Arc::new(UnavailableJobStatusCache),
+            job_status_cache_policy: default_job_status_cache_policy(),
             results,
             result_artifacts_configured: true,
             uploads: Arc::new(UnavailableUploadIssuer),
@@ -532,6 +581,8 @@ pub fn router_with_upload_issuer(
     build_router(
         store,
         RouterDependencies {
+            job_status_cache: Arc::new(UnavailableJobStatusCache),
+            job_status_cache_policy: default_job_status_cache_policy(),
             results: Arc::new(UnavailableResultReader),
             result_artifacts_configured: false,
             uploads,
@@ -552,6 +603,8 @@ pub fn router_with_upload_services(
     build_router(
         store,
         RouterDependencies {
+            job_status_cache: Arc::new(UnavailableJobStatusCache),
+            job_status_cache_policy: default_job_status_cache_policy(),
             results: Arc::new(UnavailableResultReader),
             result_artifacts_configured: false,
             uploads,
@@ -573,6 +626,8 @@ pub fn router_with_dependencies(
     build_router(
         store,
         RouterDependencies {
+            job_status_cache: Arc::new(UnavailableJobStatusCache),
+            job_status_cache_policy: default_job_status_cache_policy(),
             results,
             result_artifacts_configured: true,
             uploads,
@@ -584,7 +639,74 @@ pub fn router_with_dependencies(
     )
 }
 
+pub fn router_with_job_status_cache(
+    store: PgJobStore,
+    job_status_cache: Arc<dyn JobStatusCache>,
+    job_status_cache_policy: CachePolicy,
+) -> Router {
+    build_router(
+        store,
+        RouterDependencies {
+            job_status_cache,
+            job_status_cache_policy,
+            results: Arc::new(UnavailableResultReader),
+            result_artifacts_configured: false,
+            uploads: Arc::new(UnavailableUploadIssuer),
+            upload_buckets: HashMap::new(),
+            upload_intents_configured: false,
+            upload_artifacts: Arc::new(UnavailableUploadArtifactReader),
+            upload_artifacts_configured: false,
+        },
+    )
+}
+
+pub fn router_with_runtime_dependencies(
+    store: PgJobStore,
+    results: Option<Arc<dyn ResultArtifactReader>>,
+    upload_buckets: HashMap<String, String>,
+    uploads: Option<Arc<dyn UploadIntentIssuer>>,
+    upload_artifacts: Option<Arc<dyn UploadArtifactReader>>,
+    job_status_cache: Option<(Arc<dyn JobStatusCache>, CachePolicy)>,
+) -> Router {
+    let result_artifacts_configured = results.is_some();
+    let upload_intents_configured = uploads.is_some();
+    let upload_artifacts_configured = upload_artifacts.is_some();
+    let (job_status_cache, job_status_cache_policy) = job_status_cache.unwrap_or_else(|| {
+        (
+            Arc::new(UnavailableJobStatusCache),
+            default_job_status_cache_policy(),
+        )
+    });
+    build_router(
+        store,
+        RouterDependencies {
+            job_status_cache,
+            job_status_cache_policy,
+            results: results.unwrap_or_else(|| Arc::new(UnavailableResultReader)),
+            result_artifacts_configured,
+            uploads: uploads.unwrap_or_else(|| Arc::new(UnavailableUploadIssuer)),
+            upload_buckets,
+            upload_intents_configured,
+            upload_artifacts: upload_artifacts
+                .unwrap_or_else(|| Arc::new(UnavailableUploadArtifactReader)),
+            upload_artifacts_configured,
+        },
+    )
+}
+
+fn default_job_status_cache_policy() -> CachePolicy {
+    CachePolicy::new(
+        Duration::from_secs(10),
+        Duration::from_secs(300),
+        Duration::from_millis(25),
+        512,
+    )
+    .expect("default job status cache policy is valid")
+}
+
 struct RouterDependencies {
+    job_status_cache: Arc<dyn JobStatusCache>,
+    job_status_cache_policy: CachePolicy,
     results: Arc<dyn ResultArtifactReader>,
     result_artifacts_configured: bool,
     uploads: Arc<dyn UploadIntentIssuer>,
@@ -610,6 +732,8 @@ fn build_router(store: PgJobStore, dependencies: RouterDependencies) -> Router {
         .route("/v1/ocr/jobs/{job_id}/cancel", post(cancel_job))
         .with_state(AppState {
             jobs: store,
+            job_status_cache: dependencies.job_status_cache,
+            job_status_cache_policy: dependencies.job_status_cache_policy,
             results: dependencies.results,
             result_artifacts_configured: dependencies.result_artifacts_configured,
             uploads: dependencies.uploads,
@@ -932,6 +1056,13 @@ async fn create_job(
             request_id.clone(),
         )
     })?;
+    if !command.has_valid_bounds() {
+        return Err(ApiError::bad_request(
+            "invalid_job_request",
+            "job request is invalid",
+            request_id,
+        ));
+    }
     let upload_id = UploadId::new(&command.source.upload_id).map_err(|_| {
         ApiError::bad_request(
             "invalid_request",
@@ -973,8 +1104,8 @@ async fn create_job(
         .jobs
         .create(CreateJob {
             job_id: generated_id.clone(),
-            tenant_id: identity.0.tenant_id,
-            product_id: identity.0.product_id,
+            tenant_id: identity.0.tenant_id.clone(),
+            product_id: identity.0.product_id.clone(),
             idempotency_key,
             request_digest,
             upload_id,
@@ -993,6 +1124,16 @@ async fn create_job(
     };
     let status_url = format!("/v1/ocr/jobs/{}", job.job_id.as_str());
     let result_url = format!("{status_url}/result");
+    cache_job_status(
+        &state,
+        CacheScope::new(
+            identity.0.product_id,
+            identity.0.tenant_id,
+            job.job_id.clone(),
+        ),
+        &job,
+    )
+    .await;
 
     Ok((
         StatusCode::ACCEPTED,
@@ -1014,12 +1155,27 @@ async fn get_job(
 ) -> Result<Json<JobResponse>, ApiError> {
     let request_id = request_id_from_extensions(request.extensions());
     let job_id = JobId::new(&job_id).map_err(|_| ApiError::not_found(request_id.clone()))?;
+    let scope = CacheScope::new(
+        identity.0.product_id.clone(),
+        identity.0.tenant_id.clone(),
+        job_id.clone(),
+    );
+    if let Some(record) = read_cached_job_status(&state, &scope).await {
+        return Ok(Json(JobResponse {
+            job_id,
+            status: record.status(),
+            created_at: record.created_at(),
+            status_url: None,
+            result_url: None,
+        }));
+    }
     let job = state
         .jobs
         .find(&identity.0.tenant_id, &identity.0.product_id, &job_id)
         .await
         .map_err(|_| ApiError::unavailable(request_id.clone()))?
         .ok_or_else(|| ApiError::not_found(request_id))?;
+    cache_job_status(&state, scope, &job).await;
     Ok(Json(JobResponse {
         job_id: job.job_id,
         status: job.state,
@@ -1090,6 +1246,16 @@ async fn cancel_job(
         CancelOutcome::NotCancellable(_) => return Err(ApiError::not_cancellable(request_id)),
         CancelOutcome::NotFound => return Err(ApiError::not_found(request_id)),
     };
+    cache_job_status(
+        &state,
+        CacheScope::new(
+            identity.0.product_id,
+            identity.0.tenant_id,
+            job.job_id.clone(),
+        ),
+        &job,
+    )
+    .await;
     Ok(Json(JobResponse {
         job_id: job.job_id,
         status: job.state,
@@ -1097,6 +1263,45 @@ async fn cancel_job(
         status_url: None,
         result_url: None,
     }))
+}
+
+async fn cache_job_status(state: &AppState, scope: CacheScope, job: &ocr_store::StoredJob) {
+    let record = CacheRecord::new(&scope, job.state, job.created_at);
+    let ttl = state.job_status_cache_policy.ttl(job.state);
+    match tokio::time::timeout(
+        state.job_status_cache_policy.timeout(),
+        state.job_status_cache.put(&scope, &record, ttl),
+    )
+    .await
+    {
+        Ok(Ok(())) => {}
+        Ok(Err(_)) => warn!(cache.operation = "write", "job status cache unavailable"),
+        Err(_) => warn!(cache.operation = "write", "job status cache timed out"),
+    }
+}
+
+async fn read_cached_job_status(state: &AppState, scope: &CacheScope) -> Option<CacheRecord> {
+    match tokio::time::timeout(
+        state.job_status_cache_policy.timeout(),
+        state.job_status_cache.get(scope),
+    )
+    .await
+    {
+        Ok(Ok(Some(record))) if record.matches_scope(scope) => Some(record),
+        Ok(Ok(Some(_))) => {
+            warn!(cache.operation = "read", "job status cache scope mismatch");
+            None
+        }
+        Ok(Ok(None)) => None,
+        Ok(Err(_)) => {
+            warn!(cache.operation = "read", "job status cache unavailable");
+            None
+        }
+        Err(_) => {
+            warn!(cache.operation = "read", "job status cache timed out");
+            None
+        }
+    }
 }
 
 fn request_id(parts: &Parts) -> String {

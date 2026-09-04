@@ -64,6 +64,23 @@ Qdrant contains vectors, sparse/dense retrieval fields and bounded metadata—no
 
 Indexing is asynchronous and idempotent. Read-your-own-write is not promised for semantic memory; the API exposes index status/lag. Agent answers resolve Qdrant hits back to the canonical Postgres/GCS version before citation, preventing stale or cross-tenant vector payloads from becoming evidence.
 
+### Semantic-memory contract candidate
+
+`ocr-domain` derives Qdrant-compatible UUIDv8 point identifiers from a
+length-framed SHA-256 digest over tenant ID, canonical memory-record ID and
+version, and embedding version. Exact at-least-once replay therefore produces
+the same point ID; tenant, record-version or embedding-version changes produce
+a different ID without hashing document text.
+
+Collection aliases are constructed only from validated schema and embedding
+major versions (`ocr-memory-s{schema}-e{embedding}`), not arbitrary request
+strings. Query scope cannot be constructed without a validated tenant and a
+limit from 1 through 100. Allowlisted point metadata contains only opaque
+tenant, record, document, chunk, observation and version identifiers plus the
+retention deadline. It excludes raw text, vectors, buckets, object names,
+signed URLs and credentials. This contract does not select a client or approve
+production indexing; those remain review items in issue #10.
+
 Snapshots protect recovery time, but canonical records allow a full rebuild. Collection alias promotion supports zero-downtime embedding/model migrations and rollback.
 
 ## Valkey keys
@@ -71,13 +88,20 @@ Snapshots protect recovery time, but canonical records allow a full rebuild. Col
 Example namespaces:
 
 ```text
-ocr:job:v1:{tenant_id}:{job_id}
+ocr:job-status:v1:{product_id}:{tenant_id}:{job_id}
 ocr:result-meta:v1:{tenant_id}:{document_version}
 ocr:admission:v1:{tenant_id}:{window}
 ocr:model-manifest:v1:{model_digest}
 ```
 
-Every key has a TTL. Active job cache entries are short lived; immutable terminal metadata may be longer. Hot-key refill uses single-flight. Rate-limit scripts set expiry atomically. Valkey loss never loses a job, event, correction or deletion request.
+Every key has a TTL. The implemented job-status record is limited to product,
+tenant and job identifiers, status and creation time; it cannot contain OCR
+text, filenames, URLs, object locators, credentials or result payloads. Active
+job cache entries are short lived; immutable terminal metadata may be longer.
+Every hit is checked again against verified product and tenant scope. A miss,
+malformed or oversized record, timeout or Valkey failure falls through to the
+authoritative scoped Postgres query. Rate-limit scripts set expiry atomically.
+Valkey loss never loses a job, event, correction or deletion request.
 
 ## Failure behavior
 

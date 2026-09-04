@@ -1,0 +1,22 @@
+{
+  "citations": [],
+  "confidence": null,
+  "content_trust": "untrusted",
+  "cost": null,
+  "document_id": "doc_BETA",
+  "document_version": "sha256:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+  "duration_ms": null,
+  "fields": {},
+  "markdown": "",
+  "model_version": null,
+  "pages": [],
+  "processing_profile_version": null,
+  "provider": null,
+  "schema_version": "1.0",
+  "tables": [],
+  "text": "",
+  "validation_failures": [],
+  "warnings": [
+    "no_text_detected"
+  ]
+}

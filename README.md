@@ -27,6 +27,8 @@ consumer integrations around the shared service.
 - [Design review tracker](docs/DESIGN-REVIEW.md)
 - [High-level design](docs/design/HLD.md)
 - [API and data contracts](docs/design/CONTRACTS.md)
+- [Canonical v1 OpenAPI](contracts/v1/openapi.json)
+- [Canonical v1 contract manifest](contracts/v1/manifest.json)
 - [Quality, routing, validation, and review](docs/design/QUALITY-AND-REVIEW.md)
 - [Rust OCR engine](docs/design/RUST-OCR-ENGINE.md)
 - [Data architecture](docs/design/DATA-ARCHITECTURE.md)
@@ -57,6 +59,22 @@ Both adapters use Application Default Credentials and GKE Workload Identity;
 service-account key files are not accepted as application configuration. A
 missing adapter leaves liveness available for diagnostics but keeps readiness
 at `503`.
+
+`VALKEY_URL` optionally enables the degradable job-status cache. Cache entries
+are schema-, product-, tenant-, and job-scoped; contain only status and creation
+metadata; and always expire. Defaults are 10 seconds for active jobs, 300
+seconds for immutable terminal jobs, a 25 millisecond operation timeout, and a
+512-byte record limit. These bounds can be lowered or raised within hard limits
+using `JOB_STATUS_CACHE_ACTIVE_TTL_SECONDS`,
+`JOB_STATUS_CACHE_TERMINAL_TTL_SECONDS`,
+`JOB_STATUS_CACHE_TIMEOUT_MILLISECONDS`, and
+`JOB_STATUS_CACHE_MAXIMUM_RECORD_BYTES`. PostgreSQL remains authoritative and
+every miss, invalid entry, timeout, or Valkey error falls through to the same
+product- and tenant-scoped database lookup.
+
+Run `scripts/test-valkey-cache.sh` for the digest-pinned real-Valkey contract
+check. It verifies an expiring scoped round trip and bounded rejection of an
+oversized value without coupling the reusable PostgreSQL CI job to Valkey.
 
 Tracing is JSON-only when `OTEL_EXPORTER_OTLP_ENDPOINT` is absent. When set, the
 endpoint must be a loopback collector or a fully qualified Kubernetes

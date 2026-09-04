@@ -1,0 +1,10 @@
+{
+  "document_type": "general",
+  "language_hints": [
+    "en"
+  ],
+  "processing_class": "batch",
+  "source": {
+    "upload_id": "upl_BETA"
+  }
+}
