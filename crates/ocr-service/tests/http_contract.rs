@@ -90,6 +90,23 @@ async fn signed_workload_identity_allows_only_its_registered_product() {
 }
 
 #[tokio::test]
+async fn upload_status_uses_the_verified_scope_before_reading_storage_metadata() {
+    let response = router(store_without_connection())
+        .layer(Extension(
+            TrustedIdentity::new("kora", "ten_UPLOAD_STATUS").unwrap(),
+        ))
+        .oneshot(
+            Request::get("/v1/ocr/uploads/upl_STATUS")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+
+    assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+}
+
+#[tokio::test]
 async fn workload_identity_rejects_signature_replay_on_a_different_route() {
     let verifier = WorkloadIdentityVerifier::new(
         [(
@@ -951,6 +968,48 @@ async fn upload_intent_is_created_for_the_verified_scope_without_exposing_storag
     );
     assert!(created.get("object_bucket").is_none());
     assert!(created.get("object_name").is_none());
+
+    let status = application
+        .clone()
+        .layer(Extension(
+            TrustedIdentity::new("kora", "ten_HTTPUPLOAD").unwrap(),
+        ))
+        .oneshot(
+            Request::get(format!(
+                "/v1/ocr/uploads/{}",
+                created["upload_id"].as_str().unwrap()
+            ))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(status.status(), StatusCode::OK);
+    let status: Value =
+        serde_json::from_slice(&status.into_body().collect().await.unwrap().to_bytes()).unwrap();
+    assert_eq!(status["upload_id"], created["upload_id"]);
+    assert_eq!(status["status"], "reserved");
+    assert!(status.get("object_bucket").is_none());
+    assert!(status.get("object_name").is_none());
+    assert!(status.get("object_generation").is_none());
+    assert!(status.get("digest").is_none());
+
+    let foreign = application
+        .clone()
+        .layer(Extension(
+            TrustedIdentity::new("kora", "ten_HTTPUPLOAD_OTHER").unwrap(),
+        ))
+        .oneshot(
+            Request::get(format!(
+                "/v1/ocr/uploads/{}",
+                created["upload_id"].as_str().unwrap()
+            ))
+            .body(Body::empty())
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(foreign.status(), StatusCode::NOT_FOUND);
 
     let replay = application
         .clone()

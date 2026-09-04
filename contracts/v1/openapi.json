@@ -117,6 +117,21 @@
             "$ref": "#/components/headers/RequestId"
           }
         }
+      },
+      "UploadStatus": {
+        "content": {
+          "application/json": {
+            "schema": {
+              "$ref": "#/components/schemas/UploadStatusResponse"
+            }
+          }
+        },
+        "description": "Tenant-scoped opaque upload lifecycle state",
+        "headers": {
+          "X-Request-ID": {
+            "$ref": "#/components/headers/RequestId"
+          }
+        }
       }
     },
     "schemas": {
@@ -281,6 +296,30 @@
           "upload_url",
           "required_headers",
           "expires_at"
+        ],
+        "type": "object"
+      },
+      "UploadStatusResponse": {
+        "additionalProperties": false,
+        "properties": {
+          "status": {
+            "enum": [
+              "reserved",
+              "uploaded",
+              "inspecting",
+              "accepted",
+              "rejected",
+              "expired"
+            ],
+            "type": "string"
+          },
+          "upload_id": {
+            "$ref": "#/components/schemas/UploadId"
+          }
+        },
+        "required": [
+          "upload_id",
+          "status"
         ],
         "type": "object"
       },
@@ -504,6 +543,30 @@
           },
           "409": {
             "$ref": "#/components/responses/Conflict"
+          },
+          "503": {
+            "$ref": "#/components/responses/ServiceUnavailable"
+          }
+        }
+      }
+    },
+    "/v1/ocr/uploads/{upload_id}": {
+      "get": {
+        "operationId": "getUploadStatus",
+        "parameters": [
+          {
+            "$ref": "#/components/parameters/UploadId"
+          }
+        ],
+        "responses": {
+          "200": {
+            "$ref": "#/components/responses/UploadStatus"
+          },
+          "401": {
+            "$ref": "#/components/responses/Unauthorized"
+          },
+          "404": {
+            "$ref": "#/components/responses/NotFound"
           },
           "503": {
             "$ref": "#/components/responses/ServiceUnavailable"

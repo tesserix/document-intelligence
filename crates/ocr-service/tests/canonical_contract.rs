@@ -20,6 +20,7 @@ fn openapi_covers_every_implemented_v1_route() {
     assert_eq!(openapi["openapi"], "3.1.0");
     let expected = [
         ("/v1/ocr/uploads", "post"),
+        ("/v1/ocr/uploads/{upload_id}", "get"),
         ("/v1/ocr/uploads/{upload_id}/complete", "post"),
         ("/v1/ocr/jobs", "post"),
         ("/v1/ocr/jobs/{job_id}", "get"),
