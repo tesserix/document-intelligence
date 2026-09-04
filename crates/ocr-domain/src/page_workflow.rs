@@ -2,6 +2,9 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, JobId, Result};
 
+pub const MAXIMUM_PAGE_COUNT: u32 = 300;
+pub const MAXIMUM_PAGE_ATTEMPTS: u8 = 10;
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum PageWorkflowStatus {
     Running,
@@ -50,9 +53,9 @@ impl TryFrom<RawPageWorkflow> for PageWorkflow {
     type Error = Error;
 
     fn try_from(value: RawPageWorkflow) -> Result<Self> {
-        if !(1..=10).contains(&value.max_attempts)
+        if !(1..=MAXIMUM_PAGE_ATTEMPTS).contains(&value.max_attempts)
             || value.pages.is_empty()
-            || value.pages.len() > 300
+            || value.pages.len() > MAXIMUM_PAGE_COUNT as usize
             || value.pages.iter().any(|page| match page {
                 PageProgress::Pending { failures } => *failures >= value.max_attempts,
                 PageProgress::Running { attempt } => *attempt == 0 || *attempt > value.max_attempts,
@@ -78,7 +81,9 @@ impl TryFrom<RawPageWorkflow> for PageWorkflow {
 
 impl PageWorkflow {
     pub fn new(job_id: JobId, page_count: u32, max_attempts: u8) -> Result<Self> {
-        if !(1..=300).contains(&page_count) || !(1..=10).contains(&max_attempts) {
+        if !(1..=MAXIMUM_PAGE_COUNT).contains(&page_count)
+            || !(1..=MAXIMUM_PAGE_ATTEMPTS).contains(&max_attempts)
+        {
             return Err(Error::InvalidPageWorkflow);
         }
         let page_count = usize::try_from(page_count).map_err(|_| Error::InvalidPageWorkflow)?;

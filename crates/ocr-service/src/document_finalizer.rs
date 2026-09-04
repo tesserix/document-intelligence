@@ -111,4 +111,25 @@ where
             .await
             .map_err(Into::into)
     }
+
+    pub async fn finalize_stored(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        job_id: &JobId,
+    ) -> Result<CommitResultOutcome, DocumentFinalizeError> {
+        let identity = self
+            .jobs
+            .load_document_identity(tenant_id, product_id, job_id)
+            .await?
+            .ok_or(DocumentFinalizeError::NotReady)?;
+        self.finalize(
+            tenant_id,
+            product_id,
+            job_id,
+            identity.document_id,
+            identity.document_version,
+        )
+        .await
+    }
 }

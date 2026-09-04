@@ -1,14 +1,21 @@
 use std::{
     net::{SocketAddr, TcpListener},
     process::{Child, Command, Stdio},
-    sync::Arc,
+    sync::{
+        atomic::{AtomicU32, Ordering},
+        Arc,
+    },
     time::Duration,
 };
 
 use ocr_domain::{JobId, ProductId, TenantId};
 use ocr_service::{WorkflowAction, WorkflowDispatch};
 use ocr_temporal::{
-    qualification_deployment_options, GatewayOutcome, OcrDocumentWorkflow, OfficialTemporalGateway,
+    qualification_deployment_options, DurableActivityInput, DurableActivityOutput,
+    DurableActivityStatus, DurableDocumentWorkflow, DurableFinalizationActivities,
+    DurableFinalizationExecution, DurableFinalizationFuture, DurablePageActivities,
+    DurablePageExecution, DurablePageExecutionFuture, DurableWorkflowResultMetadata,
+    DurableWorkflowRunInput, GatewayOutcome, OcrDocumentWorkflow, OfficialTemporalGateway,
     QualificationPageActivities, TemporalCommand, TemporalGateway, WorkflowInput,
     WorkflowResultMetadata, WorkflowRunInput,
 };
@@ -40,6 +47,41 @@ fn workflow_input(page_count: u32) -> WorkflowRunInput {
         action: WorkflowAction::Start,
     };
     WorkflowRunInput::first(WorkflowInput::try_from(&dispatch).unwrap())
+}
+
+fn durable_workflow_input() -> DurableWorkflowRunInput {
+    DurableWorkflowRunInput::first(DurableActivityInput::new(
+        ProductId::new("qualification").unwrap(),
+        TenantId::new("ten_TEMPORAL").unwrap(),
+        JobId::new("job_TEMPORAL_DURABLE").unwrap(),
+    ))
+}
+
+#[derive(Default)]
+struct PartialAfterFiftyIterations {
+    iterations: AtomicU32,
+}
+
+impl DurablePageExecution for PartialAfterFiftyIterations {
+    fn execute<'a>(&'a self, _input: DurableActivityInput) -> DurablePageExecutionFuture<'a> {
+        let iteration = self.iterations.fetch_add(1, Ordering::SeqCst) + 1;
+        Box::pin(async move {
+            let status = if iteration == 51 {
+                DurableActivityStatus::Partial
+            } else {
+                DurableActivityStatus::Running
+            };
+            Ok(DurableActivityOutput::new(status))
+        })
+    }
+}
+
+struct SuccessfulFinalization;
+
+impl DurableFinalizationExecution for SuccessfulFinalization {
+    fn finalize<'a>(&'a self, _input: DurableActivityInput) -> DurableFinalizationFuture<'a> {
+        Box::pin(async { Ok(()) })
+    }
 }
 
 struct ActivityWorkerProcess(Child);
@@ -135,6 +177,77 @@ async fn fifty_one_pages_continue_as_new_and_replay() {
             WorkflowReplayer::new(
                 WorkflowReplayerOptions::new()
                     .register_workflow::<OcrDocumentWorkflow>()
+                    .unwrap()
+                    .build(),
+            )
+            .unwrap()
+            .replay_workflow(history)
+            .await
+            .unwrap();
+
+            shutdown();
+            worker_task.await.unwrap().unwrap();
+            env.shutdown().await.unwrap();
+        })
+        .await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[ignore = "requires scripts/test-temporal-qualification.sh"]
+async fn durable_runner_activity_continues_as_new_and_replays_without_document_content() {
+    let Ok(cli) = std::env::var("TEMPORAL_CLI_PATH") else {
+        return;
+    };
+    let env = WorkflowEnvironment::start_local(
+        LocalWorkflowEnvironmentOptions::builder()
+            .server_executable(EphemeralExe::ExistingPath(cli))
+            .log_level(DevServerLogLevel::Never)
+            .build(),
+    )
+    .await
+    .unwrap();
+    let runtime = Runtime::new_assume_tokio(Default::default()).unwrap();
+    let worker_options = WorkerOptions::new("ocr-temporal-durable")
+        .register_workflow::<DurableDocumentWorkflow>()
+        .unwrap()
+        .register_activities(DurablePageActivities::new(Arc::new(
+            PartialAfterFiftyIterations::default(),
+        )))
+        .register_activities(DurableFinalizationActivities::new(Arc::new(
+            SuccessfulFinalization,
+        )))
+        .build();
+    let mut worker = Worker::new(&runtime, env.client().clone(), worker_options).unwrap();
+    let shutdown = worker.shutdown_handle();
+
+    tokio::task::LocalSet::new()
+        .run_until(async move {
+            let worker_task = tokio::task::spawn_local(async move { worker.run().await });
+            let handle = env
+                .client()
+                .start_workflow(
+                    DurableDocumentWorkflow::run,
+                    durable_workflow_input(),
+                    WorkflowStartOptions::new(
+                        "ocr-temporal-durable",
+                        "ocr-temporal-durable-fifty-one-iterations",
+                    )
+                    .build(),
+                )
+                .await
+                .unwrap();
+            let result: DurableWorkflowResultMetadata = handle
+                .get_result(WorkflowGetResultOptions::default())
+                .await
+                .unwrap();
+            assert_eq!(result.status, DurableActivityStatus::Partial);
+            assert_eq!(result.runner_iterations, 51);
+            assert_eq!(result.runs, 2);
+
+            let history = handle.fetch_history(WorkflowFetchHistoryOptions::default());
+            WorkflowReplayer::new(
+                WorkflowReplayerOptions::new()
+                    .register_workflow::<DurableDocumentWorkflow>()
                     .unwrap()
                     .build(),
             )

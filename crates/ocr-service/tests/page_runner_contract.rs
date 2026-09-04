@@ -442,16 +442,17 @@ async fn exhausted_page_preserves_completed_artifacts_and_publishes_partial_resu
         DocumentFinalizer::new(store.clone(), Arc::new(PageJsonReader), publisher, 2).unwrap();
     assert!(matches!(
         finalizer
-            .finalize(
-                &tenant,
-                &product,
-                &job,
-                DocumentId::new("doc_PAGE_EXHAUSTED").unwrap(),
-                DocumentVersion::new(&format!("sha256:{}", "e".repeat(64))).unwrap(),
-            )
+            .finalize_stored(&tenant, &product, &job)
             .await
             .unwrap(),
         CommitResultOutcome::Committed(_)
+    ));
+    assert!(matches!(
+        finalizer
+            .finalize_stored(&tenant, &product, &job)
+            .await
+            .unwrap(),
+        CommitResultOutcome::Existing(_)
     ));
     assert_eq!(
         store
@@ -462,10 +463,18 @@ async fn exhausted_page_preserves_completed_artifacts_and_publishes_partial_resu
             .state,
         JobState::Partial
     );
-    assert!(matches!(
-        store.find_result(&tenant, &product, &job).await.unwrap(),
-        ResultLookup::Ready(_)
-    ));
+    let ResultLookup::Ready(locator) = store.find_result(&tenant, &product, &job).await.unwrap()
+    else {
+        panic!("expected a published partial result");
+    };
+    assert_eq!(
+        locator.document_id,
+        DocumentId::new("doc_PAGE_EXHAUSTED").unwrap()
+    );
+    assert_eq!(
+        locator.document_version,
+        DocumentVersion::new(&format!("sha256:{}", "f".repeat(64))).unwrap()
+    );
 }
 
 #[tokio::test]
