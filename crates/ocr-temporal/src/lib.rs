@@ -1077,8 +1077,12 @@ impl TemporalGateway for OfficialTemporalGateway {
                 match self
                     .client
                     .start_workflow(
-                        OcrDocumentWorkflow::run,
-                        WorkflowRunInput::first(input),
+                        DurableDocumentWorkflow::run,
+                        DurableWorkflowRunInput::first(DurableActivityInput::new(
+                            input.product_id,
+                            input.tenant_id,
+                            input.job_id,
+                        )),
                         options,
                     )
                     .await
