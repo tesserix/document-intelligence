@@ -5,7 +5,7 @@ on:
     branches: [main]
 
 permissions:
-  contents: read
+  contents: write
   packages: write
 
 concurrency:
@@ -16,7 +16,7 @@ jobs:
   publish-ocr-service:
     runs-on: ubuntu-24.04
     permissions:
-      contents: read
+      contents: write
       packages: write
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
@@ -34,3 +34,8 @@ jobs:
           tags: ghcr.io/tesserix/document-intelligence/ocr-service:${{ github.sha }}
           provenance: mode=max
           sbom: true
+      - name: Advance deploy ref after image publication
+        env:
+          GITHUB_SHA: ${{ github.sha }}
+        run: |
+          git push origin "${GITHUB_SHA}:refs/heads/deploy"
