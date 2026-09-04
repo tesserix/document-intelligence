@@ -79,12 +79,14 @@ async fn relay_dispatches_a_deterministic_workflow_once_then_acknowledges() {
           verified_digest, uploaded_at, source_bucket, source_object_name, \
           source_object_generation, source_digest, source_content_length, accepted_at, \
           inspection_attempts, parser_page_count, parser_maximum_page_pixels, \
-          parser_total_page_pixels, parser_profile, parser_version) values \
+          parser_total_page_pixels, parser_page_geometries, parser_profile, parser_version) values \
          ('upl_RELAY', 'ten_RELAY', 'kora', 'relay-upload', $1, 'dev-kora-ocr-quarantine', \
           'products/kora/tenants/ten_RELAY/quarantine/upl_RELAY', 'application/pdf', 8, $2, \
           'accepted', now() + interval '10 minutes', 42, 'application/pdf', 8, $2, now(), \
           'dev-kora-ocr-source', 'products/kora/tenants/ten_RELAY/documents/source', 43, $2, 8, \
-          now(), 1, 3, 1000000, 3000000, 'strict-v1', '1.0.0')",
+          now(), 1, 3, 1000000, 3000000, \
+          '[{\"page\":1,\"width\":1000,\"height\":1000},{\"page\":2,\"width\":1000,\"height\":1000},{\"page\":3,\"width\":1000,\"height\":1000}]'::jsonb, \
+          'strict-v1', '1.0.0')",
     )
     .bind(format!("sha256:{}", "a".repeat(64)))
     .bind(format!("sha256:{}", "b".repeat(64)))

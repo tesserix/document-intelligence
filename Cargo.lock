@@ -2296,6 +2296,7 @@ version = "0.1.0"
 dependencies = [
  "image",
  "lopdf",
+ "ocr-domain",
  "serde",
  "serde_json",
  "thiserror",

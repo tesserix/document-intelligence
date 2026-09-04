@@ -1,8 +1,8 @@
 //! PostgreSQL persistence for document jobs.
 
 use ocr_domain::{
-    DocumentId, DocumentVersion, IdempotencyKey, JobId, JobState, PageTask, PageWorkflow,
-    ProductId, RequestDigest, TenantId, UploadId, WebhookSubscriptionId,
+    DocumentId, DocumentVersion, IdempotencyKey, JobId, JobState, PageGeometry, PageTask,
+    PageWorkflow, ProductId, RequestDigest, TenantId, UploadId, WebhookSubscriptionId,
 };
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use thiserror::Error;
@@ -83,6 +83,7 @@ pub struct StoredAcceptedSource {
     pub page_count: u32,
     pub maximum_page_pixels: u64,
     pub total_page_pixels: u64,
+    pub page_geometries: Vec<PageGeometry>,
     pub parser_profile: String,
     pub parser_version: String,
 }
@@ -247,6 +248,7 @@ pub struct ParserInspectionMetadata {
     pub page_count: i32,
     pub maximum_page_pixels: i64,
     pub total_page_pixels: i64,
+    pub page_geometries: Vec<PageGeometry>,
     pub profile: String,
     pub version: String,
 }
@@ -1062,6 +1064,8 @@ impl PgJobStore {
         source: AcceptUpload,
     ) -> Result<AcceptUploadOutcome> {
         validate_accepted_source(&source)?;
+        let page_geometries = serde_json::to_string(&source.parser_inspection.page_geometries)
+            .map_err(|_| Error::InvalidStoredUpload)?;
         let mut transaction = self.pool.begin().await?;
         set_scope(&mut transaction, tenant_id, product_id).await?;
         let updated = sqlx::query(
@@ -1069,7 +1073,7 @@ impl PgJobStore {
              source_object_name = $5, source_object_generation = $6, source_digest = $7, \
              source_content_length = $8, parser_page_count = $10, \
              parser_maximum_page_pixels = $11, parser_total_page_pixels = $12, \
-             parser_profile = $13, parser_version = $14, accepted_at = now(), \
+             parser_page_geometries = $13::jsonb, parser_profile = $14, parser_version = $15, accepted_at = now(), \
              inspection_lease_owner = null, \
              inspection_lease_expires_at = null, updated_at = now() \
              where product_id = $1 and tenant_id = $2 and upload_id = $3 \
@@ -1089,6 +1093,7 @@ impl PgJobStore {
         .bind(source.parser_inspection.page_count)
         .bind(source.parser_inspection.maximum_page_pixels)
         .bind(source.parser_inspection.total_page_pixels)
+        .bind(&page_geometries)
         .bind(&source.parser_inspection.profile)
         .bind(&source.parser_inspection.version)
         .fetch_optional(&mut *transaction)
@@ -1115,7 +1120,8 @@ impl PgJobStore {
         let existing = sqlx::query(
             "select status::text as status, source_bucket, source_object_name, \
              source_object_generation, source_digest, source_content_length, parser_page_count, \
-             parser_maximum_page_pixels, parser_total_page_pixels, parser_profile, parser_version \
+             parser_maximum_page_pixels, parser_total_page_pixels, parser_page_geometries::text as parser_page_geometries, \
+             parser_profile, parser_version \
              from ocr_uploads where product_id = $1 and tenant_id = $2 and upload_id = $3",
         )
         .bind(product_id.as_str())
@@ -1145,6 +1151,11 @@ impl PgJobStore {
                     == Some(source.parser_inspection.maximum_page_pixels)
                 && existing.try_get::<Option<i64>, _>("parser_total_page_pixels")?
                     == Some(source.parser_inspection.total_page_pixels)
+                && existing
+                    .try_get::<Option<String>, _>("parser_page_geometries")?
+                    .and_then(|value| serde_json::from_str::<Vec<PageGeometry>>(&value).ok())
+                    .as_deref()
+                    == Some(source.parser_inspection.page_geometries.as_slice())
                 && existing.try_get::<Option<&str>, _>("parser_profile")?
                     == Some(source.parser_inspection.profile.as_str())
                 && existing.try_get::<Option<&str>, _>("parser_version")?
@@ -1495,7 +1506,8 @@ impl PgJobStore {
              uploads.source_object_generation, uploads.source_digest, \
              uploads.source_content_length, uploads.expected_content_type, \
              uploads.parser_page_count, uploads.parser_maximum_page_pixels, \
-             uploads.parser_total_page_pixels, uploads.parser_profile, uploads.parser_version \
+             uploads.parser_total_page_pixels, uploads.parser_page_geometries::text as parser_page_geometries, \
+             uploads.parser_profile, uploads.parser_version \
              from ocr_jobs as jobs join ocr_uploads as uploads \
              on uploads.upload_id = jobs.upload_id and uploads.product_id = jobs.product_id \
              and uploads.tenant_id = jobs.tenant_id \
@@ -1988,6 +2000,11 @@ fn stored_accepted_source(row: sqlx::postgres::PgRow) -> Result<StoredAcceptedSo
             .map_err(|_| Error::InvalidStoredUpload)?,
         total_page_pixels: u64::try_from(row.try_get::<i64, _>("parser_total_page_pixels")?)
             .map_err(|_| Error::InvalidStoredUpload)?,
+        page_geometries: serde_json::from_str(
+            &row.try_get::<Option<String>, _>("parser_page_geometries")?
+                .ok_or(Error::InvalidStoredUpload)?,
+        )
+        .map_err(|_| Error::InvalidStoredUpload)?,
         parser_profile: row.try_get("parser_profile")?,
         parser_version: row.try_get("parser_version")?,
     };
@@ -2030,6 +2047,12 @@ fn validate_record(record: &RecordUpload) -> Result<()> {
 }
 
 fn validate_accepted_source(source: &AcceptUpload) -> Result<()> {
+    let page_count = u32::try_from(source.parser_inspection.page_count)
+        .map_err(|_| Error::InvalidStoredUpload)?;
+    let maximum_page_pixels = u64::try_from(source.parser_inspection.maximum_page_pixels)
+        .map_err(|_| Error::InvalidStoredUpload)?;
+    let total_page_pixels = u64::try_from(source.parser_inspection.total_page_pixels)
+        .map_err(|_| Error::InvalidStoredUpload)?;
     let digest = source.source_digest.strip_prefix("sha256:");
     let valid_digest = digest.is_some_and(|value| {
         value.len() == 64
@@ -2048,6 +2071,12 @@ fn validate_accepted_source(source: &AcceptUpload) -> Result<()> {
         || !(1..=100_000_000).contains(&source.parser_inspection.maximum_page_pixels)
         || !(source.parser_inspection.maximum_page_pixels..=1_000_000_000)
             .contains(&source.parser_inspection.total_page_pixels)
+        || !valid_page_geometries(
+            &source.parser_inspection.page_geometries,
+            page_count,
+            maximum_page_pixels,
+            total_page_pixels,
+        )
         || !is_valid_parser_identifier(&source.parser_inspection.profile)
         || !is_valid_parser_identifier(&source.parser_inspection.version)
     {
@@ -2078,12 +2107,48 @@ fn validate_accepted_source_locator(source: &StoredAcceptedSource) -> Result<()>
         || !(1..=300).contains(&source.page_count)
         || !(1..=100_000_000).contains(&source.maximum_page_pixels)
         || !(source.maximum_page_pixels..=1_000_000_000).contains(&source.total_page_pixels)
+        || !valid_page_geometries(
+            &source.page_geometries,
+            source.page_count,
+            source.maximum_page_pixels,
+            source.total_page_pixels,
+        )
         || !is_valid_parser_identifier(&source.parser_profile)
         || !is_valid_parser_identifier(&source.parser_version)
     {
         return Err(Error::InvalidStoredUpload);
     }
     Ok(())
+}
+
+fn valid_page_geometries(
+    pages: &[PageGeometry],
+    page_count: u32,
+    maximum_page_pixels: u64,
+    total_page_pixels: u64,
+) -> bool {
+    let Ok(expected_length) = usize::try_from(page_count) else {
+        return false;
+    };
+    if pages.len() != expected_length {
+        return false;
+    }
+    let mut computed_maximum = 0_u64;
+    let mut computed_total = 0_u64;
+    for (index, page) in pages.iter().enumerate() {
+        let Ok(expected_page) = u32::try_from(index + 1) else {
+            return false;
+        };
+        if u32::from(page.page) != expected_page {
+            return false;
+        }
+        computed_maximum = computed_maximum.max(page.pixels());
+        let Some(total) = computed_total.checked_add(page.pixels()) else {
+            return false;
+        };
+        computed_total = total;
+    }
+    computed_maximum == maximum_page_pixels && computed_total == total_page_pixels
 }
 
 fn is_valid_parser_identifier(value: &str) -> bool {

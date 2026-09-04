@@ -1375,6 +1375,12 @@ async fn a_second_product_uses_the_same_contract_without_cross_product_visibilit
                         page_count: 1,
                         maximum_page_pixels: 1,
                         total_page_pixels: 1,
+                        page_geometries: vec![ocr_domain::PageGeometry::new(
+                            ocr_domain::PageNumber::new(1).unwrap(),
+                            1,
+                            1,
+                        )
+                        .unwrap()],
                         profile: "compat-v1".to_owned(),
                         version: "0.1.0".to_owned(),
                     },

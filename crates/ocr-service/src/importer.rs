@@ -292,6 +292,7 @@ where
                         page_count: inspection.page_count,
                         maximum_page_pixels: inspection.maximum_page_pixels,
                         total_page_pixels: inspection.total_page_pixels,
+                        page_geometries: inspection.pages,
                         profile: PARSER_PROFILE.to_owned(),
                         version: PARSER_VERSION.to_owned(),
                     },

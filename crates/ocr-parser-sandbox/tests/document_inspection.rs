@@ -119,6 +119,17 @@ fn reports_pdf_pages_and_render_pixel_budget_without_extracting_content() {
     assert_eq!(report.page_count, 2);
     assert_eq!(report.maximum_page_pixels, 8_415_000);
     assert_eq!(report.total_page_pixels, 16_830_000);
+    assert_eq!(report.pages.len(), 2);
+    assert_eq!(u32::from(report.pages[0].page), 1);
+    assert_eq!(
+        (report.pages[0].width, report.pages[0].height),
+        (2550, 3300)
+    );
+    assert_eq!(u32::from(report.pages[1].page), 2);
+    assert_eq!(
+        (report.pages[1].width, report.pages[1].height),
+        (2550, 3300)
+    );
     assert!(!report.password_protected);
 }
 
@@ -160,6 +171,9 @@ fn verifies_image_format_and_dimensions_without_decoding_pixels() {
     assert_eq!(report.page_count, 1);
     assert_eq!(report.maximum_page_pixels, 6);
     assert_eq!(report.total_page_pixels, 6);
+    assert_eq!(report.pages.len(), 1);
+    assert_eq!(u32::from(report.pages[0].page), 1);
+    assert_eq!((report.pages[0].width, report.pages[0].height), (2, 3));
 
     assert_eq!(
         inspect_document(&png(), "image/jpeg", limits).unwrap_err(),

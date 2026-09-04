@@ -1,6 +1,6 @@
 use ocr_domain::{
-    DocumentId, IdempotencyKey, JobId, PageWorkflow, ProductId, RequestDigest, TenantId, UploadId,
-    WebhookSubscriptionId,
+    DocumentId, IdempotencyKey, JobId, PageGeometry, PageNumber, PageWorkflow, ProductId,
+    RequestDigest, TenantId, UploadId, WebhookSubscriptionId,
 };
 use ocr_store::{
     AcceptUpload, AcceptUploadOutcome, CancelOutcome, ClaimJobOutbox, ClaimUploadInspection,
@@ -257,6 +257,8 @@ async fn set_upload_state(admin_pool: &PgPool, tenant_id: &str, state: &str) {
          parser_page_count = case when $2 = 'accepted' then 1 end, \
          parser_maximum_page_pixels = case when $2 = 'accepted' then 1000000 end, \
          parser_total_page_pixels = case when $2 = 'accepted' then 1000000 end, \
+         parser_page_geometries = case when $2 = 'accepted' then \
+             jsonb_build_array(jsonb_build_object('page', 1, 'width', 1000, 'height', 1000)) end, \
          parser_profile = case when $2 = 'accepted' then 'strict-v1' end, \
          parser_version = case when $2 = 'accepted' then '1.0.0' end, \
          inspection_attempts = case when $2 = 'accepted' then 1 else 0 end, \
@@ -870,6 +872,10 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
             page_count: 2,
             maximum_page_pixels: 8_500_000,
             total_page_pixels: 16_000_000,
+            page_geometries: vec![
+                PageGeometry::new(PageNumber::new(1).unwrap(), 1_700, 5_000).unwrap(),
+                PageGeometry::new(PageNumber::new(2).unwrap(), 1_500, 5_000).unwrap(),
+            ],
             profile: "intake-v1".to_owned(),
             version: "0.1.0".to_owned(),
         },
@@ -1027,10 +1033,12 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
         i64,
         String,
         String,
+        String,
     ) = sqlx::query_as(
         "select source_bucket, source_object_name, source_object_generation, source_digest, \
          source_content_length, inspection_attempts, parser_page_count, \
-         parser_maximum_page_pixels, parser_total_page_pixels, parser_profile, parser_version \
+         parser_maximum_page_pixels, parser_total_page_pixels, parser_page_geometries::text, \
+         parser_profile, parser_version \
          from ocr_uploads \
          where upload_id = 'upl_ACCEPT_SOURCE'",
     )
@@ -1049,8 +1057,12 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
     assert_eq!(row.6, 2);
     assert_eq!(row.7, 8_500_000);
     assert_eq!(row.8, 16_000_000);
-    assert_eq!(row.9, "intake-v1");
-    assert_eq!(row.10, "0.1.0");
+    assert_eq!(
+        serde_json::from_str::<Vec<PageGeometry>>(&row.9).unwrap(),
+        acceptance("importer-02").parser_inspection.page_geometries
+    );
+    assert_eq!(row.10, "intake-v1");
+    assert_eq!(row.11, "0.1.0");
 
     let events: i64 = sqlx::query_scalar(
         "select count(*) from ocr_upload_outbox where upload_id = 'upl_ACCEPT_SOURCE' \

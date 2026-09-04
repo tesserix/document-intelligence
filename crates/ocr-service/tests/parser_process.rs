@@ -23,7 +23,7 @@ fn fixture(script: &str) -> (tempfile::TempDir, ParserProcess) {
 async fn parser_process_returns_only_valid_bounded_metadata() {
     let _guard = parser_test_guard().lock().await;
     let (_directory, parser) = fixture(
-        "cat >/dev/null; printf '{\"page_count\":2,\"maximum_page_pixels\":8500000,\"total_page_pixels\":16000000,\"password_protected\":false}'",
+        "cat >/dev/null; printf '{\"page_count\":2,\"maximum_page_pixels\":8500000,\"total_page_pixels\":17000000,\"pages\":[{\"page\":1,\"width\":1700,\"height\":5000},{\"page\":2,\"width\":1700,\"height\":5000}],\"password_protected\":false}'",
     );
 
     let report = parser
@@ -33,7 +33,24 @@ async fn parser_process_returns_only_valid_bounded_metadata() {
 
     assert_eq!(report.page_count, 2);
     assert_eq!(report.maximum_page_pixels, 8_500_000);
-    assert_eq!(report.total_page_pixels, 16_000_000);
+    assert_eq!(report.total_page_pixels, 17_000_000);
+    assert_eq!(report.pages.len(), 2);
+    assert_eq!(
+        (
+            u32::from(report.pages[0].page),
+            report.pages[0].width,
+            report.pages[0].height
+        ),
+        (1, 1700, 5000)
+    );
+    assert_eq!(
+        (
+            u32::from(report.pages[1].page),
+            report.pages[1].width,
+            report.pages[1].height
+        ),
+        (2, 1700, 5000)
+    );
 }
 
 #[tokio::test]
@@ -52,7 +69,7 @@ async fn parser_process_maps_stable_failures_and_bounds_output_and_time() {
         );
     }
 
-    let (_directory, noisy) = fixture("cat >/dev/null; yes x | head -c 5000");
+    let (_directory, noisy) = fixture("cat >/dev/null; yes x | head -c 70000");
     assert_eq!(
         noisy.inspect(b"fixture", "image/png").await.unwrap_err(),
         ParserProcessError::Unavailable
@@ -73,4 +90,22 @@ async fn parser_process_maps_stable_failures_and_bounds_output_and_time() {
         parser.inspect(b"fixture", "image/png").await.unwrap_err(),
         ParserProcessError::Unavailable
     );
+}
+
+#[tokio::test]
+async fn parser_process_rejects_noncontiguous_or_summary_inconsistent_page_geometry() {
+    let _guard = parser_test_guard().lock().await;
+    for report in [
+        r#"{"page_count":2,"maximum_page_pixels":8500000,"total_page_pixels":17000000,"pages":[{"page":1,"width":1700,"height":5000},{"page":1,"width":1700,"height":5000}],"password_protected":false}"#,
+        r#"{"page_count":1,"maximum_page_pixels":2,"total_page_pixels":2,"pages":[{"page":1,"width":1,"height":1}],"password_protected":false}"#,
+    ] {
+        let (_directory, parser) = fixture(&format!("cat >/dev/null; printf '%s' '{report}'"));
+        assert_eq!(
+            parser
+                .inspect(b"%PDF-fixture", "application/pdf")
+                .await
+                .unwrap_err(),
+            ParserProcessError::Unavailable,
+        );
+    }
 }

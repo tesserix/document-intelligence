@@ -1,6 +1,6 @@
 use std::sync::Arc;
 
-use ocr_domain::{ProductId, TenantId, UploadId};
+use ocr_domain::{PageGeometry, PageNumber, ProductId, TenantId, UploadId};
 use ocr_service::{
     DocumentParseError, DocumentParser, DocumentReadError, ImportOutcome, Importer,
     MalwareInspector, ParserInspectionReport, PromotedSource, SourcePromoter, SourcePromotionError,
@@ -38,6 +38,10 @@ impl DocumentParser for FixtureParser {
             page_count: 2,
             maximum_page_pixels: 8_500_000,
             total_page_pixels: 16_000_000,
+            pages: vec![
+                PageGeometry::new(PageNumber::new(1).unwrap(), 1_700, 5_000).unwrap(),
+                PageGeometry::new(PageNumber::new(2).unwrap(), 1_500, 5_000).unwrap(),
+            ],
         })
     }
 }
