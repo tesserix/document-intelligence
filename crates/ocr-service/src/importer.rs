@@ -47,6 +47,43 @@ pub enum ImportOutcome {
     NotInspectable,
 }
 
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+enum RetryableStage {
+    MalwareScan,
+    DocumentRead,
+    Parser,
+    SourcePromotion,
+}
+
+impl RetryableStage {
+    const fn as_str(self) -> &'static str {
+        match self {
+            Self::MalwareScan => "malware_scan",
+            Self::DocumentRead => "document_read",
+            Self::Parser => "parser",
+            Self::SourcePromotion => "source_promotion",
+        }
+    }
+}
+
+fn retryable(stage: RetryableStage) -> ImportOutcome {
+    tracing::warn!(stage = stage.as_str(), "OCR upload inspection retryable");
+    ImportOutcome::Retryable
+}
+
+#[cfg(test)]
+mod tests {
+    use super::RetryableStage;
+
+    #[test]
+    fn retryable_stage_names_are_content_free_and_stable() {
+        assert_eq!(RetryableStage::MalwareScan.as_str(), "malware_scan");
+        assert_eq!(RetryableStage::DocumentRead.as_str(), "document_read");
+        assert_eq!(RetryableStage::Parser.as_str(), "parser");
+        assert_eq!(RetryableStage::SourcePromotion.as_str(), "source_promotion");
+    }
+}
+
 #[derive(Debug, Error)]
 pub enum ImportError {
     #[error(transparent)]
@@ -189,7 +226,9 @@ where
                     )
                     .await
             }
-            Err(UploadInspectionError::Unavailable) => return Ok(ImportOutcome::Retryable),
+            Err(UploadInspectionError::Unavailable) => {
+                return Ok(retryable(RetryableStage::MalwareScan));
+            }
         }
         let bytes = match self.documents.read(&upload).await {
             Ok(bytes) => bytes,
@@ -204,7 +243,9 @@ where
                     )
                     .await
             }
-            Err(DocumentReadError::Unavailable) => return Ok(ImportOutcome::Retryable),
+            Err(DocumentReadError::Unavailable) => {
+                return Ok(retryable(RetryableStage::DocumentRead));
+            }
         };
         let inspection = match self
             .parser
@@ -245,7 +286,7 @@ where
                     )
                     .await
             }
-            Err(DocumentParseError::Unavailable) => return Ok(ImportOutcome::Retryable),
+            Err(DocumentParseError::Unavailable) => return Ok(retryable(RetryableStage::Parser)),
         };
         let source = match self.sources.promote(product_id, tenant_id, &upload).await {
             Ok(source) => source,
@@ -272,7 +313,7 @@ where
                     .await
             }
             Err(SourcePromotionError::InvalidConfiguration | SourcePromotionError::Unavailable) => {
-                return Ok(ImportOutcome::Retryable)
+                return Ok(retryable(RetryableStage::SourcePromotion));
             }
         };
         let outcome = self
