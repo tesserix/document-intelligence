@@ -14,7 +14,13 @@ struct StubRecognizer {
 struct WrongPageRecognizer;
 
 impl PageRecognizer for WrongPageRecognizer {
-    fn recognize<'a>(&'a self, task: &'a PageTask) -> PageRecognitionFuture<'a> {
+    fn recognize<'a>(
+        &'a self,
+        _product_id: &'a ProductId,
+        _tenant_id: &'a TenantId,
+        _job_id: &'a JobId,
+        task: &'a PageTask,
+    ) -> PageRecognitionFuture<'a> {
         Box::pin(async move {
             DocumentPage::new(
                 PageNumber::new(task.page + 1).unwrap(),
@@ -28,7 +34,13 @@ impl PageRecognizer for WrongPageRecognizer {
 }
 
 impl PageRecognizer for StubRecognizer {
-    fn recognize<'a>(&'a self, task: &'a PageTask) -> PageRecognitionFuture<'a> {
+    fn recognize<'a>(
+        &'a self,
+        _product_id: &'a ProductId,
+        _tenant_id: &'a TenantId,
+        _job_id: &'a JobId,
+        task: &'a PageTask,
+    ) -> PageRecognitionFuture<'a> {
         Box::pin(async move {
             if let Some(error) = self.error {
                 return Err(error);
@@ -83,9 +95,6 @@ fn processor(
     write_error: Option<PageArtifactWriteError>,
 ) -> ArtifactPageProcessor<StubRecognizer, StubWriter> {
     ArtifactPageProcessor::new(
-        ProductId::new("kora").unwrap(),
-        TenantId::new("ten_PROCESSOR").unwrap(),
-        JobId::new("job_PROCESSOR").unwrap(),
         Arc::new(StubRecognizer {
             error: recognition_error,
         }),
@@ -93,9 +102,21 @@ fn processor(
     )
 }
 
+fn scope() -> (ProductId, TenantId, JobId) {
+    (
+        ProductId::new("kora").unwrap(),
+        TenantId::new("ten_PROCESSOR").unwrap(),
+        JobId::new("job_PROCESSOR").unwrap(),
+    )
+}
+
 #[tokio::test]
 async fn recognized_page_is_written_as_the_claimed_activity_artifact() {
-    let artifact = processor(None, None).process(task()).await.unwrap();
+    let (product_id, tenant_id, job_id) = scope();
+    let artifact = processor(None, None)
+        .process(&product_id, &tenant_id, &job_id, task())
+        .await
+        .unwrap();
 
     assert_eq!(artifact.page, 2);
     assert_eq!(artifact.attempt, 1);
@@ -107,33 +128,33 @@ async fn recognized_page_is_written_as_the_claimed_activity_artifact() {
 
 #[tokio::test]
 async fn transient_dependencies_retry_but_invalid_output_is_permanent() {
+    let (product_id, tenant_id, job_id) = scope();
     assert_eq!(
         processor(Some(PageRecognitionError::Retryable), None)
-            .process(task())
+            .process(&product_id, &tenant_id, &job_id, task())
             .await,
         Err(PageProcessError::Retryable)
     );
     assert_eq!(
         processor(None, Some(PageArtifactWriteError::Unavailable))
-            .process(task())
+            .process(&product_id, &tenant_id, &job_id, task())
             .await,
         Err(PageProcessError::Retryable)
     );
     assert_eq!(
         processor(None, Some(PageArtifactWriteError::Conflict))
-            .process(task())
+            .process(&product_id, &tenant_id, &job_id, task())
             .await,
         Err(PageProcessError::Permanent)
     );
     let wrong_page = ArtifactPageProcessor::new(
-        ProductId::new("kora").unwrap(),
-        TenantId::new("ten_PROCESSOR").unwrap(),
-        JobId::new("job_PROCESSOR").unwrap(),
         Arc::new(WrongPageRecognizer),
         Arc::new(StubWriter { error: None }),
     );
     assert_eq!(
-        wrong_page.process(task()).await,
+        wrong_page
+            .process(&product_id, &tenant_id, &job_id, task())
+            .await,
         Err(PageProcessError::Permanent)
     );
 }

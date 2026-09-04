@@ -15,7 +15,13 @@ pub type PageProcessFuture<'a> =
     Pin<Box<dyn Future<Output = Result<StoredPageArtifact, PageProcessError>> + Send + 'a>>;
 
 pub trait PageProcessor: Send + Sync {
-    fn process<'a>(&'a self, task: PageTask) -> PageProcessFuture<'a>;
+    fn process<'a>(
+        &'a self,
+        product_id: &'a ProductId,
+        tenant_id: &'a TenantId,
+        job_id: &'a JobId,
+        task: PageTask,
+    ) -> PageProcessFuture<'a>;
 }
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
@@ -99,7 +105,10 @@ where
         };
 
         let outcomes = stream::iter(tasks.into_iter().map(|task| async move {
-            let outcome = self.processor.process(task.clone()).await;
+            let outcome = self
+                .processor
+                .process(product_id, tenant_id, job_id, task.clone())
+                .await;
             (task, outcome)
         }))
         .buffer_unordered(self.concurrency)

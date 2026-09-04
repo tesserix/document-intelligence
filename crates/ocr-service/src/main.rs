@@ -3,10 +3,10 @@ use std::{collections::HashMap, env, str::FromStr, sync::Arc};
 use anyhow::{Context, Result};
 use ocr_domain::ProductId;
 use ocr_service::{
-    router_with_runtime_dependencies, with_workload_identity, CachePolicy, GcsResultReader,
-    GcsUploadArtifactReader, GcsUploadIssuer, JobStatusCache, ResultArtifactReader,
-    TelemetryConfig, TelemetryRuntime, UploadArtifactReader, UploadIntentIssuer,
-    ValkeyJobStatusCache, WorkloadIdentityVerifier,
+    router_with_runtime_dependencies, with_workload_identity, ApiCapability, CachePolicy,
+    GcsResultReader, GcsUploadArtifactReader, GcsUploadIssuer, JobStatusCache,
+    ResultArtifactReader, TelemetryConfig, TelemetryRuntime, UploadArtifactReader,
+    UploadIntentIssuer, ValkeyJobStatusCache, WorkloadIdentityVerifier,
 };
 use ocr_store::PgJobStore;
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
@@ -25,6 +25,7 @@ async fn main() -> Result<()> {
     .context("telemetry initialization failed")?;
     let workload_identity = WorkloadIdentityVerifier::from_process_environment()
         .context("workload identity configuration invalid")?;
+    let capability = required_api_capability()?;
 
     let database_url = env::var("DATABASE_URL").context("DATABASE_URL is required")?;
     let bind_address = env::var("BIND_ADDRESS").unwrap_or_else(|_| "0.0.0.0:8080".to_owned());
@@ -62,6 +63,7 @@ async fn main() -> Result<()> {
     let application = with_workload_identity(
         router_with_runtime_dependencies(
             PgJobStore::new(pool),
+            capability,
             results,
             upload_buckets,
             uploads,
@@ -81,6 +83,20 @@ async fn main() -> Result<()> {
         .context("HTTP server stopped unexpectedly");
     telemetry.shutdown().context("telemetry shutdown failed")?;
     server
+}
+
+fn required_api_capability() -> Result<ApiCapability> {
+    let value = env::var("OCR_API_CAPABILITY").context("OCR_API_CAPABILITY is required")?;
+    parse_api_capability(&value)
+}
+
+fn parse_api_capability(value: &str) -> Result<ApiCapability> {
+    match value {
+        "uploads" => Ok(ApiCapability::Uploads),
+        "jobs" => Ok(ApiCapability::Jobs),
+        "full" => Ok(ApiCapability::Full),
+        _ => anyhow::bail!("OCR_API_CAPABILITY must be uploads, jobs, or full"),
+    }
 }
 
 async fn optional_job_status_cache() -> Result<Option<(Arc<dyn JobStatusCache>, CachePolicy)>> {
@@ -210,7 +226,7 @@ async fn shutdown_signal() {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_job_status_cache_policy, parse_product_buckets};
+    use super::{parse_api_capability, parse_job_status_cache_policy, parse_product_buckets};
     use std::time::Duration;
 
     #[test]
@@ -247,5 +263,18 @@ mod tests {
         assert!(parse_job_status_cache_policy(Some("0"), None, None, None).is_err());
         assert!(parse_job_status_cache_policy(None, None, Some("0"), None).is_err());
         assert!(parse_job_status_cache_policy(None, None, None, Some("999999")).is_err());
+    }
+
+    #[test]
+    fn api_capability_is_explicit_and_bounded() {
+        assert!(matches!(
+            parse_api_capability("uploads"),
+            Ok(ocr_service::ApiCapability::Uploads)
+        ));
+        assert!(matches!(
+            parse_api_capability("jobs"),
+            Ok(ocr_service::ApiCapability::Jobs)
+        ));
+        assert!(parse_api_capability("unknown").is_err());
     }
 }

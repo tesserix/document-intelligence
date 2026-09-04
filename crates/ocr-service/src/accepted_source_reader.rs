@@ -1,4 +1,4 @@
-use std::{collections::HashMap, time::Duration};
+use std::{collections::HashMap, future::Future, pin::Pin, time::Duration};
 
 use object_store::{
     gcp::{GoogleCloudStorage, GoogleCloudStorageBuilder},
@@ -33,6 +33,18 @@ pub enum AcceptedSourceReaderConfigurationError {
     InvalidRoute,
     #[error("accepted source reader client configuration is invalid")]
     Client,
+}
+
+pub type AcceptedSourceBytesReaderFuture<'a> =
+    Pin<Box<dyn Future<Output = Result<Vec<u8>, AcceptedSourceReadError>> + Send + 'a>>;
+
+pub trait AcceptedSourceBytesReader: Send + Sync {
+    fn read<'a>(
+        &'a self,
+        product_id: &'a ProductId,
+        tenant_id: &'a TenantId,
+        source: &'a StoredAcceptedSource,
+    ) -> AcceptedSourceBytesReaderFuture<'a>;
 }
 
 struct SourceRoute {
@@ -134,6 +146,17 @@ impl GcsAcceptedSourceReader {
         )
         .await
         .map_err(map_document_error)
+    }
+}
+
+impl AcceptedSourceBytesReader for GcsAcceptedSourceReader {
+    fn read<'a>(
+        &'a self,
+        product_id: &'a ProductId,
+        tenant_id: &'a TenantId,
+        source: &'a StoredAcceptedSource,
+    ) -> AcceptedSourceBytesReaderFuture<'a> {
+        Box::pin(async move { self.read(product_id, tenant_id, source).await })
     }
 }
 
