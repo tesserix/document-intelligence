@@ -1548,7 +1548,7 @@ impl PgJobStore {
         let mut transaction = self.pool.begin().await?;
         set_scope(&mut transaction, tenant_id, product_id).await?;
         let updated = sqlx::query(
-            "update ocr_jobs set status = 'cancelling', updated_at = now() \
+            "update ocr_jobs set status = 'cancelled', updated_at = now() \
              where product_id = $1 and tenant_id = $2 and job_id = $3 \
              and status in ('accepted', 'inspecting', 'processing', 'validating') \
              returning job_id, status::text as status, created_at",
@@ -1564,7 +1564,7 @@ impl PgJobStore {
                 "insert into ocr_outbox \
                  (product_id, tenant_id, job_id, event_type, payload) \
                  values ($1, $2, $3, 'ocr.job.cancellation_requested.v1', \
-                 jsonb_build_object('job_id', $3::text, 'status', 'cancelling'))",
+                 jsonb_build_object('job_id', $3::text, 'status', 'cancelled'))",
             )
             .bind(product_id.as_str())
             .bind(tenant_id.as_str())

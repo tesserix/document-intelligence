@@ -1301,7 +1301,7 @@ async fn claimed_upload_rejection_is_scoped_atomic_and_idempotent() {
 
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_URL"]
-async fn cancellation_is_atomic_and_idempotent() {
+async fn cancellation_is_atomically_terminal_and_idempotent() {
     let (store, admin_pool, _) = store().await;
     clear_fixture(&admin_pool, &["job_CANCEL"]).await;
     seed_accepted_upload(&admin_pool, "ten_CANCEL").await;
@@ -1327,8 +1327,14 @@ async fn cancellation_is_atomic_and_idempotent() {
         .await
         .unwrap();
 
-    assert!(matches!(first, CancelOutcome::Requested(_)));
-    assert!(matches!(replay, CancelOutcome::Existing(_)));
+    assert!(matches!(
+        first,
+        CancelOutcome::Requested(job) if job.state == ocr_domain::JobState::Cancelled
+    ));
+    assert!(matches!(
+        replay,
+        CancelOutcome::Existing(job) if job.state == ocr_domain::JobState::Cancelled
+    ));
     let outbox_count: i64 = sqlx::query_scalar(
         "select count(*) from ocr_outbox where job_id = 'job_CANCEL' and event_type = 'ocr.job.cancellation_requested.v1'",
     )
@@ -1336,6 +1342,14 @@ async fn cancellation_is_atomic_and_idempotent() {
     .await
     .unwrap();
     assert_eq!(outbox_count, 1);
+    let payload_status: String = sqlx::query_scalar(
+        "select payload->>'status' from ocr_outbox where job_id = 'job_CANCEL' \
+         and event_type = 'ocr.job.cancellation_requested.v1'",
+    )
+    .fetch_one(&admin_pool)
+    .await
+    .unwrap();
+    assert_eq!(payload_status, "cancelled");
 }
 
 #[tokio::test]
@@ -1375,7 +1389,7 @@ async fn durable_cancellation_checkpoint_releases_the_job_idempotently() {
             .complete_cancellation(&tenant_id, &product_id, &job_id)
             .await
             .unwrap(),
-        CompleteCancellationOutcome::Cancelled(_)
+        CompleteCancellationOutcome::Existing(_)
     ));
     assert!(matches!(
         store

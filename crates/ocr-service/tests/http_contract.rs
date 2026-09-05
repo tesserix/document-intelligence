@@ -733,7 +733,7 @@ async fn create_replay_read_and_cross_tenant_visibility_are_end_to_end() {
     assert_eq!(cancel.status(), StatusCode::OK);
     let cancelled: Value =
         serde_json::from_slice(&cancel.into_body().collect().await.unwrap().to_bytes()).unwrap();
-    assert_eq!(cancelled["status"], "cancelling");
+    assert_eq!(cancelled["status"], "cancelled");
 
     let cancel_replay = application
         .clone()
@@ -778,8 +778,8 @@ async fn create_replay_read_and_cross_tenant_visibility_are_end_to_end() {
         vec![
             (ocr_domain::JobState::Accepted, Duration::from_secs(10)),
             (ocr_domain::JobState::Accepted, Duration::from_secs(10)),
-            (ocr_domain::JobState::Cancelling, Duration::from_secs(10)),
-            (ocr_domain::JobState::Cancelling, Duration::from_secs(10)),
+            (ocr_domain::JobState::Cancelled, Duration::from_secs(10)),
+            (ocr_domain::JobState::Cancelled, Duration::from_secs(10)),
         ]
     );
 }
