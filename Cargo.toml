@@ -28,7 +28,7 @@ jsonschema = { version = "0.53", default-features = false }
 anyhow = "1.0"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
-sha2 = "0.10"
+sha2 = "0.11"
 ed25519-dalek = "=3.0.0"
 hmac = "0.12"
 opentelemetry = { version = "0.32", features = ["trace"] }
