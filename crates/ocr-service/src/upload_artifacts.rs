@@ -12,8 +12,8 @@ use thiserror::Error;
 use tokio::{sync::mpsc, task};
 
 use crate::{
-    result_artifacts::is_bucket_name, StoredUpload, UploadArtifactError, UploadArtifactReadFuture,
-    UploadArtifactReader, VerifiedUploadArtifact, MAXIMUM_UPLOAD_BYTES,
+    digest::sha256_digest, result_artifacts::is_bucket_name, StoredUpload, UploadArtifactError,
+    UploadArtifactReadFuture, UploadArtifactReader, VerifiedUploadArtifact, MAXIMUM_UPLOAD_BYTES,
 };
 
 #[derive(Debug, Error)]
@@ -96,7 +96,7 @@ async fn verify_stream(
         while let Some(chunk) = receiver.blocking_recv() {
             hasher.update(&chunk);
         }
-        format!("sha256:{:x}", hasher.finalize())
+        sha256_digest(hasher.finalize())
     });
     let stream_result = async {
         let mut count = 0_u64;
@@ -166,7 +166,7 @@ fn detect_content_type(prefix: &[u8]) -> Option<&'static str> {
 
 #[cfg(test)]
 mod tests {
-    use super::{detect_content_type, verify_stream};
+    use super::{detect_content_type, sha256_digest, verify_stream};
     use bytes::Bytes;
     use futures_util::{stream, StreamExt};
     use ocr_domain::UploadId;
@@ -200,7 +200,7 @@ mod tests {
             object_name: "products/kora/tenants/ten_TEST/quarantine/upl_STREAM".to_owned(),
             expected_content_type: "application/pdf".to_owned(),
             expected_content_length: i64::try_from(bytes.len()).unwrap(),
-            expected_digest: format!("sha256:{:x}", Sha256::digest(bytes)),
+            expected_digest: sha256_digest(Sha256::digest(bytes)),
             expires_at: OffsetDateTime::now_utc() + time::Duration::minutes(10),
             created_at: OffsetDateTime::now_utc(),
             object_generation: None,

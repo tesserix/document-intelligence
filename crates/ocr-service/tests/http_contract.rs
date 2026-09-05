@@ -3,7 +3,7 @@ use axum::{
     http::{Request, StatusCode},
     Extension,
 };
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use http_body_util::BodyExt;
 use ocr_domain::{ProductId, TenantId, UploadId};
 use ocr_service::{
@@ -31,6 +31,14 @@ use std::{
 use tower::ServiceExt;
 
 type HmacSha256 = Hmac<Sha256>;
+
+fn sha256_digest(bytes: &[u8]) -> String {
+    let encoded = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("sha256:{encoded}")
+}
 
 fn sign_workload_identity(
     key_id: &str,
@@ -801,7 +809,7 @@ async fn ready_result_is_verified_and_returned_without_exposing_its_storage_loca
         "a".repeat(64)
     )
     .into_bytes();
-    let object_digest = format!("sha256:{:x}", Sha256::digest(&body));
+    let object_digest = sha256_digest(&body);
 
     sqlx::query(
         "insert into ocr_jobs \
@@ -1104,7 +1112,7 @@ async fn uploaded_object_is_verified_pinned_and_completed_once_for_its_tenant() 
     .await
     .unwrap();
     let bytes = b"%PDF-1.7";
-    let digest = format!("sha256:{:x}", Sha256::digest(bytes));
+    let digest = sha256_digest(bytes);
     let calls = Arc::new(AtomicUsize::new(0));
     let application = router_with_upload_services(
         PgJobStore::new(PgPoolOptions::new().connect(&url).await.unwrap()),
@@ -1309,7 +1317,7 @@ async fn a_second_product_uses_the_same_contract_without_cross_product_visibilit
         .unwrap();
 
     let bytes = b"%PDF-1.7";
-    let digest = format!("sha256:{:x}", Sha256::digest(bytes));
+    let digest = sha256_digest(bytes);
     let calls = Arc::new(AtomicUsize::new(0));
     let store = PgJobStore::new(PgPoolOptions::new().connect(&url).await.unwrap());
     let application = router_with_dependencies(

@@ -104,7 +104,7 @@ async fn importer_accepts_once_and_denies_foreign_scope() {
         .await
         .unwrap();
     let bytes = b"%PDF-1.7 fixture".to_vec();
-    let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+    let digest = sha256_digest(&bytes);
     sqlx::query(
         "insert into ocr_uploads \
          (upload_id, tenant_id, product_id, idempotency_key, request_digest, object_bucket, \
@@ -194,7 +194,7 @@ async fn importer_rejects_password_required_without_retrying() {
         .await
         .unwrap();
     let bytes = b"%PDF-1.7 encrypted fixture".to_vec();
-    let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+    let digest = sha256_digest(&bytes);
     sqlx::query(
         "insert into ocr_uploads \
          (upload_id, tenant_id, product_id, idempotency_key, request_digest, object_bucket, \
@@ -239,4 +239,11 @@ async fn importer_rejects_password_required_without_retrying() {
     .await
     .unwrap();
     assert_eq!(reason, "password_required");
+}
+fn sha256_digest(bytes: &[u8]) -> String {
+    let encoded = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    format!("sha256:{encoded}")
 }

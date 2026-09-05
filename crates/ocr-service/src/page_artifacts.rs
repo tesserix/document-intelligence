@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::time::timeout;
 
-use crate::{result_artifacts::is_bucket_name, MAXIMUM_RESULT_BYTES};
+use crate::{digest::sha256_digest, result_artifacts::is_bucket_name, MAXIMUM_RESULT_BYTES};
 
 const PAGE_ARTIFACT_IO_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -151,7 +151,7 @@ impl GcsPageArtifactWriter {
         if bytes.is_empty() || bytes.len() > MAXIMUM_RESULT_BYTES {
             return Err(PageArtifactWriteError::Invalid);
         }
-        let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let digest = sha256_digest(Sha256::digest(&bytes));
         let object_name = format!(
             "products/{}/tenants/{}/pages/{}/{}/attempt-{}.json",
             product_id.as_str(),
@@ -191,7 +191,7 @@ impl GcsPageArtifactWriter {
             .await
             .map_err(|_| PageArtifactWriteError::Unavailable)?;
         if persisted.as_ref() != bytes.as_slice()
-            || format!("sha256:{:x}", Sha256::digest(&persisted)) != digest
+            || sha256_digest(Sha256::digest(&persisted)) != digest
         {
             return Err(PageArtifactWriteError::Conflict);
         }
@@ -290,7 +290,7 @@ impl PageArtifactReader for GcsPageArtifactReader {
                 if bytes.len()
                     != usize::try_from(expected_length)
                         .map_err(|_| PageArtifactReadError::Invalid)?
-                    || format!("sha256:{:x}", Sha256::digest(&bytes)) != artifact.object_digest
+                    || sha256_digest(Sha256::digest(&bytes)) != artifact.object_digest
                 {
                     return Err(PageArtifactReadError::Invalid);
                 }

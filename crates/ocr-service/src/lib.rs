@@ -1,6 +1,7 @@
 //! HTTP boundary for the document intelligence service.
 
 mod accepted_source_reader;
+mod digest;
 mod document_ai;
 mod document_finalizer;
 mod document_reader;
@@ -93,6 +94,7 @@ use std::{
     time::Duration,
 };
 
+use crate::digest::sha256_digest;
 use axum::{
     extract::{rejection::JsonRejection, FromRequestParts, Path, State},
     http::{request::Parts, HeaderMap, HeaderName, HeaderValue, StatusCode, Uri},
@@ -1036,7 +1038,7 @@ async fn create_upload(
         .clone();
     let canonical =
         serde_json::to_vec(&command).map_err(|_| invalid_upload_request(&request_id))?;
-    let request_digest = RequestDigest::new(&format!("sha256:{:x}", Sha256::digest(canonical)))
+    let request_digest = RequestDigest::new(&sha256_digest(Sha256::digest(canonical)))
         .map_err(|_| invalid_upload_request(&request_id))?;
     let upload_id = UploadId::new(&format!("upl_{}", Uuid::new_v4().simple()))
         .map_err(|_| ApiError::unavailable(request_id.clone()))?;
@@ -1187,8 +1189,8 @@ async fn create_job(
             request_id.clone(),
         )
     })?;
-    let request_digest = RequestDigest::new(&format!("sha256:{:x}", Sha256::digest(canonical)))
-        .map_err(|_| {
+    let request_digest =
+        RequestDigest::new(&sha256_digest(Sha256::digest(canonical))).map_err(|_| {
             ApiError::bad_request(
                 "invalid_request",
                 "request body is invalid",
@@ -1311,7 +1313,7 @@ async fn get_result(
         .read(&locator, MAXIMUM_RESULT_BYTES)
         .await
         .map_err(|_| ApiError::unavailable(request_id.clone()))?;
-    let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+    let digest = sha256_digest(Sha256::digest(&bytes));
     if bytes.len() != expected_length || digest != locator.object_digest {
         return Err(ApiError::unavailable(request_id));
     }

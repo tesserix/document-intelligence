@@ -11,7 +11,10 @@ use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::time::timeout;
 
-use crate::{ResultArtifactError, ResultArtifactReader, ResultReadFuture, MAXIMUM_RESULT_BYTES};
+use crate::{
+    digest::sha256_digest, ResultArtifactError, ResultArtifactReader, ResultReadFuture,
+    MAXIMUM_RESULT_BYTES,
+};
 
 const RESULT_WRITE_TIMEOUT: Duration = Duration::from_secs(30);
 
@@ -154,7 +157,7 @@ impl GcsResultWriter {
             .await
             .map_err(|_| ResultArtifactWriteError::Unavailable)?;
         if persisted.as_ref() != prepared.bytes.as_slice()
-            || format!("sha256:{:x}", Sha256::digest(&persisted)) != prepared.digest
+            || sha256_digest(Sha256::digest(&persisted)) != prepared.digest
         {
             return Err(ResultArtifactWriteError::Conflict);
         }
@@ -201,7 +204,7 @@ fn prepare_result_artifact(
         .strip_prefix("sha256:")
         .ok_or(ResultArtifactWriteError::Invalid)?;
     Ok(PreparedResultArtifact {
-        digest: format!("sha256:{:x}", Sha256::digest(&bytes)),
+        digest: sha256_digest(Sha256::digest(&bytes)),
         object_name: format!(
             "products/{product_id}/tenants/{tenant_id}/results/{job_id}/{version_digest}.json"
         ),

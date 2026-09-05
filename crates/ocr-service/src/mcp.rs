@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use ocr_domain::{DocumentResult, JobId, ProductId, TenantId};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
@@ -16,7 +16,7 @@ use time::OffsetDateTime;
 
 use ocr_store::{PgJobStore, ResultLookup};
 
-use crate::{ResultArtifactReader, MAXIMUM_RESULT_BYTES};
+use crate::{digest::sha256_digest, ResultArtifactReader, MAXIMUM_RESULT_BYTES};
 
 const ACCESS_GRANT_KEY_ID_HEADER: &str = "x-ocr-key-id";
 const ACCESS_GRANT_TENANT_HEADER: &str = "x-ocr-tenant-id";
@@ -288,7 +288,7 @@ async fn document_result(
             "OCR tool is temporarily unavailable",
         );
     };
-    let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+    let digest = sha256_digest(Sha256::digest(&bytes));
     if bytes.len() != expected_length || digest != locator.object_digest {
         return rpc_error(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -499,9 +499,9 @@ impl McpAccessGrantVerifier {
             return Err(McpAuthenticationConfigurationError::InvalidKeyId);
         }
         TenantId::new(tenant_id).map_err(|_| McpAuthenticationConfigurationError::InvalidKeyId)?;
+        let arguments_digest = sha256_digest(Sha256::digest(canonical_json(arguments).as_bytes()));
         Ok(format!(
-            "{key_id}\n{tenant_id}\n{subject}\n{timestamp}\n{tool}\nsha256:{:x}",
-            Sha256::digest(canonical_json(arguments).as_bytes())
+            "{key_id}\n{tenant_id}\n{subject}\n{timestamp}\n{tool}\n{arguments_digest}"
         ))
     }
 

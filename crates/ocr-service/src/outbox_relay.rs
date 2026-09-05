@@ -8,6 +8,8 @@ use ocr_store::{
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 
+use crate::digest::hex_encode;
+
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum WorkflowAction {
     Start,
@@ -261,6 +263,6 @@ pub fn scoped_workflow_id(product_id: &ProductId, tenant_id: &TenantId, job_id: 
     digest.update(tenant_id.as_str());
     digest.update([0]);
     digest.update(job_id.as_str());
-    let encoded = format!("{:x}", digest.finalize());
+    let encoded = hex_encode(digest.finalize());
     format!("ocr-v1-{}", &encoded[..32])
 }

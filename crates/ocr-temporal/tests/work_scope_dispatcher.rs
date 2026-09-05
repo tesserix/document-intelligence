@@ -74,7 +74,11 @@ async fn dispatcher_claims_an_opaque_scope_then_reconciles_only_its_upload() {
         .await
         .unwrap();
     let bytes = b"%PDF-1.7";
-    let digest = format!("sha256:{:x}", Sha256::digest(bytes));
+    let digest = Sha256::digest(bytes)
+        .iter()
+        .map(|byte| format!("{byte:02x}"))
+        .collect::<String>();
+    let digest = format!("sha256:{digest}");
     sqlx::query(
         "insert into ocr_uploads \
          (upload_id, tenant_id, product_id, idempotency_key, request_digest, object_bucket, \

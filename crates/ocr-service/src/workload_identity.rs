@@ -7,7 +7,7 @@ use axum::{
     response::{IntoResponse, Response},
     Router,
 };
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use ocr_domain::{ProductId, TenantId};
 use sha2::Sha256;
 use thiserror::Error;

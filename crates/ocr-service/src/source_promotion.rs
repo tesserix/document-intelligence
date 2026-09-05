@@ -19,7 +19,7 @@ use thiserror::Error;
 use tokio::time::timeout;
 use url::Url;
 
-use crate::{result_artifacts::is_bucket_name, MAXIMUM_UPLOAD_BYTES};
+use crate::{digest::sha256_digest, result_artifacts::is_bucket_name, MAXIMUM_UPLOAD_BYTES};
 
 const MAXIMUM_REWRITE_CALLS: usize = 32;
 const MAXIMUM_REWRITE_RESPONSE_BYTES: usize = 64 * 1024;
@@ -315,7 +315,7 @@ async fn verify_existing(
         }
         hasher.update(&chunk);
     }
-    let actual_digest = format!("sha256:{:x}", hasher.finalize());
+    let actual_digest = sha256_digest(hasher.finalize());
     if length != expected_length_u64 || actual_digest != expected_digest {
         return Err(SourcePromotionError::DestinationConflict);
     }
