@@ -150,3 +150,11 @@ Job workflow dispatch now uses a tenant/product-scoped CNPG outbox lease with
 start or cancellation outside the transaction, and acknowledges only with the
 same live lease. An ambiguous Temporal start is therefore replayed with the
 same workflow identity instead of creating duplicate execution.
+
+## Contributing and license
+
+This is an open-source project released under the
+[Apache License 2.0](LICENSE). See [CONTRIBUTING.md](CONTRIBUTING.md) for the
+development workflow, [SECURITY.md](SECURITY.md) for how to report
+vulnerabilities, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community
+expectations.
