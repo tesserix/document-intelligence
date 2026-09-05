@@ -1,10 +1,49 @@
 # Tesserix Document Intelligence
 
-Reusable, multi-tenant OCR and document-intelligence service for Tesserix products and AI agents.
+[![CI](https://github.com/tesserix/document-intelligence/actions/workflows/ci.yml/badge.svg?branch=main)](https://github.com/tesserix/document-intelligence/actions/workflows/ci.yml)
+[![License compliance](https://github.com/tesserix/document-intelligence/actions/workflows/license-compliance.yml/badge.svg?branch=main)](https://github.com/tesserix/document-intelligence/actions/workflows/license-compliance.yml)
+[![Release image](https://github.com/tesserix/document-intelligence/actions/workflows/release-image.yml/badge.svg?branch=main)](https://github.com/tesserix/document-intelligence/actions/workflows/release-image.yml)
+[![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-> **Status:** Non-production implementation has started under issue #8. The repository is not deployable yet; production infrastructure, model/provider promotion, real datasets, and product rollout remain gated on the recorded design reviews.
+Reusable, multi-tenant OCR and document-intelligence service for Tesserix
+products and AI agents.
 
-The service owns safe document intake, image quality analysis, OCR, layout recovery, classification, schema-driven extraction, deterministic validation, evidence, confidence, provider routing, and human-review routing. It does **not** own agent reasoning or a review UI.
+## Project status
+
+The implementation is pre-production. Production infrastructure, model and
+provider promotion, real datasets, and product rollout remain gated by the
+recorded design reviews.
+
+## Workflow status
+
+The badges above always show the latest `main` result. Each workflow can also
+be opened directly for logs and historical runs.
+
+| Workflow | Status |
+| --- | --- |
+| [CI] | [![CI][ci-badge]][ci] |
+| [License compliance] | [![License compliance][license-badge]][license] |
+| [Release image] | [![Release image][release-badge]][release] |
+
+- **CI:** Rust quality, database coverage, secret scanning, and container
+  contracts.
+- **License compliance:** Cargo dependency licenses, bans, and sources.
+- **Release image:** Publishes the service and parser-sandbox images from
+  `main`.
+
+[ci]: https://github.com/tesserix/document-intelligence/actions/workflows/ci.yml
+[ci-badge]: https://github.com/tesserix/document-intelligence/actions/workflows/ci.yml/badge.svg?branch=main
+[license]: https://github.com/tesserix/document-intelligence/actions/workflows/license-compliance.yml
+[license-badge]: https://github.com/tesserix/document-intelligence/actions/workflows/license-compliance.yml/badge.svg?branch=main
+[release]: https://github.com/tesserix/document-intelligence/actions/workflows/release-image.yml
+[release-badge]: https://github.com/tesserix/document-intelligence/actions/workflows/release-image.yml/badge.svg?branch=main
+
+## Service scope
+
+The service owns safe document intake, image quality analysis, OCR, layout
+recovery, classification, schema-driven extraction, deterministic validation,
+evidence, confidence, provider routing, and human-review routing. It does
+**not** own agent reasoning or a review UI.
 
 Products consume the same versioned HTTP API through generated clients. AI
 agents consume the provider-neutral Australis tool backed by that API. Product
@@ -16,10 +55,10 @@ consumer integrations around the shared service.
 
 | Repository | Ownership |
 | --- | --- |
-| `tesserix/document-intelligence` | OCR and document-intelligence runtime, API, workflows, provider adapters, result contract, service-level evaluations |
-| `tesserix/ai-agents` | Document agents and agent workflows pinned to the published Tesserix ADK 0.54.0 release |
-| `tesserix/australis` | Provider-neutral MCP/tool registration, shared grounding policy, citations, and cross-product integration |
-| `tesserix/devai` | Isolated agent sandboxes, golden-suite execution, trace inspection, comparison, and promotion gates |
+| `document-intelligence` | OCR, API, workflows, adapters, and evaluations |
+| `tesserix/ai-agents` | Document agents and workflows on Tesserix ADK 0.54.0 |
+| `tesserix/australis` | MCP/tool registration and cross-product integration |
+| `tesserix/devai` | Sandboxes, golden suites, traces, and promotion gates |
 
 ## Design record
 
@@ -48,11 +87,16 @@ consumer integrations around the shared service.
 - [ADR-0007: sandbox, training, and held-out evaluation boundaries](docs/adr/0007-sandbox-evaluation-training-boundaries.md)
 - [ADR-0009: signed workload identity envelope](docs/adr/0009-signed-workload-identity-envelope.md)
 
-## Design checkpoint
+## Delivery gates
 
-Before implementation, reviewers must confirm the launch scale, residency regions, retention defaults, supported identity issuer, review-application owner, Google Document AI processor locations, Temporal hosting model, and the quality/cost thresholds in the evaluation plan.
+Before implementation, reviewers must confirm the launch scale, residency
+regions, retention defaults, supported identity issuer, review-application
+owner, Google Document AI processor locations, Temporal hosting model, and the
+quality and cost thresholds in the evaluation plan.
 
-## Current runtime configuration
+## Runtime guide
+
+### Base configuration
 
 `DATABASE_URL` is required. `RESULT_BUCKETS` is a comma-separated allowlist of
 product/environment result buckets. `QUARANTINE_BUCKETS` maps verified product
@@ -61,6 +105,8 @@ Both adapters use Application Default Credentials and GKE Workload Identity;
 service-account key files are not accepted as application configuration. A
 missing adapter leaves liveness available for diagnostics but keeps readiness
 at `503`.
+
+### Workload identity, caching, and telemetry
 
 `OCR_WORKLOAD_IDENTITY_KEYS` is required and is supplied only from Secret
 Manager to the OCR workload. It maps each rotation-safe key ID to its registered
@@ -137,12 +183,16 @@ two-minute hard ceiling on its configurable deadline, kill-on-timeout, strict
 metadata decoding, and stable invalid/limit/password/unavailable outcomes.
 Production use still requires the reviewed disposable runtime profile.
 
+### Source acceptance and promotion
+
 The importer coordinator now composes the short CNPG lease transaction with
 exact-generation scanning and reading, bounded parsing, create-only promotion,
 and a final atomic acceptance or permanent rejection. Dependency outages leave
 the lease recoverable for bounded retry; foreign scope, stale ownership, source
 conflicts, password requirements, and hard parser limits fail closed without
 placing document content in database events.
+
+### Durable workflow dispatch
 
 Job workflow dispatch now uses a tenant/product-scoped CNPG outbox lease with
 `SKIP LOCKED`, a 100-event batch ceiling, five-minute crash recovery and a

@@ -8,7 +8,7 @@ use ocr_service::{
     DurableWorkflowStarter, JobOutboxRelay, RelayOutcome, WorkflowAction, WorkflowDispatch,
     WorkflowDispatchError, WorkflowDispatchOutcome, WorkflowStarter,
 };
-use ocr_store::{CreateJob, PgJobStore};
+use ocr_store::{CancelOutcome, CreateJob, PgJobStore};
 use sqlx::PgPool;
 use tokio::sync::Mutex;
 
@@ -144,10 +144,13 @@ async fn relay_dispatches_a_deterministic_workflow_once_then_acknowledges() {
         .unwrap()
         .is_some());
 
-    store
-        .cancel(&tenant, &product, &JobId::new("job_RELAY").unwrap())
-        .await
-        .unwrap();
+    assert!(matches!(
+        store
+            .cancel(&tenant, &product, &JobId::new("job_RELAY").unwrap())
+            .await
+            .unwrap(),
+        CancelOutcome::Requested(_)
+    ));
     let fail_once = Arc::new(FailOnceStarter {
         fail: AtomicBool::new(true),
         dispatches: Mutex::new(Vec::new()),
