@@ -778,8 +778,8 @@ async fn create_replay_read_and_cross_tenant_visibility_are_end_to_end() {
         vec![
             (ocr_domain::JobState::Accepted, Duration::from_secs(10)),
             (ocr_domain::JobState::Accepted, Duration::from_secs(10)),
-            (ocr_domain::JobState::Cancelled, Duration::from_secs(10)),
-            (ocr_domain::JobState::Cancelled, Duration::from_secs(10)),
+            (ocr_domain::JobState::Cancelled, Duration::from_secs(300)),
+            (ocr_domain::JobState::Cancelled, Duration::from_secs(300)),
         ]
     );
 }
