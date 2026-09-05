@@ -145,6 +145,7 @@ product-specific integration, not a client request parameter.
 ## Related material
 
 - [Full contract design](CONTRACTS.md)
+- [Product integration guide](PRODUCT-OCR-INTEGRATION.md)
 - [Canonical OpenAPI v1](../../contracts/v1/openapi.json)
 - [Canonical result schema](../../contracts/v1/document-result.schema.json)
 - [Signed workload identity ADR](../adr/0009-signed-workload-identity-envelope.md)
