@@ -41,6 +41,6 @@ uuid.workspace = true
 http-body-util.workspace = true
 jsonschema.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }
-tempfile = "3.23"
+tempfile = "3.27"
 tokio.workspace = true
 tower.workspace = true
