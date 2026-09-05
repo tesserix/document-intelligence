@@ -181,7 +181,7 @@ async fn relay_dispatches_a_deterministic_workflow_once_then_acknowledges() {
     let durable = DurableWorkflowStarter::new(store.clone(), 3).unwrap();
     assert_eq!(
         durable.dispatch(cancellation.clone()).await.unwrap(),
-        WorkflowDispatchOutcome::Started
+        WorkflowDispatchOutcome::Existing
     );
     assert_eq!(
         durable.dispatch(cancellation).await.unwrap(),
