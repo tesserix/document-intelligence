@@ -7,6 +7,7 @@ mod document_reader;
 mod importer;
 mod job_status_cache;
 mod malware;
+mod mcp;
 mod outbox_relay;
 mod page_artifacts;
 mod page_processor;
@@ -28,6 +29,10 @@ pub use job_status_cache::{
     CacheConfigurationError, CacheOperationError, CachePolicy, CacheReadFuture, CacheRecord,
     CacheRecordError, CacheScope, CacheWriteFuture, JobStatusCache, UnavailableJobStatusCache,
     ValkeyCacheConfigurationError, ValkeyJobStatusCache,
+};
+pub use mcp::{
+    mcp_router, McpAccessGrantVerifier, McpAuthenticationConfigurationError,
+    McpUpstreamKeyVerifier, OcrAccessGrant,
 };
 
 pub use accepted_source_reader::{
