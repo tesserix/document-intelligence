@@ -617,7 +617,22 @@ pub fn durable_activity_options(iteration: u32) -> Option<ActivityOptions> {
 }
 
 pub fn finalization_activity_options(iteration: u32) -> Option<ActivityOptions> {
-    activity_options(iteration, "ocr-finalize")
+    if !(1..=MAX_PAGE_COUNT * u32::from(MAXIMUM_PAGE_ATTEMPTS)).contains(&iteration) {
+        return None;
+    }
+    let policy = ActivityPolicy::page_ocr();
+    let retry_policy = RetryPolicy::builder()
+        .initial_interval(policy.initial_backoff())
+        .maximum_interval(policy.maximum_backoff())
+        .maximum_attempts(policy.maximum_attempts())
+        .build();
+    Some(
+        ActivityOptions::with_start_to_close_timeout(Duration::from_secs(180))
+            .activity_id(format!("ocr-finalize-{iteration:04}"))
+            .cancellation_type(ActivityCancellationType::WaitCancellationCompleted)
+            .retry_policy(retry_policy)
+            .build(),
+    )
 }
 
 fn activity_options(iteration: u32, activity_name: &str) -> Option<ActivityOptions> {
