@@ -2,7 +2,8 @@
 
 use ocr_domain::{
     DocumentId, DocumentVersion, IdempotencyKey, JobId, JobState, PageGeometry, PageTask,
-    PageWorkflow, ProductId, RequestDigest, TenantId, UploadId, WebhookSubscriptionId,
+    PageWorkflow, PageWorkflowStatus, ProductId, RequestDigest, TenantId, UploadId,
+    WebhookSubscriptionId,
 };
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use thiserror::Error;
@@ -54,6 +55,14 @@ pub enum CreateOutcome {
 #[derive(Debug, PartialEq, Eq)]
 pub enum CancelOutcome {
     Requested(StoredJob),
+    Existing(StoredJob),
+    NotCancellable(StoredJob),
+    NotFound,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+pub enum CompleteCancellationOutcome {
+    Cancelled(StoredJob),
     Existing(StoredJob),
     NotCancellable(StoredJob),
     NotFound,
@@ -412,6 +421,7 @@ impl PgJobStore {
         if workflow.job_id() != job_id {
             return Err(Error::InvalidStoredPageWorkflow);
         }
+        let cancellation_checkpoint = workflow.status() == PageWorkflowStatus::Cancelled;
         let checkpoint = serialize_page_workflow(&workflow)?;
         let mut transaction = self.pool.begin().await?;
         set_scope(&mut transaction, tenant_id, product_id).await?;
@@ -420,7 +430,8 @@ impl PgJobStore {
              (job_id, product_id, tenant_id, checkpoint) \
              select jobs.job_id, jobs.product_id, jobs.tenant_id, $4::jsonb \
              from ocr_jobs as jobs where jobs.job_id = $1 and jobs.product_id = $2 \
-             and jobs.tenant_id = $3 and jobs.status in ('accepted', 'processing') \
+             and jobs.tenant_id = $3 and (jobs.status in ('accepted', 'processing') \
+                 or ($5 and jobs.status = 'cancelling')) \
              on conflict (job_id) do nothing \
              returning revision, checkpoint::text as checkpoint",
         )
@@ -428,10 +439,15 @@ impl PgJobStore {
         .bind(product_id.as_str())
         .bind(tenant_id.as_str())
         .bind(&checkpoint)
+        .bind(cancellation_checkpoint)
         .fetch_optional(&mut *transaction)
         .await?;
         if let Some(row) = inserted {
             let stored = stored_page_workflow(row)?;
+            if cancellation_checkpoint {
+                transaction.commit().await?;
+                return Ok(CreatePageWorkflowOutcome::Created(stored));
+            }
             let transitioned = sqlx::query(
                 "update ocr_jobs set status = 'processing', updated_at = now() \
                  where job_id = $1 and product_id = $2 and tenant_id = $3 \
@@ -1579,6 +1595,56 @@ impl PgJobStore {
             Ok(CancelOutcome::Existing(job))
         } else {
             Ok(CancelOutcome::NotCancellable(job))
+        }
+    }
+
+    pub async fn complete_cancellation(
+        &self,
+        tenant_id: &TenantId,
+        product_id: &ProductId,
+        job_id: &JobId,
+    ) -> Result<CompleteCancellationOutcome> {
+        let mut transaction = self.pool.begin().await?;
+        set_scope(&mut transaction, tenant_id, product_id).await?;
+        let row = sqlx::query(
+            "select job_id, status::text as status, created_at from ocr_jobs \
+             where product_id = $1 and tenant_id = $2 and job_id = $3 for update",
+        )
+        .bind(product_id.as_str())
+        .bind(tenant_id.as_str())
+        .bind(job_id.as_str())
+        .fetch_optional(&mut *transaction)
+        .await?;
+        let Some(row) = row else {
+            transaction.commit().await?;
+            return Ok(CompleteCancellationOutcome::NotFound);
+        };
+        let job = stored_job(row)?;
+        match job.state {
+            JobState::Cancelled => {
+                transaction.commit().await?;
+                Ok(CompleteCancellationOutcome::Existing(job))
+            }
+            JobState::Cancelling => {
+                let cancelled = sqlx::query(
+                    "update ocr_jobs set status = 'cancelled', updated_at = now() \
+                     where product_id = $1 and tenant_id = $2 and job_id = $3 \
+                     and status = 'cancelling' returning job_id, status::text as status, created_at",
+                )
+                .bind(product_id.as_str())
+                .bind(tenant_id.as_str())
+                .bind(job_id.as_str())
+                .fetch_optional(&mut *transaction)
+                .await?
+                .ok_or(Error::InvalidStoredJob)?;
+                let cancelled = stored_job(cancelled)?;
+                transaction.commit().await?;
+                Ok(CompleteCancellationOutcome::Cancelled(cancelled))
+            }
+            _ => {
+                transaction.commit().await?;
+                Ok(CompleteCancellationOutcome::NotCancellable(job))
+            }
         }
     }
 

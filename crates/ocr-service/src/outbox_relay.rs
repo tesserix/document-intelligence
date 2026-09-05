@@ -2,8 +2,8 @@ use std::{future::Future, sync::Arc};
 
 use ocr_domain::{JobId, PageWorkflow, PageWorkflowStatus, ProductId, TenantId};
 use ocr_store::{
-    ClaimJobOutbox, CreatePageWorkflowOutcome, JobOutboxEventType, PgJobStore,
-    PublishJobOutboxOutcome, SavePageWorkflowOutcome, StoredPageWorkflow,
+    ClaimJobOutbox, CompleteCancellationOutcome, CreatePageWorkflowOutcome, JobOutboxEventType,
+    PgJobStore, PublishJobOutboxOutcome, SavePageWorkflowOutcome, StoredPageWorkflow,
 };
 use sha2::{Digest, Sha256};
 use thiserror::Error;
@@ -115,7 +115,7 @@ impl DurableWorkflowStarter {
         mut stored: StoredPageWorkflow,
     ) -> Result<WorkflowDispatchOutcome, WorkflowDispatchError> {
         if stored.workflow.status() == PageWorkflowStatus::Cancelled {
-            return Ok(WorkflowDispatchOutcome::Existing);
+            return self.complete_cancellation(dispatch).await;
         }
         stored.workflow.request_cancellation();
         match self
@@ -130,10 +130,27 @@ impl DurableWorkflowStarter {
             .await
             .map_err(|_| WorkflowDispatchError::Unavailable)?
         {
-            SavePageWorkflowOutcome::Saved(_) => Ok(WorkflowDispatchOutcome::Started),
+            SavePageWorkflowOutcome::Saved(_) => self.complete_cancellation(dispatch).await,
             SavePageWorkflowOutcome::Conflict | SavePageWorkflowOutcome::NotFound => {
                 Err(WorkflowDispatchError::Unavailable)
             }
+        }
+    }
+
+    async fn complete_cancellation(
+        &self,
+        dispatch: &WorkflowDispatch,
+    ) -> Result<WorkflowDispatchOutcome, WorkflowDispatchError> {
+        match self
+            .jobs
+            .complete_cancellation(&dispatch.tenant_id, &dispatch.product_id, &dispatch.job_id)
+            .await
+            .map_err(|_| WorkflowDispatchError::Unavailable)?
+        {
+            CompleteCancellationOutcome::Cancelled(_) => Ok(WorkflowDispatchOutcome::Started),
+            CompleteCancellationOutcome::Existing(_) => Ok(WorkflowDispatchOutcome::Existing),
+            CompleteCancellationOutcome::NotCancellable(_)
+            | CompleteCancellationOutcome::NotFound => Err(WorkflowDispatchError::Unavailable),
         }
     }
 }

@@ -4,11 +4,12 @@ use ocr_domain::{
 };
 use ocr_store::{
     AcceptUpload, AcceptUploadOutcome, CancelOutcome, ClaimJobOutbox, ClaimUploadInspection,
-    ClaimUploadInspectionOutcome, ClaimWorkScopes, CommitResult, CommitResultOutcome, CreateJob,
-    CreateOutcome, CreatePageWorkflowOutcome, CreateUpload, CreateUploadOutcome, Error,
-    JobOutboxEventType, ParserInspectionMetadata, PgJobStore, PgWorkScopeDirectory,
-    PublishJobOutboxOutcome, RecordUpload, RecordUploadOutcome, RejectUploadOutcome, ResultLookup,
-    SavePageWorkflowOutcome, UploadRejectionReason, WebhookOutboxEventType,
+    ClaimUploadInspectionOutcome, ClaimWorkScopes, CommitResult, CommitResultOutcome,
+    CompleteCancellationOutcome, CreateJob, CreateOutcome, CreatePageWorkflowOutcome, CreateUpload,
+    CreateUploadOutcome, Error, JobOutboxEventType, ParserInspectionMetadata, PgJobStore,
+    PgWorkScopeDirectory, PublishJobOutboxOutcome, RecordUpload, RecordUploadOutcome,
+    RejectUploadOutcome, ResultLookup, SavePageWorkflowOutcome, UploadRejectionReason,
+    WebhookOutboxEventType,
 };
 use sqlx::PgPool;
 
@@ -1335,6 +1336,63 @@ async fn cancellation_is_atomic_and_idempotent() {
     .await
     .unwrap();
     assert_eq!(outbox_count, 1);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn durable_cancellation_checkpoint_releases_the_job_idempotently() {
+    let (store, admin_pool, _) = store().await;
+    clear_fixture(&admin_pool, &["job_CANCEL_TERMINAL"]).await;
+    seed_accepted_upload(&admin_pool, "ten_CANCEL_TERMINAL").await;
+    let tenant_id = TenantId::new("ten_CANCEL_TERMINAL").unwrap();
+    let product_id = ProductId::new("kora").unwrap();
+    let job_id = JobId::new("job_CANCEL_TERMINAL").unwrap();
+    store
+        .create(request(
+            job_id.as_str(),
+            tenant_id.as_str(),
+            "request-cancel-terminal",
+            'c',
+        ))
+        .await
+        .unwrap();
+    store
+        .cancel(&tenant_id, &product_id, &job_id)
+        .await
+        .unwrap();
+    let mut checkpoint = PageWorkflow::new(job_id.clone(), 1, 3).unwrap();
+    checkpoint.request_cancellation();
+    assert!(matches!(
+        store
+            .create_page_workflow(&tenant_id, &product_id, &job_id, checkpoint)
+            .await
+            .unwrap(),
+        CreatePageWorkflowOutcome::Created(_)
+    ));
+
+    assert!(matches!(
+        store
+            .complete_cancellation(&tenant_id, &product_id, &job_id)
+            .await
+            .unwrap(),
+        CompleteCancellationOutcome::Cancelled(_)
+    ));
+    assert!(matches!(
+        store
+            .complete_cancellation(&tenant_id, &product_id, &job_id)
+            .await
+            .unwrap(),
+        CompleteCancellationOutcome::Existing(_)
+    ));
+    assert_eq!(
+        store
+            .find(&tenant_id, &product_id, &job_id)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        ocr_domain::JobState::Cancelled
+    );
 }
 
 #[tokio::test]

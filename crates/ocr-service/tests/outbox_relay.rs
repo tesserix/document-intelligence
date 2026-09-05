@@ -198,4 +198,13 @@ async fn relay_dispatches_a_deterministic_workflow_once_then_acknowledges() {
             .status(),
         ocr_domain::PageWorkflowStatus::Cancelled
     );
+    assert_eq!(
+        store
+            .find(&tenant, &product, &JobId::new("job_RELAY").unwrap())
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        ocr_domain::JobState::Cancelled
+    );
 }
