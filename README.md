@@ -27,6 +27,7 @@ consumer integrations around the shared service.
 - [Design review tracker](docs/DESIGN-REVIEW.md)
 - [High-level design](docs/design/HLD.md)
 - [API and data contracts](docs/design/CONTRACTS.md)
+- [OCR API usage guide](docs/design/OCR-API-USAGE.md)
 - [Canonical v1 OpenAPI](contracts/v1/openapi.json)
 - [Canonical v1 contract manifest](contracts/v1/manifest.json)
 - [Quality, routing, validation, and review](docs/design/QUALITY-AND-REVIEW.md)
