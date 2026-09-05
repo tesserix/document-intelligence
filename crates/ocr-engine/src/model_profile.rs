@@ -412,7 +412,15 @@ fn validate_locales(values: Vec<String>) -> Result<Vec<String>> {
 }
 
 fn sha256(value: &[u8]) -> String {
-    format!("sha256:{:x}", Sha256::digest(value))
+    const HEX_DIGITS: &[u8; 16] = b"0123456789abcdef";
+
+    let mut encoded = String::with_capacity(71);
+    encoded.push_str("sha256:");
+    for byte in Sha256::digest(value) {
+        encoded.push(HEX_DIGITS[(byte >> 4) as usize] as char);
+        encoded.push(HEX_DIGITS[(byte & 0x0f) as usize] as char);
+    }
+    encoded
 }
 
 fn valid_sha256(value: &str) -> bool {

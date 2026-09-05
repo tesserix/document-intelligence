@@ -3,15 +3,15 @@ use ocr_engine::{
     ArtifactLimits, Error, ModelProfileVerifier, TensorDataType, TensorDimension, TrustedModelKey,
 };
 use serde_json::json;
-use sha2::{Digest, Sha256};
-
 const KEY_ID: &str = "release-key-2026";
+const APPROVED_ARTIFACT_DIGEST: &str =
+    "sha256:2e944cf2067933925530c247b0dba0bb6e399fcf9cb735ab1dff26da77fe4689";
 
 #[test]
 fn signed_profile_binds_a_bounded_artifact_and_tensor_contract() {
     let artifact = b"approved-model-artifact";
     let signing_key = SigningKey::from_bytes(&[7; 32]);
-    let manifest = signed_manifest(artifact);
+    let manifest = signed_manifest();
     let signature = signing_key.sign(&manifest).to_bytes();
     let verifier = verifier(&signing_key);
 
@@ -41,8 +41,7 @@ fn signed_profile_binds_a_bounded_artifact_and_tensor_contract() {
 #[test]
 fn verifier_rejects_a_signature_over_different_manifest_bytes() {
     let signing_key = SigningKey::from_bytes(&[8; 32]);
-    let artifact = b"approved-model-artifact";
-    let manifest = signed_manifest(artifact);
+    let manifest = signed_manifest();
     let signature = signing_key.sign(b"different-manifest").to_bytes();
 
     assert_eq!(
@@ -54,8 +53,7 @@ fn verifier_rejects_a_signature_over_different_manifest_bytes() {
 #[test]
 fn verifier_rejects_unknown_or_duplicate_trusted_signing_keys() {
     let signing_key = SigningKey::from_bytes(&[11; 32]);
-    let artifact = b"approved-model-artifact";
-    let manifest = signed_manifest(artifact);
+    let manifest = signed_manifest();
     let signature = signing_key.sign(&manifest).to_bytes();
     let public_key = signing_key.verifying_key().to_bytes();
 
@@ -89,9 +87,7 @@ fn verifier_rejects_an_oversized_manifest_before_signature_or_json_processing() 
 #[test]
 fn verifier_rejects_unbounded_tensor_shapes_and_unsupported_fields() {
     let signing_key = SigningKey::from_bytes(&[9; 32]);
-    let artifact = b"approved-model-artifact";
-    let mut manifest: serde_json::Value =
-        serde_json::from_slice(&signed_manifest(artifact)).unwrap();
+    let mut manifest: serde_json::Value = serde_json::from_slice(&signed_manifest()).unwrap();
     manifest["inputs"][0]["dimensions"][2] = json!({ "kind": "dynamic", "maximum": 0 });
     manifest["artifact_uri"] = json!("https://attacker.invalid/model.onnx");
     let manifest = serde_json::to_vec(&manifest).unwrap();
@@ -106,9 +102,7 @@ fn verifier_rejects_unbounded_tensor_shapes_and_unsupported_fields() {
 #[test]
 fn verifier_rejects_tensor_element_envelopes_that_exceed_runtime_bounds() {
     let signing_key = SigningKey::from_bytes(&[13; 32]);
-    let artifact = b"approved-model-artifact";
-    let mut manifest: serde_json::Value =
-        serde_json::from_slice(&signed_manifest(artifact)).unwrap();
+    let mut manifest: serde_json::Value = serde_json::from_slice(&signed_manifest()).unwrap();
     manifest["inputs"][0]["dimensions"] = json!([
         { "kind": "fixed", "value": 65536 },
         { "kind": "fixed", "value": 65536 },
@@ -132,7 +126,7 @@ fn verifier_rejects_tensor_element_envelopes_that_exceed_runtime_bounds() {
 fn artifact_must_match_the_signed_digest_and_stay_within_its_limit() {
     let signing_key = SigningKey::from_bytes(&[10; 32]);
     let artifact = b"approved-model-artifact";
-    let manifest = signed_manifest(artifact);
+    let manifest = signed_manifest();
     let signature = signing_key.sign(&manifest).to_bytes();
     let profile = verifier(&signing_key)
         .verify(KEY_ID, &manifest, &signature)
@@ -160,13 +154,13 @@ fn verifier(signing_key: &SigningKey) -> ModelProfileVerifier {
     .unwrap()
 }
 
-fn signed_manifest(artifact: &[u8]) -> Vec<u8> {
+fn signed_manifest() -> Vec<u8> {
     serde_json::to_vec(&json!({
         "schema_version": 1,
         "profile_id": "printed-en-v1",
         "stage": "recognizer",
         "model_version": "1.0.0",
-        "artifact_digest": format!("sha256:{:x}", Sha256::digest(artifact)),
+        "artifact_digest": APPROVED_ARTIFACT_DIGEST,
         "license_id": "Apache-2.0",
         "dataset_version": "golden-printed-en-v1",
         "calibration_version": "printed-en-calibration-v1",

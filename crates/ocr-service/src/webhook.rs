@@ -1,12 +1,14 @@
 use std::fmt;
 
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use ocr_domain::{DocumentVersion, JobId, JobState, ProductId, TenantId};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use time::OffsetDateTime;
 use zeroize::Zeroizing;
+
+use crate::digest::hex_encode;
 
 type HmacSha256 = Hmac<Sha256>;
 
@@ -88,12 +90,12 @@ impl WebhookSigner {
         let body = serde_json::to_vec(event).map_err(|_| WebhookSignError::InvalidEvent)?;
         let event_id = event.event_id.clone();
         let timestamp = event.occurred_at.unix_timestamp().to_string();
-        let body_digest = format!("{:x}", Sha256::digest(&body));
+        let body_digest = hex_encode(Sha256::digest(&body));
         let signing_input = format!("{timestamp}.{event_id}.{body_digest}");
         let mut mac = HmacSha256::new_from_slice(&self.secret.0)
             .map_err(|_| WebhookSignError::InvalidSecret)?;
         mac.update(signing_input.as_bytes());
-        let signature = format!("v1={:x}", mac.finalize().into_bytes());
+        let signature = format!("v1={}", hex_encode(mac.finalize().into_bytes()));
         Ok(SignedWebhook {
             event_id,
             timestamp,

@@ -12,6 +12,7 @@ use thiserror::Error;
 use tokio::task;
 
 use crate::{
+    digest::sha256_digest,
     importer::{DocumentReadError, UploadDocumentReader},
     result_artifacts::is_bucket_name,
     StoredUpload, MAXIMUM_UPLOAD_BYTES,
@@ -119,7 +120,7 @@ where
         return Err(DocumentReadError::Invalid);
     }
     let (bytes, digest) = task::spawn_blocking(move || {
-        let digest = format!("sha256:{:x}", Sha256::digest(&bytes));
+        let digest = sha256_digest(Sha256::digest(&bytes));
         (bytes, digest)
     })
     .await
@@ -141,7 +142,7 @@ fn map_object_error(error: object_store::Error) -> DocumentReadError {
 
 #[cfg(test)]
 mod tests {
-    use super::collect_verified;
+    use super::{collect_verified, sha256_digest};
     use bytes::Bytes;
     use futures_util::stream;
     use ocr_domain::UploadId;
@@ -159,7 +160,7 @@ mod tests {
             object_name: "products/kora/tenants/ten_TEST/quarantine/upl_STREAM_READER".to_owned(),
             expected_content_type: "application/pdf".to_owned(),
             expected_content_length: i64::try_from(bytes.len()).unwrap(),
-            expected_digest: format!("sha256:{:x}", Sha256::digest(bytes)),
+            expected_digest: sha256_digest(Sha256::digest(bytes)),
             expires_at: OffsetDateTime::now_utc() + time::Duration::minutes(10),
             created_at: OffsetDateTime::now_utc(),
             object_generation: Some(42),

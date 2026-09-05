@@ -2,7 +2,7 @@ use axum::{
     body::Body,
     http::{HeaderMap, HeaderValue, Request, StatusCode},
 };
-use hmac::{Hmac, Mac};
+use hmac::{Hmac, KeyInit, Mac};
 use ocr_service::{mcp_router, McpAccessGrantVerifier, McpUpstreamKeyVerifier};
 use serde_json::{json, Value};
 use sha2::Sha256;

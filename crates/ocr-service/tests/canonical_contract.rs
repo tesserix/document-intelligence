@@ -279,7 +279,10 @@ fn manifest_pins_every_canonical_contract_by_sha256() {
         let path = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
             .join("../../contracts/v1")
             .join(name);
-        let digest = format!("{:x}", Sha256::digest(fs::read(path).unwrap()));
+        let digest = Sha256::digest(fs::read(path).unwrap())
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
         assert_eq!(manifest["artifacts"][name]["sha256"], digest, "{name}");
     }
 }
