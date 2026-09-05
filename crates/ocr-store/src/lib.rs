@@ -431,7 +431,7 @@ impl PgJobStore {
              select jobs.job_id, jobs.product_id, jobs.tenant_id, $4::jsonb \
              from ocr_jobs as jobs where jobs.job_id = $1 and jobs.product_id = $2 \
              and jobs.tenant_id = $3 and (jobs.status in ('accepted', 'processing') \
-                 or ($5 and jobs.status = 'cancelling')) \
+                 or ($5 and jobs.status in ('cancelling', 'cancelled'))) \
              on conflict (job_id) do nothing \
              returning revision, checkpoint::text as checkpoint",
         )
