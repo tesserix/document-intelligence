@@ -154,12 +154,9 @@ fn finalization_activity_uses_a_distinct_durable_activity_id() {
     assert_ne!(page.activity_id, finalization.activity_id);
     assert_eq!(
         finalization.close_timeouts,
-        ActivityCloseTimeouts::StartToClose(Duration::from_secs(120))
+        ActivityCloseTimeouts::StartToClose(Duration::from_secs(180))
     );
-    assert_eq!(
-        finalization.heartbeat_timeout,
-        Some(Duration::from_secs(10))
-    );
+    assert_eq!(finalization.heartbeat_timeout, None);
     assert!(finalization_activity_options(0).is_none());
     assert!(finalization_activity_options(3_000).is_some());
     assert!(finalization_activity_options(3_001).is_none());
