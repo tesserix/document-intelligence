@@ -186,6 +186,41 @@ pub enum RelayError {
     Store(#[from] ocr_store::Error),
 }
 
+pub struct ChainedWorkflowStarter<C, W> {
+    checkpoint: Arc<C>,
+    workflow: Arc<W>,
+}
+
+impl<C, W> ChainedWorkflowStarter<C, W> {
+    pub fn new(checkpoint: Arc<C>, workflow: Arc<W>) -> Self {
+        Self {
+            checkpoint,
+            workflow,
+        }
+    }
+}
+
+impl<C, W> WorkflowStarter for ChainedWorkflowStarter<C, W>
+where
+    C: WorkflowStarter,
+    W: WorkflowStarter,
+{
+    async fn dispatch(
+        &self,
+        dispatch: WorkflowDispatch,
+    ) -> Result<WorkflowDispatchOutcome, WorkflowDispatchError> {
+        // The checkpoint must exist before Temporal schedules the first activity.
+        let checkpoint = self.checkpoint.dispatch(dispatch.clone()).await?;
+        let workflow = self.workflow.dispatch(dispatch).await?;
+        Ok(match (checkpoint, workflow) {
+            (WorkflowDispatchOutcome::Existing, WorkflowDispatchOutcome::Existing) => {
+                WorkflowDispatchOutcome::Existing
+            }
+            _ => WorkflowDispatchOutcome::Started,
+        })
+    }
+}
+
 pub struct JobOutboxRelay<W> {
     jobs: PgJobStore,
     workflows: Arc<W>,

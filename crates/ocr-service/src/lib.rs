@@ -1425,8 +1425,8 @@ pub use malware::{
     UploadInspectionError, UploadInspectorConfigurationError,
 };
 pub use outbox_relay::{
-    scoped_workflow_id, DurableWorkflowConfigurationError, DurableWorkflowStarter, JobOutboxRelay,
-    RelayError, RelayOutcome, WorkflowAction, WorkflowDispatch, WorkflowDispatchError,
-    WorkflowDispatchOutcome, WorkflowStarter,
+    scoped_workflow_id, ChainedWorkflowStarter, DurableWorkflowConfigurationError,
+    DurableWorkflowStarter, JobOutboxRelay, RelayError, RelayOutcome, WorkflowAction,
+    WorkflowDispatch, WorkflowDispatchError, WorkflowDispatchOutcome, WorkflowStarter,
 };
 pub use source_promotion::{GcsSourcePromoter, PromotedSource, SourcePromotionError};

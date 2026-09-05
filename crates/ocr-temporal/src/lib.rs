@@ -820,6 +820,17 @@ impl DurableDocumentWorkflow {
     }
 }
 
+fn failed_activity(activity: &str, job_id: &JobId, error: DurableExecutionError) -> ActivityError {
+    tracing::warn!(
+        activity,
+        job_id = job_id.as_str(),
+        kind = ?error.kind(),
+        retryable = error.is_retryable(),
+        "durable activity failed"
+    );
+    error.into_activity_error()
+}
+
 #[activities]
 impl DurablePageActivities {
     #[activity(name = "run_checkpointed_pages_v1")]
@@ -828,13 +839,14 @@ impl DurablePageActivities {
         ctx: ActivityContext,
         input: DurableActivityInput,
     ) -> Result<DurableActivityOutput, ActivityError> {
+        let job_id = input.job_id.clone();
         let execution = self.execution.execute(input);
         tokio::pin!(execution);
         let mut heartbeat = tokio::time::interval(Duration::from_secs(5));
         loop {
             tokio::select! {
                 result = &mut execution => {
-                    return result.map_err(DurableExecutionError::into_activity_error);
+                    return result.map_err(|error| failed_activity("run_checkpointed_pages_v1", &job_id, error));
                 }
                 _ = ctx.cancelled() => return Err(ActivityError::cancelled()),
                 _ = heartbeat.tick() => ctx.record_heartbeat(()).await?,
@@ -851,10 +863,11 @@ impl DurableFinalizationActivities {
         ctx: ActivityContext,
         input: DurableActivityInput,
     ) -> Result<(), ActivityError> {
+        let job_id = input.job_id.clone();
         let execution = self.execution.finalize(input);
         tokio::pin!(execution);
         tokio::select! {
-            result = &mut execution => result.map_err(DurableExecutionError::into_activity_error),
+            result = &mut execution => result.map_err(|error| failed_activity("finalize_document_v1", &job_id, error)),
             _ = ctx.cancelled() => Err(ActivityError::cancelled()),
         }
     }

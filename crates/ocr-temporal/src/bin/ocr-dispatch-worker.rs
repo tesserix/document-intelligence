@@ -5,8 +5,9 @@ use std::{
 
 use anyhow::{Context, Result};
 use ocr_service::{
-    ClamdScanner, GcsSourcePromoter, GcsUploadDocumentReader, GcsUploadMalwareInspector, Importer,
-    JobOutboxRelay, ParserProcess, TelemetryConfig, TelemetryRuntime,
+    ChainedWorkflowStarter, ClamdScanner, DurableWorkflowStarter, GcsSourcePromoter,
+    GcsUploadDocumentReader, GcsUploadMalwareInspector, Importer, JobOutboxRelay, ParserProcess,
+    TelemetryConfig, TelemetryRuntime,
 };
 use ocr_store::{PgJobStore, PgWorkScopeDirectory};
 use ocr_temporal::{OfficialTemporalGateway, TemporalStarter, WorkScopeDispatcher};
@@ -59,10 +60,15 @@ async fn run() -> Result<()> {
         Arc::new(GcsSourcePromoter::new(routes)?),
     ));
     let gateway = Arc::new(OfficialTemporalGateway::new(temporal_client().await?));
-    let starter = Arc::new(TemporalStarter::new(
-        gateway,
-        &required("TEMPORAL_TASK_QUEUE")?,
-    )?);
+    let max_attempts = u8::try_from(bounded("PAGE_MAX_ATTEMPTS", 3)?)
+        .context("PAGE_MAX_ATTEMPTS is out of range")?;
+    let starter = Arc::new(ChainedWorkflowStarter::new(
+        Arc::new(DurableWorkflowStarter::new(jobs.clone(), max_attempts)?),
+        Arc::new(TemporalStarter::new(
+            gateway,
+            &required("TEMPORAL_TASK_QUEUE")?,
+        )?),
+    ));
     let dispatcher = WorkScopeDispatcher::new(
         PgWorkScopeDirectory::new(scope_pool),
         jobs.clone(),
