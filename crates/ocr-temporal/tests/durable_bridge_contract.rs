@@ -3,8 +3,9 @@ use std::time::Duration;
 use ocr_domain::PageWorkflowStatus;
 use ocr_service::{PageRunnerError, PageRunnerOutcome};
 use ocr_temporal::{
-    durable_activity_options, DurableActivityInput, DurableActivityOutput, DurableActivityStatus,
-    DurableExecutionError, DurableExecutionErrorKind, DurableWorkflowRunInput,
+    durable_activity_options, finalization_activity_options, DurableActivityInput,
+    DurableActivityOutput, DurableActivityStatus, DurableExecutionError, DurableExecutionErrorKind,
+    DurableWorkflowRunInput,
 };
 use temporalio_sdk::{activities::ActivityError, ActivityCancellationType, ActivityCloseTimeouts};
 
@@ -139,6 +140,29 @@ fn durable_runner_activity_has_bounded_transport_recovery() {
     assert!(durable_activity_options(0).is_none());
     assert!(durable_activity_options(3_000).is_some());
     assert!(durable_activity_options(3_001).is_none());
+}
+
+#[test]
+fn finalization_activity_uses_a_distinct_durable_activity_id() {
+    let page = durable_activity_options(7).unwrap();
+    let finalization = finalization_activity_options(7).unwrap();
+
+    assert_eq!(
+        finalization.activity_id.as_deref(),
+        Some("ocr-finalize-0007")
+    );
+    assert_ne!(page.activity_id, finalization.activity_id);
+    assert_eq!(
+        finalization.close_timeouts,
+        ActivityCloseTimeouts::StartToClose(Duration::from_secs(120))
+    );
+    assert_eq!(
+        finalization.heartbeat_timeout,
+        Some(Duration::from_secs(10))
+    );
+    assert!(finalization_activity_options(0).is_none());
+    assert!(finalization_activity_options(3_000).is_some());
+    assert!(finalization_activity_options(3_001).is_none());
 }
 
 #[test]

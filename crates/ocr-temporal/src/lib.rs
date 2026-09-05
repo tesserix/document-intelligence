@@ -613,6 +613,14 @@ where
 }
 
 pub fn durable_activity_options(iteration: u32) -> Option<ActivityOptions> {
+    activity_options(iteration, "ocr-runner")
+}
+
+pub fn finalization_activity_options(iteration: u32) -> Option<ActivityOptions> {
+    activity_options(iteration, "ocr-finalize")
+}
+
+fn activity_options(iteration: u32, activity_name: &str) -> Option<ActivityOptions> {
     if !(1..=MAX_PAGE_COUNT * u32::from(MAXIMUM_PAGE_ATTEMPTS)).contains(&iteration) {
         return None;
     }
@@ -624,7 +632,7 @@ pub fn durable_activity_options(iteration: u32) -> Option<ActivityOptions> {
         .build();
     Some(
         ActivityOptions::with_start_to_close_timeout(policy.start_to_close_timeout())
-            .activity_id(format!("ocr-runner-{iteration:04}"))
+            .activity_id(format!("{activity_name}-{iteration:04}"))
             .heartbeat_timeout(policy.heartbeat_timeout())
             .cancellation_type(ActivityCancellationType::WaitCancellationCompleted)
             .retry_policy(retry_policy)
@@ -793,7 +801,7 @@ impl DurableDocumentWorkflow {
                     ctx.execute_activity(
                         DurableFinalizationActivities::finalize_document,
                         input.activity_input(),
-                        durable_activity_options(iteration).ok_or_else(|| {
+                        finalization_activity_options(iteration).ok_or_else(|| {
                             ApplicationFailure::non_retryable(DurableExecutionError::new(
                                 DurableExecutionErrorKind::InvalidInput,
                             ))
