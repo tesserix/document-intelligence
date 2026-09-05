@@ -5,11 +5,14 @@ use std::{
 
 use anyhow::{Context, Result};
 use ocr_service::{
-    ClamdScanner, GcsSourcePromoter, GcsUploadDocumentReader, GcsUploadMalwareInspector, Importer,
-    JobOutboxRelay, ParserProcess, TelemetryConfig, TelemetryRuntime,
+    ClamdScanner, DurableWorkflowStarter, GcsSourcePromoter, GcsUploadDocumentReader,
+    GcsUploadMalwareInspector, Importer, JobOutboxRelay, ParserProcess, TelemetryConfig,
+    TelemetryRuntime,
 };
 use ocr_store::{PgJobStore, PgWorkScopeDirectory};
-use ocr_temporal::{OfficialTemporalGateway, TemporalStarter, WorkScopeDispatcher};
+use ocr_temporal::{
+    CheckpointedTemporalStarter, OfficialTemporalGateway, TemporalStarter, WorkScopeDispatcher,
+};
 use sqlx::postgres::{PgConnectOptions, PgPoolOptions};
 use temporalio_client::{Client, ClientOptions, Connection, ConnectionOptions};
 use tokio::{signal, time};
@@ -59,15 +62,16 @@ async fn run() -> Result<()> {
         Arc::new(GcsSourcePromoter::new(routes)?),
     ));
     let gateway = Arc::new(OfficialTemporalGateway::new(temporal_client().await?));
-    let starter = Arc::new(TemporalStarter::new(
-        gateway,
-        &required("TEMPORAL_TASK_QUEUE")?,
-    )?);
+    let starter = TemporalStarter::new(gateway, &required("TEMPORAL_TASK_QUEUE")?)?;
+    let checkpoint = DurableWorkflowStarter::new(jobs.clone(), 3)?;
     let dispatcher = WorkScopeDispatcher::new(
         PgWorkScopeDirectory::new(scope_pool),
         jobs.clone(),
         importer,
-        Arc::new(JobOutboxRelay::new(jobs, starter)),
+        Arc::new(JobOutboxRelay::new(
+            jobs,
+            Arc::new(CheckpointedTemporalStarter::new(checkpoint, starter)),
+        )),
         &required("WORKER_ID")?,
         bounded("WORK_SCOPE_BATCH_SIZE", 10)?,
         bounded("UPLOAD_BATCH_SIZE", 10)?,

@@ -1122,6 +1122,81 @@ pub trait TemporalGateway: Send + Sync {
     ) -> impl Future<Output = Result<GatewayOutcome, GatewayError>> + Send;
 }
 
+#[cfg(test)]
+mod checkpointed_temporal_starter_tests {
+    use super::{
+        CheckpointedTemporalStarter, GatewayError, GatewayOutcome, TemporalCommand,
+        TemporalGateway, TemporalStarter,
+    };
+    use ocr_domain::{JobId, ProductId, TenantId};
+    use ocr_service::{
+        scoped_workflow_id, WorkflowAction, WorkflowDispatch, WorkflowDispatchError,
+        WorkflowDispatchOutcome, WorkflowStarter,
+    };
+    use std::sync::{Arc, Mutex};
+
+    struct RecordingCheckpoint {
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl WorkflowStarter for RecordingCheckpoint {
+        async fn dispatch(
+            &self,
+            _dispatch: WorkflowDispatch,
+        ) -> Result<WorkflowDispatchOutcome, WorkflowDispatchError> {
+            self.events.lock().unwrap().push("checkpoint");
+            Ok(WorkflowDispatchOutcome::Started)
+        }
+    }
+
+    struct RecordingGateway {
+        events: Arc<Mutex<Vec<&'static str>>>,
+    }
+
+    impl TemporalGateway for RecordingGateway {
+        async fn execute(&self, _command: TemporalCommand) -> Result<GatewayOutcome, GatewayError> {
+            self.events.lock().unwrap().push("temporal");
+            Ok(GatewayOutcome::Accepted)
+        }
+    }
+
+    #[tokio::test]
+    async fn checkpoint_is_persisted_before_starting_temporal_workflow() {
+        let events = Arc::new(Mutex::new(Vec::new()));
+        let product_id = ProductId::new("kora").unwrap();
+        let tenant_id = TenantId::new("ten_CHECKPOINT").unwrap();
+        let job_id = JobId::new("job_CHECKPOINT").unwrap();
+        let dispatch = WorkflowDispatch {
+            event_id: 1,
+            workflow_id: scoped_workflow_id(&product_id, &tenant_id, &job_id),
+            product_id,
+            tenant_id,
+            job_id,
+            page_count: 1,
+            action: WorkflowAction::Start,
+        };
+        let temporal = TemporalStarter::new(
+            Arc::new(RecordingGateway {
+                events: events.clone(),
+            }),
+            "document-intelligence-test",
+        )
+        .unwrap();
+        let starter = CheckpointedTemporalStarter::new(
+            RecordingCheckpoint {
+                events: events.clone(),
+            },
+            temporal,
+        );
+
+        assert_eq!(
+            starter.dispatch(dispatch).await.unwrap(),
+            WorkflowDispatchOutcome::Started
+        );
+        assert_eq!(*events.lock().unwrap(), ["checkpoint", "temporal"]);
+    }
+}
+
 #[derive(Debug, Copy, Clone, Error, PartialEq, Eq)]
 #[error("invalid Temporal starter configuration")]
 pub struct TemporalStarterConfigurationError;
@@ -1184,5 +1259,42 @@ where
             Ok(GatewayOutcome::AlreadyExists) => Ok(WorkflowDispatchOutcome::Existing),
             Err(GatewayError::Unavailable) => Err(WorkflowDispatchError::Unavailable),
         }
+    }
+}
+
+pub struct CheckpointedTemporalStarter<C, G> {
+    checkpoint: C,
+    temporal: TemporalStarter<G>,
+}
+
+impl<C, G> CheckpointedTemporalStarter<C, G> {
+    pub fn new(checkpoint: C, temporal: TemporalStarter<G>) -> Self {
+        Self {
+            checkpoint,
+            temporal,
+        }
+    }
+}
+
+impl<C, G> WorkflowStarter for CheckpointedTemporalStarter<C, G>
+where
+    C: WorkflowStarter,
+    G: TemporalGateway,
+{
+    async fn dispatch(
+        &self,
+        dispatch: WorkflowDispatch,
+    ) -> Result<WorkflowDispatchOutcome, WorkflowDispatchError> {
+        let checkpointed = self.checkpoint.dispatch(dispatch.clone()).await?;
+        let started = self.temporal.dispatch(dispatch).await?;
+        Ok(
+            if matches!(checkpointed, WorkflowDispatchOutcome::Started)
+                || matches!(started, WorkflowDispatchOutcome::Started)
+            {
+                WorkflowDispatchOutcome::Started
+            } else {
+                WorkflowDispatchOutcome::Existing
+            },
+        )
     }
 }
