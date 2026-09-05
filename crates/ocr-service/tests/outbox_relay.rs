@@ -144,14 +144,10 @@ async fn relay_dispatches_a_deterministic_workflow_once_then_acknowledges() {
         .unwrap()
         .is_some());
 
-    sqlx::query(
-        "insert into ocr_outbox (product_id, tenant_id, job_id, event_type, payload) values \
-         ('kora', 'ten_RELAY', 'job_RELAY', 'ocr.job.cancellation_requested.v1', \
-          jsonb_build_object('job_id', 'job_RELAY', 'status', 'cancelling'))",
-    )
-    .execute(&admin)
-    .await
-    .unwrap();
+    store
+        .cancel(&tenant, &product, &JobId::new("job_RELAY").unwrap())
+        .await
+        .unwrap();
     let fail_once = Arc::new(FailOnceStarter {
         fail: AtomicBool::new(true),
         dispatches: Mutex::new(Vec::new()),
