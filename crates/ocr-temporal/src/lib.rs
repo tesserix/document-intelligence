@@ -478,6 +478,12 @@ impl DurableExecutionError {
 
 impl From<PageRunnerError> for DurableExecutionError {
     fn from(value: PageRunnerError) -> Self {
+        Self::from_ref(&value)
+    }
+}
+
+impl DurableExecutionError {
+    fn from_ref(value: &PageRunnerError) -> Self {
         let kind = match value {
             PageRunnerError::RetryableConflict => DurableExecutionErrorKind::RevisionConflict,
             PageRunnerError::NotFound => DurableExecutionErrorKind::ScopeNotFound,
@@ -518,32 +524,48 @@ where
     }
 
     async fn run(&self, input: &DurableActivityInput) -> Result<(), DurableExecutionError> {
-        match self
+        let outcome = self
             .finalizer
             .finalize_stored(&input.tenant_id, &input.product_id, &input.job_id)
-            .await
-        {
-            Ok(CommitResultOutcome::Committed(_) | CommitResultOutcome::Existing(_)) => Ok(()),
-            Ok(CommitResultOutcome::Conflict | CommitResultOutcome::NotCommittable) => Err(
-                DurableExecutionError::new(DurableExecutionErrorKind::InvalidInput),
-            ),
-            Ok(CommitResultOutcome::NotFound) => Err(DurableExecutionError::new(
+            .await;
+        let (kind, cause) = match outcome {
+            Ok(CommitResultOutcome::Committed(_) | CommitResultOutcome::Existing(_)) => {
+                return Ok(())
+            }
+            Ok(outcome @ (CommitResultOutcome::Conflict | CommitResultOutcome::NotCommittable)) => {
+                (
+                    DurableExecutionErrorKind::InvalidInput,
+                    format!("{outcome:?}"),
+                )
+            }
+            Ok(CommitResultOutcome::NotFound) => (
                 DurableExecutionErrorKind::ScopeNotFound,
-            )),
-            Err(error) => Err(DurableExecutionError::new(match error {
-                DocumentFinalizeError::Cancelled => DurableExecutionErrorKind::ScopeNotFound,
-                DocumentFinalizeError::InvalidConfiguration
-                | DocumentFinalizeError::InvalidPageArtifact
-                | DocumentFinalizeError::Assembly(_) => DurableExecutionErrorKind::InvalidInput,
-                DocumentFinalizeError::NotReady
-                | DocumentFinalizeError::IncompleteArtifacts
-                | DocumentFinalizeError::PageArtifact(_)
-                | DocumentFinalizeError::Publish(_)
-                | DocumentFinalizeError::Store(_) => {
-                    DurableExecutionErrorKind::DependencyUnavailable
-                }
-            })),
-        }
+                "job not found".to_owned(),
+            ),
+            Err(error) => (
+                match error {
+                    DocumentFinalizeError::Cancelled => DurableExecutionErrorKind::ScopeNotFound,
+                    DocumentFinalizeError::InvalidConfiguration
+                    | DocumentFinalizeError::InvalidPageArtifact
+                    | DocumentFinalizeError::Assembly(_) => DurableExecutionErrorKind::InvalidInput,
+                    DocumentFinalizeError::NotReady
+                    | DocumentFinalizeError::IncompleteArtifacts
+                    | DocumentFinalizeError::PageArtifact(_)
+                    | DocumentFinalizeError::Publish(_)
+                    | DocumentFinalizeError::Store(_) => {
+                        DurableExecutionErrorKind::DependencyUnavailable
+                    }
+                },
+                error.to_string(),
+            ),
+        };
+        tracing::error!(
+            job_id = input.job_id.as_str(),
+            ?kind,
+            %cause,
+            "document finalization failed"
+        );
+        Err(DurableExecutionError::new(kind))
     }
 }
 
@@ -599,7 +621,16 @@ where
             .run_once(&input.tenant_id, &input.product_id, &input.job_id)
             .await
             .map(DurableActivityOutput::from)
-            .map_err(DurableExecutionError::from)
+            .map_err(|error| {
+                let durable = DurableExecutionError::from_ref(&error);
+                tracing::error!(
+                    job_id = input.job_id.as_str(),
+                    kind = ?durable.kind(),
+                    cause = %error,
+                    "page execution failed"
+                );
+                durable
+            })
     }
 }
 
