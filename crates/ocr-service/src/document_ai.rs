@@ -176,6 +176,10 @@ impl MetadataDocumentAiTransport {
         .map_err(|_| DocumentAiTransportError::Unavailable)?
         .map_err(|_| DocumentAiTransportError::Unavailable)?;
         if !response.status().is_success() {
+            tracing::warn!(
+                status = response.status().as_u16(),
+                "document ai request rejected"
+            );
             return Err(map_http_status(response.status()));
         }
         read_bounded_response(response).await
@@ -276,11 +280,26 @@ impl DocumentAiPageRecognizer {
         job_id: &ocr_domain::JobId,
         task: &PageTask,
     ) -> Result<DocumentPage, PageRecognitionError> {
+        let failed = |stage: &'static str| {
+            move |error: PageRecognitionError| {
+                tracing::warn!(
+                    product_id = product_id.as_str(),
+                    job_id = job_id.as_str(),
+                    page = task.page,
+                    attempt = task.attempt,
+                    stage,
+                    ?error,
+                    "page recognition failed"
+                );
+                error
+            }
+        };
         let source = self
             .source
             .load(product_id, tenant_id, job_id, task)
             .await
-            .map_err(map_source_error)?;
+            .map_err(map_source_error)
+            .map_err(failed("source"))?;
         let geometry = source.geometry();
         let output = self
             .transport
@@ -289,8 +308,9 @@ impl DocumentAiPageRecognizer {
             .map_err(|error| match error {
                 DocumentAiTransportError::Invalid => PageRecognitionError::Permanent,
                 DocumentAiTransportError::Unavailable => PageRecognitionError::Retryable,
-            })?;
-        parse_document(&output, task.page, geometry.width, geometry.height)
+            })
+            .map_err(failed("provider"))?;
+        parse_document(&output, task.page, geometry.width, geometry.height).map_err(failed("parse"))
     }
 }
 
@@ -338,24 +358,25 @@ fn parse_document(
     }
     let page_number =
         PageNumber::new(expected_page).map_err(|_| PageRecognitionError::Permanent)?;
+    let text = AnchoredText::new(&document.text);
     let observations = page
         .lines
         .into_iter()
         .enumerate()
-        .map(|(index, line)| observation(&document.text, page_number, index, line))
+        .map(|(index, line)| observation(&text, page_number, index, line))
         .collect::<Result<Vec<_>, _>>()?;
     DocumentPage::new(page_number, width, height, observations)
         .map_err(|_| PageRecognitionError::Permanent)
 }
 
 fn observation(
-    document_text: &str,
+    document_text: &AnchoredText<'_>,
     page: PageNumber,
     index: usize,
     line: WireLine,
 ) -> Result<TextObservation, PageRecognitionError> {
     let reading_order = u32::try_from(index).map_err(|_| PageRecognitionError::Permanent)?;
-    let text = anchored_text(document_text, &line.layout.text_anchor)?;
+    let text = document_text.resolve(&line.layout.text_anchor)?;
     let confidence = Confidence::new(
         line.layout
             .confidence
@@ -388,37 +409,54 @@ fn observation(
     .map_err(|_| PageRecognitionError::Permanent)
 }
 
-fn anchored_text(
-    document_text: &str,
-    anchor: &WireTextAnchor,
-) -> Result<String, PageRecognitionError> {
-    if anchor.text_segments.is_empty() {
-        return Err(PageRecognitionError::Permanent);
+/// Document AI text anchors count Unicode characters, not UTF-8 bytes.
+struct AnchoredText<'a> {
+    text: &'a str,
+    boundaries: Vec<usize>,
+}
+
+impl<'a> AnchoredText<'a> {
+    fn new(text: &'a str) -> Self {
+        let boundaries = text
+            .char_indices()
+            .map(|(byte, _)| byte)
+            .chain(std::iter::once(text.len()))
+            .collect();
+        Self { text, boundaries }
     }
-    let mut value = String::new();
-    for segment in &anchor.text_segments {
-        let start = segment
-            .start_index
-            .as_ref()
-            .map_or(Ok(0), WireOffset::value)?;
-        let end = segment
-            .end_index
-            .as_ref()
+
+    fn byte(&self, character: usize) -> Result<usize, PageRecognitionError> {
+        self.boundaries
+            .get(character)
+            .copied()
             .ok_or(PageRecognitionError::Permanent)
-            .and_then(WireOffset::value)?;
-        if start > end
-            || end > document_text.len()
-            || !document_text.is_char_boundary(start)
-            || !document_text.is_char_boundary(end)
-        {
+    }
+
+    fn resolve(&self, anchor: &WireTextAnchor) -> Result<String, PageRecognitionError> {
+        if anchor.text_segments.is_empty() {
             return Err(PageRecognitionError::Permanent);
         }
-        value.push_str(&document_text[start..end]);
+        let mut value = String::new();
+        for segment in &anchor.text_segments {
+            let start = segment
+                .start_index
+                .as_ref()
+                .map_or(Ok(0), WireOffset::value)?;
+            let end = segment
+                .end_index
+                .as_ref()
+                .ok_or(PageRecognitionError::Permanent)
+                .and_then(WireOffset::value)?;
+            if start > end {
+                return Err(PageRecognitionError::Permanent);
+            }
+            value.push_str(&self.text[self.byte(start)?..self.byte(end)?]);
+        }
+        if value.trim().is_empty() || value.len() > 65_536 {
+            return Err(PageRecognitionError::Permanent);
+        }
+        Ok(value)
     }
-    if value.trim().is_empty() || value.len() > 65_536 {
-        return Err(PageRecognitionError::Permanent);
-    }
-    Ok(value)
 }
 
 #[derive(Deserialize)]
@@ -625,6 +663,51 @@ mod tests {
         assert_eq!(
             transport.request.lock().unwrap().as_ref(),
             Some(&(2, "application/pdf".to_owned(), 16))
+        );
+    }
+
+    #[tokio::test]
+    async fn text_anchors_index_unicode_characters_not_bytes() {
+        let response = r#"{
+            "document": {
+                "text": "朝阳区地税局\n代征点 Café\n",
+                "pages": [{
+                    "pageNumber": 2,
+                    "lines": [
+                        {"layout": {"textAnchor": {"textSegments": [{"endIndex": "6"}]}, "confidence": 0.98,
+                            "boundingPoly": {"normalizedVertices": [{}, {"x": 1}, {"x": 1, "y": 1}, {"y": 1}]}}},
+                        {"layout": {"textAnchor": {"textSegments": [{"startIndex": "7", "endIndex": "15"}]}, "confidence": 0.97,
+                            "boundingPoly": {"normalizedVertices": [{}, {"x": 1}, {"x": 1, "y": 1}, {"y": 1}]}}}
+                    ]
+                }]
+            }
+        }"#
+        .as_bytes()
+        .to_vec();
+        let (recognizer, _) = recognizer(Ok(source()), Ok(response));
+
+        let (product_id, tenant_id, job_id) = scope();
+        let page = recognizer
+            .recognize(&product_id, &tenant_id, &job_id, &task(2))
+            .await
+            .unwrap();
+
+        let texts: Vec<_> = page.observations.iter().map(|o| o.text.as_str()).collect();
+        assert_eq!(texts, ["朝阳区地税局", "代征点 Café"]);
+    }
+
+    #[tokio::test]
+    async fn anchors_beyond_the_text_are_permanent() {
+        let response = r#"{"document":{"text":"代征点","pages":[{"pageNumber":2,"lines":[{"layout":{"textAnchor":{"textSegments":[{"endIndex":"4"}]},"confidence":0.98,"boundingPoly":{"normalizedVertices":[{},{"x":1},{"x":1,"y":1},{"y":1}]}}}]}]}}"#
+            .as_bytes()
+            .to_vec();
+        let (recognizer, _) = recognizer(Ok(source()), Ok(response));
+        let (product_id, tenant_id, job_id) = scope();
+        assert_eq!(
+            recognizer
+                .recognize(&product_id, &tenant_id, &job_id, &task(2))
+                .await,
+            Err(PageRecognitionError::Permanent)
         );
     }
 
