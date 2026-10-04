@@ -1,5 +1,5 @@
 ARG RUST_BUILDER=rust:1.94-slim-bookworm@sha256:cf9dd0ec73e75f827fe59123fff9dc65af1a1c8363c3c31ee8d7f8ad0b6a5fb2
-ARG TESSERIX_RUNTIME=ghcr.io/tesserix/base-debian-runtime:20260919@sha256:0d23c4cc3f5be86a1a20207828340a76de1e45bbc4cdc86ccfac2c74e565ee79
+ARG TESSERIX_RUNTIME=ghcr.io/tesserix/base-debian-runtime:20261003@sha256:b687ab8631e6cfbc342c210bc56996c311cc4fac4223df33dfa768d588faf834
 
 FROM ${RUST_BUILDER} AS build
 WORKDIR /src
