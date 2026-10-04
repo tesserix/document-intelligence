@@ -21,6 +21,7 @@ mod result_artifacts;
 mod result_assembly;
 mod result_publisher;
 mod source_promotion;
+mod stage_timing;
 mod telemetry;
 mod upload_artifacts;
 mod upload_intents;

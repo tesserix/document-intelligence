@@ -1,3 +1,4 @@
+use crate::stage_timing::measure_stage;
 use std::{future::Future, pin::Pin, sync::Arc, time::Duration};
 
 use base64::{engine::general_purpose::STANDARD, Engine};
@@ -152,18 +153,7 @@ impl MetadataDocumentAiTransport {
             .token(&[CLOUD_PLATFORM_SCOPE])
             .await
             .map_err(|_| DocumentAiTransportError::Unavailable)?;
-        let body = ProcessRequest {
-            raw_document: RawDocument {
-                content: STANDARD.encode(request.bytes),
-                mime_type: request.content_type,
-            },
-            skip_human_review: true,
-            process_options: ProcessOptions {
-                individual_page_selector: IndividualPageSelector {
-                    pages: vec![request.page],
-                },
-            },
-        };
+        let body = ProcessRequest::from(request);
         let response = timeout(
             DOCUMENT_AI_TIMEOUT,
             self.client
@@ -239,7 +229,26 @@ async fn read_bounded_response(
 struct ProcessRequest {
     raw_document: RawDocument,
     skip_human_review: bool,
+    field_mask: &'static str,
     process_options: ProcessOptions,
+}
+
+impl From<DocumentAiRequest> for ProcessRequest {
+    fn from(request: DocumentAiRequest) -> Self {
+        Self {
+            raw_document: RawDocument {
+                content: STANDARD.encode(request.bytes),
+                mime_type: request.content_type,
+            },
+            skip_human_review: true,
+            field_mask: "text,pages.pageNumber,pages.lines",
+            process_options: ProcessOptions {
+                individual_page_selector: IndividualPageSelector {
+                    pages: vec![request.page],
+                },
+            },
+        }
+    }
 }
 
 #[derive(Serialize)]
@@ -263,6 +272,7 @@ struct IndividualPageSelector {
 pub struct DocumentAiPageRecognizer {
     source: Arc<dyn PageSourceResolver>,
     transport: Arc<dyn DocumentAiTransport>,
+    preprocessor: Option<crate::ParserProcess>,
 }
 
 impl DocumentAiPageRecognizer {
@@ -270,7 +280,16 @@ impl DocumentAiPageRecognizer {
         source: Arc<dyn PageSourceResolver>,
         transport: Arc<dyn DocumentAiTransport>,
     ) -> Self {
-        Self { source, transport }
+        Self {
+            source,
+            transport,
+            preprocessor: None,
+        }
+    }
+
+    pub fn with_preprocessor(mut self, preprocessor: crate::ParserProcess) -> Self {
+        self.preprocessor = Some(preprocessor);
+        self
     }
 
     async fn recognize_inner(
@@ -294,23 +313,60 @@ impl DocumentAiPageRecognizer {
                 error
             }
         };
-        let source = self
-            .source
-            .load(product_id, tenant_id, job_id, task)
-            .await
-            .map_err(map_source_error)
-            .map_err(failed("source"))?;
+        let source = measure_stage(
+            "source_read",
+            job_id,
+            self.source.load(product_id, tenant_id, job_id, task),
+        )
+        .await
+        .map_err(map_source_error)
+        .map_err(failed("source"))?;
         let geometry = source.geometry();
-        let output = self
-            .transport
-            .process(DocumentAiRequest::new(task.page, source))
+        let mut request = DocumentAiRequest::new(task.page, source);
+        if geometry.width.max(geometry.height) <= 640
+            && geometry.width.min(geometry.height) >= 64
+            && matches!(
+                request.content_type.as_str(),
+                "image/png" | "image/jpeg" | "image/webp"
+            )
+        {
+            if let Some(preprocessor) = &self.preprocessor {
+                match measure_stage(
+                    "image_preparation",
+                    job_id,
+                    preprocessor.prepare_ocr(&request.bytes, &request.content_type),
+                )
+                .await
+                {
+                    Ok(Some(bytes)) => {
+                        request.bytes = bytes;
+                        request.content_type = "image/png".to_owned();
+                        tracing::info!(
+                            job_id = job_id.as_str(),
+                            profile = "small-image-lanczos3-v1",
+                            "ocr image prepared"
+                        );
+                    }
+                    Ok(None) => {}
+                    Err(_) => tracing::warn!(
+                        job_id = job_id.as_str(),
+                        "ocr image preparation unavailable; using original"
+                    ),
+                }
+            }
+        }
+        let output = measure_stage("provider", job_id, self.transport.process(request))
             .await
             .map_err(|error| match error {
                 DocumentAiTransportError::Invalid => PageRecognitionError::Permanent,
                 DocumentAiTransportError::Unavailable => PageRecognitionError::Retryable,
             })
             .map_err(failed("provider"))?;
-        parse_document(&output, task.page, geometry.width, geometry.height).map_err(failed("parse"))
+        measure_stage("response_parse", job_id, async {
+            parse_document(&output, task.page, geometry.width, geometry.height)
+        })
+        .await
+        .map_err(failed("parse"))
     }
 }
 
@@ -762,5 +818,62 @@ mod tests {
         );
         assert!(DocumentAiConfiguration::new("project/path", "asia-south1", "processor").is_err());
         assert!(DocumentAiConfiguration::new("project", "asia-south1", "processor:other").is_err());
+    }
+    #[cfg(unix)]
+    #[tokio::test]
+    async fn preprocessing_preserves_geometry_and_falls_back_to_original_on_failure() {
+        use std::{fs, os::unix::fs::PermissionsExt};
+        for (width, script, expected_mime) in [
+            (
+                350,
+                "cat >/dev/null; printf '\\211PNG\\r\\n\\032\\nprepared'",
+                "image/png",
+            ),
+            (350, "cat >/dev/null; exit 10", "image/jpeg"),
+            (
+                1400,
+                "cat >/dev/null; printf '\\211PNG\\r\\n\\032\\nprepared'",
+                "image/jpeg",
+            ),
+        ] {
+            let directory = tempfile::tempdir().unwrap();
+            let executable = directory.path().join("parser");
+            fs::write(&executable, format!("#!/bin/sh\n{script}\n")).unwrap();
+            fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+            let parser = crate::ParserProcess::new(executable, Duration::from_secs(2)).unwrap();
+            let source = AcceptedPageSource::from_verified(
+                vec![7; 16],
+                "image/jpeg".to_owned(),
+                PageGeometry::new(PageNumber::new(2).unwrap(), width, 270).unwrap(),
+            );
+            let response =
+                br#"{"document":{"text":"","pages":[{"pageNumber":2,"lines":[]}]}}"#.to_vec();
+            let (recognizer, transport) = recognizer(Ok(source), Ok(response));
+            let recognizer = recognizer.with_preprocessor(parser);
+            let (product, tenant, job) = scope();
+            let page = recognizer
+                .recognize(&product, &tenant, &job, &task(2))
+                .await
+                .unwrap();
+            assert_eq!((page.width, page.height), (width, 270));
+            assert_eq!(
+                transport.request.lock().unwrap().as_ref().unwrap().1,
+                expected_mime
+            );
+        }
+    }
+    #[test]
+    fn provider_request_limits_output_to_the_fields_used_for_text_and_evidence() {
+        let body = serde_json::to_value(ProcessRequest::from(DocumentAiRequest::new(2, source())))
+            .unwrap();
+        assert_eq!(body["fieldMask"], "text,pages.pageNumber,pages.lines");
+        assert_eq!(
+            body["processOptions"]["individualPageSelector"]["pages"],
+            serde_json::json!([2])
+        );
+        assert_eq!(body["rawDocument"]["mimeType"], "application/pdf");
+        assert!(body["rawDocument"]["content"]
+            .as_str()
+            .is_some_and(|v| !v.is_empty()));
     }
 }

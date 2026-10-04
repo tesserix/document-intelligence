@@ -1,0 +1,576 @@
+{
+  "version": "ocr-synthetic-v1",
+  "provenance": "Generated synthetic documents; no customer data. Images are frozen and hash-pinned; text references are authored independently of OCR.",
+  "cases": [
+    {
+      "id": "nutrition_clear",
+      "image": "images/clear.png",
+      "sha256": "fac5cd28a7014b53a1c96dc37a2d9332b60b6ee5a57cd2fb9bd354ba56048907",
+      "document_type": "nutrition_label",
+      "quality": "clear",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": null,
+      "expected_fields": {
+        "serving_size": {
+          "amount": 50,
+          "unit": "g"
+        },
+        "servings_per_pack": 4,
+        "per_100g.energy_kj": 836.8,
+        "per_serving.energy_kj": 418.4,
+        "per_100g.energy_kcal": 200,
+        "per_serving.energy_kcal": 100.0,
+        "per_100g.protein_g": 10,
+        "per_serving.protein_g": 5.0,
+        "per_100g.fat_g": 4,
+        "per_serving.fat_g": 2.0,
+        "per_100g.saturated_fat_g": 1,
+        "per_serving.saturated_fat_g": 0.5,
+        "per_100g.carbohydrate_g": 31,
+        "per_serving.carbohydrate_g": 15.5,
+        "per_100g.sugars_g": 4,
+        "per_serving.sugars_g": 2.0,
+        "per_100g.fibre_g": 3,
+        "per_serving.fibre_g": 1.5,
+        "per_100g.sodium_mg": 200,
+        "per_serving.sodium_mg": 100.0
+      },
+      "extraction": {
+        "schema_id": "kora.nutrition_label",
+        "schema_version": "1"
+      }
+    },
+    {
+      "id": "nutrition_low_resolution",
+      "image": "images/low_resolution.png",
+      "sha256": "62874fa68f135b83e854b33c6b9410997fe726cf02bca5fb620420e1dca5f6ee",
+      "document_type": "nutrition_label",
+      "quality": "low_resolution",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": null,
+      "expected_fields": {
+        "serving_size": {
+          "amount": 50,
+          "unit": "g"
+        },
+        "servings_per_pack": 4,
+        "per_100g.energy_kj": 836.8,
+        "per_serving.energy_kj": 418.4,
+        "per_100g.energy_kcal": 200,
+        "per_serving.energy_kcal": 100.0,
+        "per_100g.protein_g": 10,
+        "per_serving.protein_g": 5.0,
+        "per_100g.fat_g": 4,
+        "per_serving.fat_g": 2.0,
+        "per_100g.saturated_fat_g": 1,
+        "per_serving.saturated_fat_g": 0.5,
+        "per_100g.carbohydrate_g": 31,
+        "per_serving.carbohydrate_g": 15.5,
+        "per_100g.sugars_g": 4,
+        "per_serving.sugars_g": 2.0,
+        "per_100g.fibre_g": 3,
+        "per_serving.fibre_g": 1.5,
+        "per_100g.sodium_mg": 200,
+        "per_serving.sodium_mg": 100.0
+      },
+      "extraction": {
+        "schema_id": "kora.nutrition_label",
+        "schema_version": "1"
+      }
+    },
+    {
+      "id": "nutrition_moderate_blur",
+      "image": "images/moderate_blur.png",
+      "sha256": "36f8565c8de5cebd2bf6d8cbf90e3e976f35cdd60cc72dcddbdd98ba49656d15",
+      "document_type": "nutrition_label",
+      "quality": "moderate_blur",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": null,
+      "expected_fields": {
+        "serving_size": {
+          "amount": 50,
+          "unit": "g"
+        },
+        "servings_per_pack": 4,
+        "per_100g.energy_kj": 836.8,
+        "per_serving.energy_kj": 418.4,
+        "per_100g.energy_kcal": 200,
+        "per_serving.energy_kcal": 100.0,
+        "per_100g.protein_g": 10,
+        "per_serving.protein_g": 5.0,
+        "per_100g.fat_g": 4,
+        "per_serving.fat_g": 2.0,
+        "per_100g.saturated_fat_g": 1,
+        "per_serving.saturated_fat_g": 0.5,
+        "per_100g.carbohydrate_g": 31,
+        "per_serving.carbohydrate_g": 15.5,
+        "per_100g.sugars_g": 4,
+        "per_serving.sugars_g": 2.0,
+        "per_100g.fibre_g": 3,
+        "per_serving.fibre_g": 1.5,
+        "per_100g.sodium_mg": 200,
+        "per_serving.sodium_mg": 100.0
+      },
+      "extraction": {
+        "schema_id": "kora.nutrition_label",
+        "schema_version": "1"
+      }
+    },
+    {
+      "id": "nutrition_heavy_blur",
+      "image": "images/heavy_blur.png",
+      "sha256": "b1abb62172468b142a0c9f40d5e25eab789d1895d2af9fbf85fe1835b7f88cea",
+      "document_type": "nutrition_label",
+      "quality": "heavy_blur",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": null,
+      "expected_fields": {
+        "serving_size": {
+          "amount": 50,
+          "unit": "g"
+        },
+        "servings_per_pack": 4,
+        "per_100g.energy_kj": 836.8,
+        "per_serving.energy_kj": 418.4,
+        "per_100g.energy_kcal": 200,
+        "per_serving.energy_kcal": 100.0,
+        "per_100g.protein_g": 10,
+        "per_serving.protein_g": 5.0,
+        "per_100g.fat_g": 4,
+        "per_serving.fat_g": 2.0,
+        "per_100g.saturated_fat_g": 1,
+        "per_serving.saturated_fat_g": 0.5,
+        "per_100g.carbohydrate_g": 31,
+        "per_serving.carbohydrate_g": 15.5,
+        "per_100g.sugars_g": 4,
+        "per_serving.sugars_g": 2.0,
+        "per_100g.fibre_g": 3,
+        "per_serving.fibre_g": 1.5,
+        "per_100g.sodium_mg": 200,
+        "per_serving.sodium_mg": 100.0
+      },
+      "extraction": {
+        "schema_id": "kora.nutrition_label",
+        "schema_version": "1"
+      }
+    },
+    {
+      "id": "nutrition_low_contrast",
+      "image": "images/low_contrast.png",
+      "sha256": "29b644d33ef2cb1352735300b64c2a2c5f373fb8ffaae5bd8242a35545863af7",
+      "document_type": "nutrition_label",
+      "quality": "low_contrast",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": null,
+      "expected_fields": {
+        "serving_size": {
+          "amount": 50,
+          "unit": "g"
+        },
+        "servings_per_pack": 4,
+        "per_100g.energy_kj": 836.8,
+        "per_serving.energy_kj": 418.4,
+        "per_100g.energy_kcal": 200,
+        "per_serving.energy_kcal": 100.0,
+        "per_100g.protein_g": 10,
+        "per_serving.protein_g": 5.0,
+        "per_100g.fat_g": 4,
+        "per_serving.fat_g": 2.0,
+        "per_100g.saturated_fat_g": 1,
+        "per_serving.saturated_fat_g": 0.5,
+        "per_100g.carbohydrate_g": 31,
+        "per_serving.carbohydrate_g": 15.5,
+        "per_100g.sugars_g": 4,
+        "per_serving.sugars_g": 2.0,
+        "per_100g.fibre_g": 3,
+        "per_serving.fibre_g": 1.5,
+        "per_100g.sodium_mg": 200,
+        "per_serving.sodium_mg": 100.0
+      },
+      "extraction": {
+        "schema_id": "kora.nutrition_label",
+        "schema_version": "1"
+      }
+    },
+    {
+      "id": "nutrition_dark",
+      "image": "images/dark.png",
+      "sha256": "2917742df0e8182aae72acdefad22e9a76bc309831b755ea62654ae29d52cac5",
+      "document_type": "nutrition_label",
+      "quality": "dark",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": null,
+      "expected_fields": {
+        "serving_size": {
+          "amount": 50,
+          "unit": "g"
+        },
+        "servings_per_pack": 4,
+        "per_100g.energy_kj": 836.8,
+        "per_serving.energy_kj": 418.4,
+        "per_100g.energy_kcal": 200,
+        "per_serving.energy_kcal": 100.0,
+        "per_100g.protein_g": 10,
+        "per_serving.protein_g": 5.0,
+        "per_100g.fat_g": 4,
+        "per_serving.fat_g": 2.0,
+        "per_100g.saturated_fat_g": 1,
+        "per_serving.saturated_fat_g": 0.5,
+        "per_100g.carbohydrate_g": 31,
+        "per_serving.carbohydrate_g": 15.5,
+        "per_100g.sugars_g": 4,
+        "per_serving.sugars_g": 2.0,
+        "per_100g.fibre_g": 3,
+        "per_serving.fibre_g": 1.5,
+        "per_100g.sodium_mg": 200,
+        "per_serving.sodium_mg": 100.0
+      },
+      "extraction": {
+        "schema_id": "kora.nutrition_label",
+        "schema_version": "1"
+      }
+    },
+    {
+      "id": "nutrition_rotated_12deg",
+      "image": "images/rotated_12deg.png",
+      "sha256": "e8df11b6d89ce5342dc099191af0b4d8a6ba2c00b71a3a7b0c0f8995b96f6061",
+      "document_type": "nutrition_label",
+      "quality": "rotated_12deg",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": null,
+      "expected_fields": {
+        "serving_size": {
+          "amount": 50,
+          "unit": "g"
+        },
+        "servings_per_pack": 4,
+        "per_100g.energy_kj": 836.8,
+        "per_serving.energy_kj": 418.4,
+        "per_100g.energy_kcal": 200,
+        "per_serving.energy_kcal": 100.0,
+        "per_100g.protein_g": 10,
+        "per_serving.protein_g": 5.0,
+        "per_100g.fat_g": 4,
+        "per_serving.fat_g": 2.0,
+        "per_100g.saturated_fat_g": 1,
+        "per_serving.saturated_fat_g": 0.5,
+        "per_100g.carbohydrate_g": 31,
+        "per_serving.carbohydrate_g": 15.5,
+        "per_100g.sugars_g": 4,
+        "per_serving.sugars_g": 2.0,
+        "per_100g.fibre_g": 3,
+        "per_serving.fibre_g": 1.5,
+        "per_100g.sodium_mg": 200,
+        "per_serving.sodium_mg": 100.0
+      },
+      "extraction": {
+        "schema_id": "kora.nutrition_label",
+        "schema_version": "1"
+      }
+    },
+    {
+      "id": "nutrition_rotated_90deg",
+      "image": "images/rotated_90deg.png",
+      "sha256": "2d1ee01ec30c05b881dcbb4064e41dfefa41fce7b04d6b5e98183742320e3b46",
+      "document_type": "nutrition_label",
+      "quality": "rotated_90deg",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": null,
+      "expected_fields": {
+        "serving_size": {
+          "amount": 50,
+          "unit": "g"
+        },
+        "servings_per_pack": 4,
+        "per_100g.energy_kj": 836.8,
+        "per_serving.energy_kj": 418.4,
+        "per_100g.energy_kcal": 200,
+        "per_serving.energy_kcal": 100.0,
+        "per_100g.protein_g": 10,
+        "per_serving.protein_g": 5.0,
+        "per_100g.fat_g": 4,
+        "per_serving.fat_g": 2.0,
+        "per_100g.saturated_fat_g": 1,
+        "per_serving.saturated_fat_g": 0.5,
+        "per_100g.carbohydrate_g": 31,
+        "per_serving.carbohydrate_g": 15.5,
+        "per_100g.sugars_g": 4,
+        "per_serving.sugars_g": 2.0,
+        "per_100g.fibre_g": 3,
+        "per_serving.fibre_g": 1.5,
+        "per_100g.sodium_mg": 200,
+        "per_serving.sodium_mg": 100.0
+      },
+      "extraction": {
+        "schema_id": "kora.nutrition_label",
+        "schema_version": "1"
+      }
+    },
+    {
+      "id": "nutrition_cropped_headers",
+      "image": "images/cropped_headers.png",
+      "sha256": "2912e99459cc9f7d594b4d1240f2368293bba3ea195e2ba2b28122e5ae290cd2",
+      "document_type": "nutrition_label",
+      "quality": "cropped_headers",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": null,
+      "expected_fields": {
+        "serving_size": {
+          "amount": 50,
+          "unit": "g"
+        },
+        "servings_per_pack": 4,
+        "per_100g.energy_kj": 836.8,
+        "per_serving.energy_kj": 418.4,
+        "per_100g.energy_kcal": 200,
+        "per_serving.energy_kcal": 100.0,
+        "per_100g.protein_g": 10,
+        "per_serving.protein_g": 5.0,
+        "per_100g.fat_g": 4,
+        "per_serving.fat_g": 2.0,
+        "per_100g.saturated_fat_g": 1,
+        "per_serving.saturated_fat_g": 0.5,
+        "per_100g.carbohydrate_g": 31,
+        "per_serving.carbohydrate_g": 15.5,
+        "per_100g.sugars_g": 4,
+        "per_serving.sugars_g": 2.0,
+        "per_100g.fibre_g": 3,
+        "per_serving.fibre_g": 1.5,
+        "per_100g.sodium_mg": 200,
+        "per_serving.sodium_mg": 100.0
+      },
+      "extraction": {
+        "schema_id": "kora.nutrition_label",
+        "schema_version": "1"
+      }
+    },
+    {
+      "id": "nutrition_blank",
+      "image": "images/blank.png",
+      "sha256": "ef1ef6436b89795a864d942d25e7eb268f9dcbd84d20fda03a6abe351ee322a7",
+      "document_type": "nutrition_label",
+      "quality": "blank",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": null,
+      "expected_fields": {
+        "serving_size": {
+          "amount": 50,
+          "unit": "g"
+        },
+        "servings_per_pack": 4,
+        "per_100g.energy_kj": 836.8,
+        "per_serving.energy_kj": 418.4,
+        "per_100g.energy_kcal": 200,
+        "per_serving.energy_kcal": 100.0,
+        "per_100g.protein_g": 10,
+        "per_serving.protein_g": 5.0,
+        "per_100g.fat_g": 4,
+        "per_serving.fat_g": 2.0,
+        "per_100g.saturated_fat_g": 1,
+        "per_serving.saturated_fat_g": 0.5,
+        "per_100g.carbohydrate_g": 31,
+        "per_serving.carbohydrate_g": 15.5,
+        "per_100g.sugars_g": 4,
+        "per_serving.sugars_g": 2.0,
+        "per_100g.fibre_g": 3,
+        "per_serving.fibre_g": 1.5,
+        "per_100g.sodium_mg": 200,
+        "per_serving.sodium_mg": 100.0
+      },
+      "extraction": {
+        "schema_id": "kora.nutrition_label",
+        "schema_version": "1"
+      }
+    },
+    {
+      "id": "nutrition_jpeg_artifacts",
+      "image": "images/jpeg_artifacts.jpg",
+      "sha256": "8c086bb9593b7b7f37b10dfb4cf1d88d5e8012b0a1463036074c7348816c3ca6",
+      "document_type": "nutrition_label",
+      "quality": "jpeg_artifacts",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": null,
+      "expected_fields": {
+        "serving_size": {
+          "amount": 50,
+          "unit": "g"
+        },
+        "servings_per_pack": 4,
+        "per_100g.energy_kj": 836.8,
+        "per_serving.energy_kj": 418.4,
+        "per_100g.energy_kcal": 200,
+        "per_serving.energy_kcal": 100.0,
+        "per_100g.protein_g": 10,
+        "per_serving.protein_g": 5.0,
+        "per_100g.fat_g": 4,
+        "per_serving.fat_g": 2.0,
+        "per_100g.saturated_fat_g": 1,
+        "per_serving.saturated_fat_g": 0.5,
+        "per_100g.carbohydrate_g": 31,
+        "per_serving.carbohydrate_g": 15.5,
+        "per_100g.sugars_g": 4,
+        "per_serving.sugars_g": 2.0,
+        "per_100g.fibre_g": 3,
+        "per_serving.fibre_g": 1.5,
+        "per_100g.sodium_mg": 200,
+        "per_serving.sodium_mg": 100.0
+      },
+      "extraction": {
+        "schema_id": "kora.nutrition_label",
+        "schema_version": "1"
+      }
+    },
+    {
+      "id": "receipt_clear",
+      "image": "images/receipt_clear.png",
+      "sha256": "8c61cdb3c6c03d2e37b5664d66cbfa399776fab14502038589c1f4c11a4c2e03",
+      "document_type": "receipt",
+      "quality": "clear",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": "CORNER CAFE\nReceipt 1042\n04 October 2026\nCoffee 4.50\nSandwich 9.00\nSubtotal 13.50\nTax 1.35\nTOTAL 14.85\nPaid by card",
+      "expected_fields": {},
+      "extraction": null
+    },
+    {
+      "id": "receipt_low_resolution",
+      "image": "images/receipt_low_resolution.png",
+      "sha256": "e923512e049ed646fd2b6e840cfbe8f99737e8d32a7f06fcc081f658cf62031a",
+      "document_type": "receipt",
+      "quality": "low_resolution",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": "CORNER CAFE\nReceipt 1042\n04 October 2026\nCoffee 4.50\nSandwich 9.00\nSubtotal 13.50\nTax 1.35\nTOTAL 14.85\nPaid by card",
+      "expected_fields": {},
+      "extraction": null
+    },
+    {
+      "id": "receipt_dark",
+      "image": "images/receipt_dark.png",
+      "sha256": "8e2fb209c1b47236651d76de5eaf08f5a8ec6f72b46e983e329a1a89c9826832",
+      "document_type": "receipt",
+      "quality": "dark",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": "CORNER CAFE\nReceipt 1042\n04 October 2026\nCoffee 4.50\nSandwich 9.00\nSubtotal 13.50\nTax 1.35\nTOTAL 14.85\nPaid by card",
+      "expected_fields": {},
+      "extraction": null
+    },
+    {
+      "id": "receipt_moderate_blur",
+      "image": "images/receipt_moderate_blur.png",
+      "sha256": "33296cf980b6f3879fdf6c7f0f239bab301ba014e3284cd2474516f7f55b5f29",
+      "document_type": "receipt",
+      "quality": "moderate_blur",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": "CORNER CAFE\nReceipt 1042\n04 October 2026\nCoffee 4.50\nSandwich 9.00\nSubtotal 13.50\nTax 1.35\nTOTAL 14.85\nPaid by card",
+      "expected_fields": {},
+      "extraction": null
+    },
+    {
+      "id": "invoice_clear",
+      "image": "images/invoice_clear.png",
+      "sha256": "4f4ed15b52c445d2d00457715e11ea0466815d9347d1ee6957a2c053568b4335",
+      "document_type": "invoice",
+      "quality": "clear",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": "INVOICE INV-2026-0042\nExample Supplies\nBill to: Sample Company\nIssue date: 04 October 2026\nDue date: 18 October 2026\nConsulting: 3 hours at 80.00\nSubtotal 240.00\nTax 24.00\nTOTAL DUE 264.00",
+      "expected_fields": {},
+      "extraction": null
+    },
+    {
+      "id": "invoice_low_resolution",
+      "image": "images/invoice_low_resolution.png",
+      "sha256": "8128669796d99b965ece1a536b49686840ce0d42ed588331ff2691ec0f61f8ac",
+      "document_type": "invoice",
+      "quality": "low_resolution",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": "INVOICE INV-2026-0042\nExample Supplies\nBill to: Sample Company\nIssue date: 04 October 2026\nDue date: 18 October 2026\nConsulting: 3 hours at 80.00\nSubtotal 240.00\nTax 24.00\nTOTAL DUE 264.00",
+      "expected_fields": {},
+      "extraction": null
+    },
+    {
+      "id": "invoice_dark",
+      "image": "images/invoice_dark.png",
+      "sha256": "2bf5bcdad98717e8a4acb4706428b7d7f788407e2866020333549c93adb3292b",
+      "document_type": "invoice",
+      "quality": "dark",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": "INVOICE INV-2026-0042\nExample Supplies\nBill to: Sample Company\nIssue date: 04 October 2026\nDue date: 18 October 2026\nConsulting: 3 hours at 80.00\nSubtotal 240.00\nTax 24.00\nTOTAL DUE 264.00",
+      "expected_fields": {},
+      "extraction": null
+    },
+    {
+      "id": "invoice_moderate_blur",
+      "image": "images/invoice_moderate_blur.png",
+      "sha256": "1d388d827ab40345a7c45150bcbe87b8d03e897387267c5ee94de334c9fa3408",
+      "document_type": "invoice",
+      "quality": "moderate_blur",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": "INVOICE INV-2026-0042\nExample Supplies\nBill to: Sample Company\nIssue date: 04 October 2026\nDue date: 18 October 2026\nConsulting: 3 hours at 80.00\nSubtotal 240.00\nTax 24.00\nTOTAL DUE 264.00",
+      "expected_fields": {},
+      "extraction": null
+    },
+    {
+      "id": "french_clear",
+      "image": "images/french_clear.png",
+      "sha256": "4345480520f62911d1f6065c699470b5295059ef5f7ac5420691d6ff0e5dc8de",
+      "document_type": "french",
+      "quality": "clear",
+      "language_hints": [
+        "fr"
+      ],
+      "reference_text": "FACTURE EXEMPLE\nNum\u00e9ro 2042\nDate 4 octobre 2026\nCaf\u00e9 et p\u00e2tisserie\nSous-total 12,50 EUR\nTaxe 1,25 EUR\nTOTAL 13,75 EUR",
+      "expected_fields": {},
+      "extraction": null
+    },
+    {
+      "id": "spanish_clear",
+      "image": "images/spanish_clear.png",
+      "sha256": "f1845e8f7e5cb51c6d651a78e863017c3cd6d103595e07286e8cd981c7467128",
+      "document_type": "spanish",
+      "quality": "clear",
+      "language_hints": [
+        "es"
+      ],
+      "reference_text": "RECIBO DE EJEMPLO\nN\u00famero 3042\nFecha 4 de octubre de 2026\nCaf\u00e9 y bocadillo\nSubtotal 10,00 EUR\nImpuesto 1,00 EUR\nTOTAL 11,00 EUR",
+      "expected_fields": {},
+      "extraction": null
+    }
+  ]
+}

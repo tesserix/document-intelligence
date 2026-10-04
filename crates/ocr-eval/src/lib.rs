@@ -1,5 +1,8 @@
 //! Bounded, provider-neutral OCR evaluation metrics.
 
+mod benchmark;
+pub use benchmark::{score_benchmark, BenchmarkError, BenchmarkReport, CaseScore};
+
 use thiserror::Error;
 use unicode_normalization::UnicodeNormalization;
 

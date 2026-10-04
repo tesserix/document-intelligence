@@ -404,3 +404,59 @@ fn inherited_optional_value<'a>(
     }
     Err(Error::InvalidDocument)
 }
+
+/// Upscale small, single-frame images; coordinates remain normalized to the same content.
+pub fn prepare_ocr_image(encoded: &[u8], content_type: &str) -> Result<Option<Vec<u8>>> {
+    if !matches!(content_type, "image/png" | "image/jpeg" | "image/webp") {
+        return Ok(None);
+    }
+    if encoded.len() > 20 * 1024 * 1024 {
+        return Err(Error::InvalidDocument);
+    }
+    let format = match content_type {
+        "image/png" => ImageFormat::Png,
+        "image/jpeg" => ImageFormat::Jpeg,
+        _ => ImageFormat::WebP,
+    };
+    let make_reader = || {
+        let mut reader = ImageReader::with_format(Cursor::new(encoded), format);
+        let mut limits = image::Limits::default();
+        limits.max_alloc = Some(64 * 1024 * 1024);
+        reader.limits(limits);
+        reader
+    };
+    let (width, height) = make_reader()
+        .into_dimensions()
+        .map_err(|_| Error::InvalidDocument)?;
+    if width.min(height) < 64 || width.max(height) > 640 {
+        return Ok(None);
+    }
+    let animated = match format {
+        ImageFormat::Png => image::codecs::png::PngDecoder::new(Cursor::new(encoded))
+            .and_then(|decoder| decoder.is_apng())
+            .map_err(|_| Error::InvalidDocument)?,
+        ImageFormat::WebP => image::codecs::webp::WebPDecoder::new(Cursor::new(encoded))
+            .map_err(|_| Error::InvalidDocument)?
+            .has_animation(),
+        _ => false,
+    };
+    if animated {
+        return Ok(None);
+    }
+    use image::ImageDecoder as _;
+    let mut decoder = make_reader()
+        .into_decoder()
+        .map_err(|_| Error::InvalidDocument)?;
+    if decoder.orientation().map_err(|_| Error::InvalidDocument)?
+        != image::metadata::Orientation::NoTransforms
+    {
+        return Ok(None);
+    }
+    let image = image::DynamicImage::from_decoder(decoder).map_err(|_| Error::InvalidDocument)?;
+    let enlarged = image.resize_exact(width * 3, height * 3, image::imageops::FilterType::Lanczos3);
+    let mut output = Cursor::new(Vec::new());
+    enlarged
+        .write_to(&mut output, ImageFormat::Png)
+        .map_err(|_| Error::InvalidDocument)?;
+    Ok(Some(output.into_inner()))
+}

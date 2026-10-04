@@ -1,14 +1,19 @@
 use std::{
     env,
     ffi::OsString,
-    io::{self, Read},
+    io::{self, Read, Write},
     process::ExitCode,
 };
 
 use ocr_parser_sandbox::{inspect_document, DocumentLimits, Error, MAXIMUM_ENCODED_BYTES};
 
 fn main() -> ExitCode {
-    let Some((content_type, limits)) = configuration(env::args_os().skip(1)) else {
+    let mut arguments = env::args_os().skip(1).peekable();
+    let prepare = arguments.peek().is_some_and(|value| value == "prepare-ocr");
+    if prepare {
+        arguments.next();
+    }
+    let Some((content_type, limits)) = configuration(arguments) else {
         return ExitCode::from(2);
     };
     let maximum_read = match u64::try_from(MAXIMUM_ENCODED_BYTES)
@@ -26,6 +31,19 @@ fn main() -> ExitCode {
         .is_err()
     {
         return ExitCode::from(13);
+    }
+    if prepare {
+        return match ocr_parser_sandbox::prepare_ocr_image(&encoded, &content_type) {
+            Ok(Some(bytes)) => {
+                if io::stdout().lock().write_all(&bytes).is_ok() {
+                    ExitCode::SUCCESS
+                } else {
+                    ExitCode::from(13)
+                }
+            }
+            Ok(None) => ExitCode::SUCCESS,
+            Err(_) => ExitCode::from(10),
+        };
     }
     match inspect_document(&encoded, &content_type, limits) {
         Ok(report) => match serde_json::to_writer(io::stdout().lock(), &report) {
