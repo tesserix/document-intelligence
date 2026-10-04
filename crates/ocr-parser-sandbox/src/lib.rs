@@ -418,11 +418,11 @@ pub fn prepare_ocr_image(encoded: &[u8], content_type: &str) -> Result<Option<Ve
         "image/jpeg" => ImageFormat::Jpeg,
         _ => ImageFormat::WebP,
     };
+    let mut limits = image::Limits::default();
+    limits.max_alloc = Some(64 * 1024 * 1024);
     let make_reader = || {
         let mut reader = ImageReader::with_format(Cursor::new(encoded), format);
-        let mut limits = image::Limits::default();
-        limits.max_alloc = Some(64 * 1024 * 1024);
-        reader.limits(limits);
+        reader.limits(limits.clone());
         reader
     };
     let (width, height) = make_reader()
@@ -432,9 +432,11 @@ pub fn prepare_ocr_image(encoded: &[u8], content_type: &str) -> Result<Option<Ve
         return Ok(None);
     }
     let animated = match format {
-        ImageFormat::Png => image::codecs::png::PngDecoder::new(Cursor::new(encoded))
-            .and_then(|decoder| decoder.is_apng())
-            .map_err(|_| Error::InvalidDocument)?,
+        ImageFormat::Png => {
+            image::codecs::png::PngDecoder::with_limits(Cursor::new(encoded), limits.clone())
+                .and_then(|decoder| decoder.is_apng())
+                .map_err(|_| Error::InvalidDocument)?
+        }
         ImageFormat::WebP => image::codecs::webp::WebPDecoder::new(Cursor::new(encoded))
             .map_err(|_| Error::InvalidDocument)?
             .has_animation(),
