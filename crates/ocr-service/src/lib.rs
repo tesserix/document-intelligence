@@ -5,10 +5,12 @@ mod digest;
 mod document_ai;
 mod document_finalizer;
 mod document_reader;
+mod extraction;
 mod importer;
 mod job_status_cache;
 mod malware;
 mod mcp;
+mod nutrition_label;
 mod outbox_relay;
 mod page_artifacts;
 mod page_processor;
@@ -47,6 +49,7 @@ pub use document_ai::{
 };
 
 pub use document_finalizer::{DocumentFinalizeError, DocumentFinalizer};
+pub use extraction::{ExtractedFields, ExtractionSchema};
 pub use page_artifacts::{
     GcsPageArtifactReader, GcsPageArtifactWriter, PageArtifactConfigurationError,
     PageArtifactReadError, PageArtifactReadFuture, PageArtifactReader, PageArtifactWriteError,
@@ -478,8 +481,8 @@ impl CreateJobRequest {
                 .enumerate()
                 .all(|(index, hint)| !self.language_hints[..index].contains(hint));
         let extraction_is_valid = self.extraction.as_ref().is_none_or(|extraction| {
-            (1..=128).contains(&extraction.schema_id.len())
-                && (1..=64).contains(&extraction.schema_version.len())
+            ExtractionSchema::registered(&extraction.schema_id, &extraction.schema_version)
+                .is_some()
         });
         language_hints_are_valid && extraction_is_valid
     }

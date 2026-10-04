@@ -82,6 +82,7 @@ fn assembles_pages_in_reading_order_with_leaf_citations_and_untrusted_text() {
         DocumentId::new("doc_ASSEMBLY").unwrap(),
         DocumentVersion::new(&format!("sha256:{}", "a".repeat(64))).unwrap(),
         vec![page_two, page_one],
+        None,
     )
     .unwrap();
 
@@ -124,6 +125,7 @@ fn rejects_an_assembled_result_over_the_service_limit() {
         DocumentId::new("doc_TOO_LARGE").unwrap(),
         DocumentVersion::new(&format!("sha256:{}", "b".repeat(64))).unwrap(),
         vec![page],
+        None,
     )
     .is_err());
 }
