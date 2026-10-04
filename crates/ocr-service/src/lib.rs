@@ -112,7 +112,8 @@ use ocr_domain::{
 pub use ocr_store::StoredUpload;
 use ocr_store::{
     CancelOutcome, CreateJob, CreateOutcome, CreateUpload, CreateUploadOutcome, PgJobStore,
-    RecordUpload, RecordUploadOutcome, ResultLookup, StoredResultLocator, UploadState,
+    RecordUpload, RecordUploadOutcome, ResultLookup, SchemaReference, StoredResultLocator,
+    UploadState,
 };
 use opentelemetry::{global, propagation::Extractor};
 use serde::{Deserialize, Serialize};
@@ -1212,6 +1213,13 @@ async fn create_job(
             request_digest,
             upload_id,
             webhook_subscription_id,
+            extraction: command
+                .extraction
+                .as_ref()
+                .map(|extraction| SchemaReference {
+                    schema_id: extraction.schema_id.clone(),
+                    schema_version: extraction.schema_version.clone(),
+                }),
         })
         .await
         .map_err(|error| match error {

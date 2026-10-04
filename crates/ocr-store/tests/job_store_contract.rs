@@ -8,8 +8,8 @@ use ocr_store::{
     CompleteCancellationOutcome, CreateJob, CreateOutcome, CreatePageWorkflowOutcome, CreateUpload,
     CreateUploadOutcome, Error, JobOutboxEventType, ParserInspectionMetadata, PgJobStore,
     PgWorkScopeDirectory, PublishJobOutboxOutcome, RecordUpload, RecordUploadOutcome,
-    RejectUploadOutcome, ResultLookup, SavePageWorkflowOutcome, UploadRejectionReason,
-    WebhookOutboxEventType,
+    RejectUploadOutcome, ResultLookup, SavePageWorkflowOutcome, SchemaReference,
+    UploadRejectionReason, WebhookOutboxEventType,
 };
 use sqlx::PgPool;
 
@@ -23,6 +23,7 @@ fn request(job_id: &str, tenant_id: &str, key: &str, digest: char) -> CreateJob 
             .unwrap(),
         upload_id: upload_id_for(tenant_id),
         webhook_subscription_id: None,
+        extraction: None,
     }
 }
 
@@ -277,6 +278,57 @@ async fn set_upload_state(admin_pool: &PgPool, tenant_id: &str, state: &str) {
 async fn seed_accepted_upload(admin_pool: &PgPool, tenant_id: &str) {
     seed_uploaded_upload(admin_pool, tenant_id).await;
     set_upload_state(admin_pool, tenant_id, "accepted").await;
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn document_identity_carries_the_requested_extraction_schema() {
+    let (store, admin_pool, _) = store().await;
+    clear_fixture(&admin_pool, &["job_EXTRACTION_SCHEMA", "job_NO_EXTRACTION"]).await;
+    seed_accepted_upload(&admin_pool, "ten_EXTRACTION_SCHEMA").await;
+    let tenant = TenantId::new("ten_EXTRACTION_SCHEMA").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let schema = SchemaReference {
+        schema_id: "kora.nutrition_label".to_owned(),
+        schema_version: "1".to_owned(),
+    };
+    let mut create = request("job_EXTRACTION_SCHEMA", tenant.as_str(), "extraction", 'a');
+    create.extraction = Some(schema.clone());
+    store.create(create).await.unwrap();
+    store
+        .create(request(
+            "job_NO_EXTRACTION",
+            tenant.as_str(),
+            "no-extraction",
+            'b',
+        ))
+        .await
+        .unwrap();
+
+    let identity = store
+        .load_document_identity(
+            &tenant,
+            &product,
+            &JobId::new("job_EXTRACTION_SCHEMA").unwrap(),
+        )
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(identity.extraction, Some(schema));
+    let plain = store
+        .load_document_identity(&tenant, &product, &JobId::new("job_NO_EXTRACTION").unwrap())
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(plain.extraction, None);
+
+    let half_pair = sqlx::query(
+        "update ocr_jobs set extraction_schema_version = null \
+         where job_id = 'job_EXTRACTION_SCHEMA'",
+    )
+    .execute(&admin_pool)
+    .await;
+    assert!(half_pair.is_err());
 }
 
 #[tokio::test]

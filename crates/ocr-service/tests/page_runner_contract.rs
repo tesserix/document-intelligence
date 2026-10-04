@@ -238,6 +238,29 @@ impl PageArtifactReader for WrongPageJsonReader {
     }
 }
 
+#[derive(Default)]
+struct CapturingResultWriter {
+    failures: Mutex<Vec<String>>,
+}
+
+impl ResultArtifactWriter for CapturingResultWriter {
+    fn write<'a>(
+        &'a self,
+        product_id: &'a ProductId,
+        tenant_id: &'a TenantId,
+        job_id: &'a JobId,
+        result: &'a DocumentResult,
+    ) -> ResultArtifactWriteFuture<'a> {
+        self.failures.lock().unwrap().extend(
+            result
+                .validation_failures
+                .iter()
+                .map(|failure| String::from(failure.code.clone())),
+        );
+        MatchingResultWriter.write(product_id, tenant_id, job_id, result)
+    }
+}
+
 struct MatchingResultWriter;
 
 impl ResultArtifactWriter for MatchingResultWriter {
@@ -346,6 +369,7 @@ async fn seed_job(store: &PgJobStore, admin_pool: &PgPool, job_id: &str, tenant_
             request_digest: RequestDigest::new(&format!("sha256:{}", "a".repeat(64))).unwrap(),
             upload_id,
             webhook_subscription_id: None,
+            extraction: None,
         })
         .await
         .unwrap();
@@ -698,6 +722,7 @@ async fn finalizer_reads_every_completed_page_and_publishes_the_document() {
                 &job,
                 document_id.clone(),
                 document_version.clone(),
+                None,
             )
             .await,
         Err(ocr_service::DocumentFinalizeError::InvalidPageArtifact)
@@ -717,7 +742,7 @@ async fn finalizer_reads_every_completed_page_and_publishes_the_document() {
 
     assert!(matches!(
         finalizer
-            .finalize(&tenant, &product, &job, document_id, document_version,)
+            .finalize(&tenant, &product, &job, document_id, document_version, None,)
             .await
             .unwrap(),
         CommitResultOutcome::Committed(_)
@@ -726,4 +751,82 @@ async fn finalizer_reads_every_completed_page_and_publishes_the_document() {
         store.find_result(&tenant, &product, &job).await.unwrap(),
         ResultLookup::Ready(_)
     ));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn finalizer_applies_the_extraction_schema_stored_on_the_job() {
+    let (store, admin_pool) = store().await;
+    let product = ProductId::new("kora").unwrap();
+    let registered = (
+        TenantId::new("ten_EXTRACTION").unwrap(),
+        JobId::new("job_EXTRACTION_REGISTERED").unwrap(),
+    );
+    let retired = (
+        TenantId::new("ten_RETIRED").unwrap(),
+        JobId::new("job_EXTRACTION_RETIRED").unwrap(),
+    );
+    for ((tenant, job), schema_id) in [
+        (&registered, "kora.nutrition_label"),
+        (&retired, "kora.retired_schema"),
+    ] {
+        seed_job(&store, &admin_pool, job.as_str(), tenant.as_str()).await;
+        sqlx::query(
+            "update ocr_jobs set extraction_schema_id = $2, extraction_schema_version = '1' \
+             where job_id = $1",
+        )
+        .bind(job.as_str())
+        .bind(schema_id)
+        .execute(&admin_pool)
+        .await
+        .unwrap();
+        store
+            .create_page_workflow(
+                tenant,
+                &product,
+                job,
+                PageWorkflow::new(job.clone(), 1, 1).unwrap(),
+            )
+            .await
+            .unwrap();
+        let processor = RecordingProcessor::default();
+        CheckpointedPageRunner::new(&store, &processor, 1, 1)
+            .unwrap()
+            .run_once(tenant, &product, job)
+            .await
+            .unwrap();
+    }
+    let writer = Arc::new(CapturingResultWriter::default());
+    let finalizer = DocumentFinalizer::new(
+        store.clone(),
+        Arc::new(PageJsonReader),
+        ResultPublisher::new(store.clone(), writer.clone()),
+        1,
+    )
+    .unwrap();
+
+    finalizer
+        .finalize_stored(&registered.0, &product, &registered.1)
+        .await
+        .unwrap();
+    assert_eq!(
+        *writer.failures.lock().unwrap(),
+        vec!["nutrition_panel_not_found".to_owned()]
+    );
+
+    assert!(matches!(
+        finalizer
+            .finalize_stored(&retired.0, &product, &retired.1)
+            .await,
+        Err(ocr_service::DocumentFinalizeError::UnregisteredSchema)
+    ));
+    assert_eq!(
+        store
+            .find(&retired.0, &product, &retired.1)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Processing
+    );
 }
