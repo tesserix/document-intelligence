@@ -106,7 +106,23 @@ Supported document types are `auto`, `general`, `invoice`, `receipt`,
 `medical_form`, `application_form`, and `resume`. Processing class is
 `interactive`, `priority`, or `batch`. Schema extraction uses an immutable,
 registered `schema_id` and `schema_version`; clients never submit executable
-rules or provider prompts.
+rules or provider prompts. An unregistered pair is rejected with
+`invalid_job_request`.
+
+Registered schemas:
+
+| `schema_id` | `schema_version` | Fields |
+|---|---|---|
+| `kora.nutrition_label` | `1` | `serving_size` (`{amount, unit}`), `servings_per_pack`, `column_headers`, `barcode` (check-digit verified GTIN), `locale`, and `<column>.<nutrient>` for columns `per_serving`, `per_100g`, `per_100ml` and nutrients `energy_kj`, `energy_kcal`, `protein_g`, `fat_g`, `saturated_fat_g`, `carbohydrate_g`, `sugars_g`, `fibre_g`, `sodium_mg` |
+
+`kora.nutrition_label` extraction is deterministic: no model reads the label.
+Values are normalised to the field's unit but never corrected; `<1g` style
+upper bounds are left out rather than guessed. Inconsistencies are reported
+as warnings in `validation_failures` (`energy_unit_mismatch`,
+`energy_atwater_mismatch`, `saturated_fat_exceeds_fat`,
+`sugars_exceed_carbohydrate`, `per_100g_exceeds_100g`,
+`serving_column_mismatch`), and an unreadable panel as an error
+(`nutrition_panel_not_found`, `nutrition_columns_unidentified`).
 
 ## Safe result and agent use
 

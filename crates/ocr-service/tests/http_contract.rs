@@ -565,6 +565,14 @@ async fn create_rejects_unbounded_extraction_inputs_before_database_work() {
                 "extraction": {"schema_id": "", "schema_version": "1.0"}
             }),
         ),
+        (
+            "unregistered extraction schema",
+            serde_json::json!({
+                "source": {"upload_id": "upl_ALPHA"},
+                "document_type": "auto",
+                "extraction": {"schema_id": "kora.nutrition_label", "schema_version": "2"}
+            }),
+        ),
     ];
 
     for (index, (name, body)) in cases.into_iter().enumerate() {

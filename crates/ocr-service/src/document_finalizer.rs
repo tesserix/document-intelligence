@@ -105,7 +105,8 @@ where
         .await
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
-        let result = assemble_document_result(document_id, document_version, pages)?;
+        // The job's requested schema is not persisted yet, so stored jobs finalize without extraction.
+        let result = assemble_document_result(document_id, document_version, pages, None)?;
         self.publisher
             .publish(tenant_id, product_id, job_id, terminal_state, &result)
             .await

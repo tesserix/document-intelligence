@@ -6,7 +6,7 @@ use ocr_domain::{
 };
 use thiserror::Error;
 
-use crate::MAXIMUM_RESULT_BYTES;
+use crate::{ExtractionSchema, MAXIMUM_RESULT_BYTES};
 
 #[derive(Debug, Error)]
 pub enum ResultAssemblyError {
@@ -22,6 +22,7 @@ pub fn assemble_document_result(
     document_id: DocumentId,
     document_version: DocumentVersion,
     mut pages: Vec<DocumentPage>,
+    schema: Option<ExtractionSchema>,
 ) -> Result<DocumentResult, ResultAssemblyError> {
     pages.sort_by_key(|page| u32::from(page.page));
     let mut text = String::new();
@@ -57,6 +58,9 @@ pub fn assemble_document_result(
         }
     }
 
+    let extraction = schema
+        .map(|schema| schema.extract(&pages))
+        .unwrap_or_default();
     let result = DocumentResult::new(
         document_id,
         document_version,
@@ -64,6 +68,8 @@ pub fn assemble_document_result(
             text,
             pages,
             citations,
+            fields: extraction.fields,
+            validation_failures: extraction.validation_failures,
             ..DocumentResultPayload::default()
         },
     )?;
