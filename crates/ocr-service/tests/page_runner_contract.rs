@@ -814,6 +814,16 @@ async fn finalizer_applies_the_extraction_schema_stored_on_the_job() {
         vec!["nutrition_panel_not_found".to_owned()]
     );
 
+    assert_eq!(
+        store
+            .find(&registered.0, &product, &registered.1)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::ReviewRequired,
+    );
+
     assert!(matches!(
         finalizer
             .finalize_stored(&retired.0, &product, &retired.1)

@@ -110,6 +110,12 @@ where
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
         let result = assemble_document_result(document_id, document_version, pages, schema)?;
+        let terminal_state =
+            if terminal_state == JobState::Completed && !result.validation_failures.is_empty() {
+                JobState::ReviewRequired
+            } else {
+                terminal_state
+            };
         self.publisher
             .publish(tenant_id, product_id, job_id, terminal_state, &result)
             .await

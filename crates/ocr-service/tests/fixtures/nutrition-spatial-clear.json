@@ -1,0 +1,905 @@
+[
+  {
+    "page": 1,
+    "width": 1400,
+    "height": 1080,
+    "observations": [
+      {
+        "observation_id": "obs_gdoc_1_1",
+        "level": "line",
+        "text": "NUTRITION INFORMATION\n",
+        "confidence": 0.98916095,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.058571428,
+              "y": 0.06851852
+            },
+            {
+              "x": 0.4892857,
+              "y": 0.06851852
+            },
+            {
+              "x": 0.4892857,
+              "y": 0.10185185
+            },
+            {
+              "x": 0.058571428,
+              "y": 0.10185185
+            }
+          ]
+        },
+        "reading_order": 0,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_2",
+        "level": "line",
+        "text": "Servings per package: 4\n",
+        "confidence": 0.9875985,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.05642857,
+              "y": 0.13333334
+            },
+            {
+              "x": 0.31785715,
+              "y": 0.13425925
+            },
+            {
+              "x": 0.31785715,
+              "y": 0.16388889
+            },
+            {
+              "x": 0.05642857,
+              "y": 0.16296296
+            }
+          ]
+        },
+        "reading_order": 1,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_3",
+        "level": "line",
+        "text": "Serving size: 50 g\n",
+        "confidence": 0.98165786,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.05642857,
+              "y": 0.18611111
+            },
+            {
+              "x": 0.24928571,
+              "y": 0.18425927
+            },
+            {
+              "x": 0.24928571,
+              "y": 0.21388888
+            },
+            {
+              "x": 0.05642857,
+              "y": 0.21574074
+            }
+          ]
+        },
+        "reading_order": 2,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_4",
+        "level": "line",
+        "text": "Per serving\n",
+        "confidence": 0.9840421,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.49,
+              "y": 0.25925925
+            },
+            {
+              "x": 0.5978571,
+              "y": 0.26203704
+            },
+            {
+              "x": 0.5971429,
+              "y": 0.28425926
+            },
+            {
+              "x": 0.4892857,
+              "y": 0.28148147
+            }
+          ]
+        },
+        "reading_order": 3,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_5",
+        "level": "line",
+        "text": "Per 100 g\n",
+        "confidence": 0.9857633,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.75714284,
+              "y": 0.25833333
+            },
+            {
+              "x": 0.85071427,
+              "y": 0.26018518
+            },
+            {
+              "x": 0.85,
+              "y": 0.28425926
+            },
+            {
+              "x": 0.75714284,
+              "y": 0.2824074
+            }
+          ]
+        },
+        "reading_order": 4,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_6",
+        "level": "line",
+        "text": "Energy\n",
+        "confidence": 0.9876412,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.058571428,
+              "y": 0.31944445
+            },
+            {
+              "x": 0.13428572,
+              "y": 0.32037038
+            },
+            {
+              "x": 0.13428572,
+              "y": 0.3472222
+            },
+            {
+              "x": 0.058571428,
+              "y": 0.3462963
+            }
+          ]
+        },
+        "reading_order": 5,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_7",
+        "level": "line",
+        "text": "418.4 kJ\n",
+        "confidence": 0.9046725,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.49928573,
+              "y": 0.32037038
+            },
+            {
+              "x": 0.5907143,
+              "y": 0.3212963
+            },
+            {
+              "x": 0.5907143,
+              "y": 0.3425926
+            },
+            {
+              "x": 0.49928573,
+              "y": 0.34166667
+            }
+          ]
+        },
+        "reading_order": 6,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_8",
+        "level": "line",
+        "text": "836.8 kJ\n",
+        "confidence": 0.914645,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.7714286,
+              "y": 0.3212963
+            },
+            {
+              "x": 0.86142856,
+              "y": 0.32222223
+            },
+            {
+              "x": 0.86142856,
+              "y": 0.34351853
+            },
+            {
+              "x": 0.7714286,
+              "y": 0.3425926
+            }
+          ]
+        },
+        "reading_order": 7,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_9",
+        "level": "line",
+        "text": "Energy\n",
+        "confidence": 0.98590124,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.057857145,
+              "y": 0.38333333
+            },
+            {
+              "x": 0.135,
+              "y": 0.38518518
+            },
+            {
+              "x": 0.13428572,
+              "y": 0.41111112
+            },
+            {
+              "x": 0.057142857,
+              "y": 0.40925926
+            }
+          ]
+        },
+        "reading_order": 8,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_10",
+        "level": "line",
+        "text": "100 kcal\n",
+        "confidence": 0.9782683,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.50142854,
+              "y": 0.38425925
+            },
+            {
+              "x": 0.59,
+              "y": 0.38518518
+            },
+            {
+              "x": 0.59,
+              "y": 0.4074074
+            },
+            {
+              "x": 0.50142854,
+              "y": 0.40648147
+            }
+          ]
+        },
+        "reading_order": 9,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_11",
+        "level": "line",
+        "text": "200 kcal\n",
+        "confidence": 0.9845682,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.7714286,
+              "y": 0.38425925
+            },
+            {
+              "x": 0.86142856,
+              "y": 0.38425925
+            },
+            {
+              "x": 0.86142856,
+              "y": 0.40555555
+            },
+            {
+              "x": 0.7714286,
+              "y": 0.40555555
+            }
+          ]
+        },
+        "reading_order": 10,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_12",
+        "level": "line",
+        "text": "Protein\n",
+        "confidence": 0.98708665,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.057142857,
+              "y": 0.44722223
+            },
+            {
+              "x": 0.13285714,
+              "y": 0.44722223
+            },
+            {
+              "x": 0.13285714,
+              "y": 0.46944445
+            },
+            {
+              "x": 0.057142857,
+              "y": 0.46944445
+            }
+          ]
+        },
+        "reading_order": 11,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_13",
+        "level": "line",
+        "text": "5.0 g\n",
+        "confidence": 0.9614983,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.5007143,
+              "y": 0.44444445
+            },
+            {
+              "x": 0.5535714,
+              "y": 0.44907406
+            },
+            {
+              "x": 0.55214286,
+              "y": 0.47592592
+            },
+            {
+              "x": 0.49928573,
+              "y": 0.4712963
+            }
+          ]
+        },
+        "reading_order": 12,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_14",
+        "level": "line",
+        "text": "10.0 g\n",
+        "confidence": 0.98097473,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.7728571,
+              "y": 0.44444445
+            },
+            {
+              "x": 0.8385714,
+              "y": 0.44814816
+            },
+            {
+              "x": 0.8378571,
+              "y": 0.47592592
+            },
+            {
+              "x": 0.7721428,
+              "y": 0.4722222
+            }
+          ]
+        },
+        "reading_order": 13,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_15",
+        "level": "line",
+        "text": "Fat, total\n",
+        "confidence": 0.9835663,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.057857145,
+              "y": 0.5092593
+            },
+            {
+              "x": 0.14928572,
+              "y": 0.50648147
+            },
+            {
+              "x": 0.15,
+              "y": 0.53333336
+            },
+            {
+              "x": 0.058571428,
+              "y": 0.5361111
+            }
+          ]
+        },
+        "reading_order": 14,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_16",
+        "level": "line",
+        "text": "2.0 g\n",
+        "confidence": 0.97181576,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.5,
+              "y": 0.50555557
+            },
+            {
+              "x": 0.5535714,
+              "y": 0.5138889
+            },
+            {
+              "x": 0.55142856,
+              "y": 0.5388889
+            },
+            {
+              "x": 0.49785715,
+              "y": 0.53055555
+            }
+          ]
+        },
+        "reading_order": 15,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_17",
+        "level": "line",
+        "text": "4.0 g\n",
+        "confidence": 0.97507346,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.7714286,
+              "y": 0.5046296
+            },
+            {
+              "x": 0.8257143,
+              "y": 0.5138889
+            },
+            {
+              "x": 0.82357144,
+              "y": 0.5388889
+            },
+            {
+              "x": 0.76857144,
+              "y": 0.53055555
+            }
+          ]
+        },
+        "reading_order": 16,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_18",
+        "level": "line",
+        "text": "Saturated fat\n",
+        "confidence": 0.9865499,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.057142857,
+              "y": 0.57222223
+            },
+            {
+              "x": 0.19714285,
+              "y": 0.57222223
+            },
+            {
+              "x": 0.19714285,
+              "y": 0.59537035
+            },
+            {
+              "x": 0.057142857,
+              "y": 0.59537035
+            }
+          ]
+        },
+        "reading_order": 17,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_19",
+        "level": "line",
+        "text": "0.5 g\n",
+        "confidence": 0.87845075,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.49928573,
+              "y": 0.5703704
+            },
+            {
+              "x": 0.5535714,
+              "y": 0.5740741
+            },
+            {
+              "x": 0.55214286,
+              "y": 0.6
+            },
+            {
+              "x": 0.49857143,
+              "y": 0.5962963
+            }
+          ]
+        },
+        "reading_order": 18,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_20",
+        "level": "line",
+        "text": "1.0 g\n",
+        "confidence": 0.97979397,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.7728571,
+              "y": 0.5685185
+            },
+            {
+              "x": 0.8257143,
+              "y": 0.57685184
+            },
+            {
+              "x": 0.82357144,
+              "y": 0.6027778
+            },
+            {
+              "x": 0.7707143,
+              "y": 0.59444445
+            }
+          ]
+        },
+        "reading_order": 19,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_21",
+        "level": "line",
+        "text": "Carbohydrate\n",
+        "confidence": 0.985092,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.057142857,
+              "y": 0.6351852
+            },
+            {
+              "x": 0.20357142,
+              "y": 0.6351852
+            },
+            {
+              "x": 0.20357142,
+              "y": 0.662037
+            },
+            {
+              "x": 0.057142857,
+              "y": 0.662037
+            }
+          ]
+        },
+        "reading_order": 20,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_22",
+        "level": "line",
+        "text": "15.5 g\n",
+        "confidence": 0.9599738,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.50214285,
+              "y": 0.63055557
+            },
+            {
+              "x": 0.56714284,
+              "y": 0.63703704
+            },
+            {
+              "x": 0.565,
+              "y": 0.66481483
+            },
+            {
+              "x": 0.5007143,
+              "y": 0.65833336
+            }
+          ]
+        },
+        "reading_order": 21,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_23",
+        "level": "line",
+        "text": "31.0 g\n",
+        "confidence": 0.9802904,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.7714286,
+              "y": 0.6324074
+            },
+            {
+              "x": 0.8371429,
+              "y": 0.63703704
+            },
+            {
+              "x": 0.8357143,
+              "y": 0.662963
+            },
+            {
+              "x": 0.7707143,
+              "y": 0.65833336
+            }
+          ]
+        },
+        "reading_order": 22,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_24",
+        "level": "line",
+        "text": "Sugars\n",
+        "confidence": 0.84578025,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.057142857,
+              "y": 0.6990741
+            },
+            {
+              "x": 0.13428572,
+              "y": 0.6990741
+            },
+            {
+              "x": 0.13428572,
+              "y": 0.725
+            },
+            {
+              "x": 0.057142857,
+              "y": 0.725
+            }
+          ]
+        },
+        "reading_order": 23,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_25",
+        "level": "line",
+        "text": "2.0 g\n",
+        "confidence": 0.9680579,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.5,
+              "y": 0.69722223
+            },
+            {
+              "x": 0.5535714,
+              "y": 0.70092595
+            },
+            {
+              "x": 0.55285716,
+              "y": 0.7268519
+            },
+            {
+              "x": 0.49928573,
+              "y": 0.72314817
+            }
+          ]
+        },
+        "reading_order": 24,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_26",
+        "level": "line",
+        "text": "4.0 g\n",
+        "confidence": 0.9658726,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.7707143,
+              "y": 0.6962963
+            },
+            {
+              "x": 0.825,
+              "y": 0.70185184
+            },
+            {
+              "x": 0.82357144,
+              "y": 0.7268519
+            },
+            {
+              "x": 0.76928574,
+              "y": 0.7212963
+            }
+          ]
+        },
+        "reading_order": 25,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_27",
+        "level": "line",
+        "text": "Dietary fibre\n",
+        "confidence": 0.98271716,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.057857145,
+              "y": 0.76111114
+            },
+            {
+              "x": 0.18642858,
+              "y": 0.7583333
+            },
+            {
+              "x": 0.18714286,
+              "y": 0.787037
+            },
+            {
+              "x": 0.058571428,
+              "y": 0.78981483
+            }
+          ]
+        },
+        "reading_order": 26,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_28",
+        "level": "line",
+        "text": "1.5 g\n",
+        "confidence": 0.958127,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.50142854,
+              "y": 0.7583333
+            },
+            {
+              "x": 0.5535714,
+              "y": 0.7648148
+            },
+            {
+              "x": 0.55142856,
+              "y": 0.7907407
+            },
+            {
+              "x": 0.49928573,
+              "y": 0.78425926
+            }
+          ]
+        },
+        "reading_order": 27,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_29",
+        "level": "line",
+        "text": "3.0 g\n",
+        "confidence": 0.97178674,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.7721428,
+              "y": 0.7583333
+            },
+            {
+              "x": 0.8257143,
+              "y": 0.76574075
+            },
+            {
+              "x": 0.82357144,
+              "y": 0.78981483
+            },
+            {
+              "x": 0.77,
+              "y": 0.7824074
+            }
+          ]
+        },
+        "reading_order": 28,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_30",
+        "level": "line",
+        "text": "Sodium\n",
+        "confidence": 0.9626437,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.057142857,
+              "y": 0.825
+            },
+            {
+              "x": 0.13785714,
+              "y": 0.825
+            },
+            {
+              "x": 0.13785714,
+              "y": 0.8472222
+            },
+            {
+              "x": 0.057142857,
+              "y": 0.8472222
+            }
+          ]
+        },
+        "reading_order": 29,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_31",
+        "level": "line",
+        "text": "100 mg\n",
+        "confidence": 0.9798301,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.50142854,
+              "y": 0.8212963
+            },
+            {
+              "x": 0.5814286,
+              "y": 0.8287037
+            },
+            {
+              "x": 0.58,
+              "y": 0.8518519
+            },
+            {
+              "x": 0.5,
+              "y": 0.84444445
+            }
+          ]
+        },
+        "reading_order": 30,
+        "parent_observation_id": null
+      },
+      {
+        "observation_id": "obs_gdoc_1_32",
+        "level": "line",
+        "text": "200 mg\n",
+        "confidence": 0.98835295,
+        "polygon": {
+          "points": [
+            {
+              "x": 0.7714286,
+              "y": 0.8203704
+            },
+            {
+              "x": 0.8528572,
+              "y": 0.8296296
+            },
+            {
+              "x": 0.85071427,
+              "y": 0.85555553
+            },
+            {
+              "x": 0.77,
+              "y": 0.8462963
+            }
+          ]
+        },
+        "reading_order": 31,
+        "parent_observation_id": null
+      }
+    ]
+  }
+]
