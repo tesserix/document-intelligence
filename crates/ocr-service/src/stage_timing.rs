@@ -44,7 +44,6 @@ mod tests {
         sync::{Arc, Mutex},
         time::Duration,
     };
-    use tracing::instrument::WithSubscriber;
 
     #[derive(Clone)]
     struct Output(Arc<Mutex<Vec<u8>>>);
@@ -57,8 +56,16 @@ mod tests {
             Ok(())
         }
     }
+    fn captured_event(bytes: &[u8], job_id: &str) -> serde_json::Value {
+        String::from_utf8_lossy(bytes)
+            .lines()
+            .map(|line| serde_json::from_str::<serde_json::Value>(line).unwrap())
+            .find(|event| event["fields"]["job_id"] == job_id)
+            .expect("the measured stage must emit an event")
+    }
+
     #[tokio::test(start_paused = true)]
-    async fn reports_stage_duration_and_outcome_without_error_payloads() {
+    async fn reports_error_and_cancelled_stage_durations_without_payloads() {
         let output = Output(Arc::new(Mutex::new(Vec::new())));
         let writer = output.clone();
         let subscriber = tracing_subscriber::fmt()
@@ -66,7 +73,8 @@ mod tests {
             .without_time()
             .with_writer(move || writer.clone())
             .finish();
-        async {
+        tracing::subscriber::set_global_default(subscriber).unwrap();
+        {
             let result = super::measure_stage(
                 "provider",
                 &ocr_domain::JobId::new("job_TIMING").unwrap(),
@@ -78,25 +86,16 @@ mod tests {
             .await;
             assert!(result.is_err());
         }
-        .with_subscriber(subscriber)
-        .await;
-        let bytes = output.0.lock().unwrap();
-        let event: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
-        assert_eq!(event["fields"]["stage"], "provider");
-        assert_eq!(event["fields"]["elapsed_ms"], 123);
-        assert_eq!(event["fields"]["outcome"], "error");
-        assert!(!String::from_utf8_lossy(&bytes).contains("private document text"));
-    }
-    #[tokio::test(start_paused = true)]
-    async fn cancelled_stage_records_its_elapsed_time() {
-        let output = Output(Arc::new(Mutex::new(Vec::new())));
-        let writer = output.clone();
-        let subscriber = tracing_subscriber::fmt()
-            .json()
-            .without_time()
-            .with_writer(move || writer.clone())
-            .finish();
-        async {
+        {
+            let bytes = output.0.lock().unwrap();
+            let event = captured_event(&bytes, "job_TIMING");
+            assert_eq!(event["fields"]["stage"], "provider");
+            assert_eq!(event["fields"]["elapsed_ms"], 123);
+            assert_eq!(event["fields"]["outcome"], "error");
+            assert!(!String::from_utf8_lossy(&bytes).contains("private document text"));
+        }
+        output.0.lock().unwrap().clear();
+        {
             let job = ocr_domain::JobId::new("job_CANCELLED").unwrap();
             let result = tokio::time::timeout(
                 Duration::from_millis(25),
@@ -105,9 +104,7 @@ mod tests {
             .await;
             assert!(result.is_err());
         }
-        .with_subscriber(subscriber)
-        .await;
-        let event: serde_json::Value = serde_json::from_slice(&output.0.lock().unwrap()).unwrap();
+        let event = captured_event(&output.0.lock().unwrap(), "job_CANCELLED");
         assert_eq!(event["fields"]["elapsed_ms"], 25);
         assert_eq!(event["fields"]["outcome"], "cancelled");
     }
