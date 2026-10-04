@@ -811,7 +811,10 @@ async fn finalizer_applies_the_extraction_schema_stored_on_the_job() {
         .unwrap();
     assert_eq!(
         *writer.failures.lock().unwrap(),
-        vec!["nutrition_panel_not_found".to_owned()]
+        vec![
+            "nutrition_panel_not_found".to_owned(),
+            "ocr_no_text_detected".to_owned()
+        ]
     );
 
     assert_eq!(

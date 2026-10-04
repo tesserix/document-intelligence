@@ -35,17 +35,21 @@ where
         terminal_state: JobState,
         result: &DocumentResult,
     ) -> Result<CommitResultOutcome, PublishResultError> {
-        let locator = self
-            .writer
-            .write(product_id, tenant_id, job_id, result)
-            .await?;
+        let locator = crate::stage_timing::measure_stage(
+            "result_storage",
+            job_id,
+            self.writer.write(product_id, tenant_id, job_id, result),
+        )
+        .await?;
         if locator.document_id != result.document_id
             || locator.document_version != result.document_version
         {
             return Err(ResultArtifactWriteError::Invalid.into());
         }
-        self.jobs
-            .commit_result(
+        crate::stage_timing::measure_stage(
+            "result_commit",
+            job_id,
+            self.jobs.commit_result(
                 tenant_id,
                 product_id,
                 job_id,
@@ -53,8 +57,9 @@ where
                     terminal_state,
                     locator,
                 },
-            )
-            .await
-            .map_err(Into::into)
+            ),
+        )
+        .await
+        .map_err(Into::into)
     }
 }

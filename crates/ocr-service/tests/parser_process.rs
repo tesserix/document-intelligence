@@ -109,3 +109,44 @@ async fn parser_process_rejects_noncontiguous_or_summary_inconsistent_page_geome
         );
     }
 }
+
+#[tokio::test]
+async fn preparation_uses_the_isolated_command_and_validates_png_output() {
+    let _guard = parser_test_guard().lock().await;
+    let (_directory, parser) = fixture("test \"$1\" = prepare-ocr || exit 10; cat >/dev/null; printf '\\211PNG\\r\\n\\032\\nprepared'");
+    assert_eq!(
+        parser
+            .prepare_ocr(b"source", "image/png")
+            .await
+            .unwrap()
+            .unwrap(),
+        b"\x89PNG\r\n\x1a\nprepared"
+    );
+    let (_directory, parser) = fixture("cat >/dev/null");
+    assert_eq!(
+        parser.prepare_ocr(b"source", "image/png").await.unwrap(),
+        None
+    );
+    let (_directory, parser) = fixture("cat >/dev/null; printf invalid");
+    assert_eq!(
+        parser
+            .prepare_ocr(b"source", "image/png")
+            .await
+            .unwrap_err(),
+        ParserProcessError::Unavailable
+    );
+}
+
+#[tokio::test]
+async fn parser_does_not_inherit_the_service_environment() {
+    let _guard = parser_test_guard().lock().await;
+    assert!(std::env::var_os("HOME").is_some());
+    let (_directory, parser) = fixture(
+        "cat >/dev/null; test -z \"$HOME\" || exit 10; printf '\\211PNG\\r\\n\\032\\nprepared'",
+    );
+    assert!(parser
+        .prepare_ocr(b"source", "image/png")
+        .await
+        .unwrap()
+        .is_some());
+}

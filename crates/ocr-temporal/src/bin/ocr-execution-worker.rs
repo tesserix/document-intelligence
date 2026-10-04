@@ -85,7 +85,14 @@ async fn run() -> Result<()> {
     );
     let pages = Arc::new(GcsPageArtifactWriter::new(page_buckets.clone())?);
     let processor = ArtifactPageProcessor::new(
-        Arc::new(DocumentAiPageRecognizer::new(source, transport)),
+        Arc::new(
+            DocumentAiPageRecognizer::new(source, transport).with_preprocessor(
+                ocr_service::ParserProcess::new(
+                    "/app/ocr-parser-sandbox".into(),
+                    Duration::from_secs(5),
+                )?,
+            ),
+        ),
         pages,
     );
     let page_executor = CheckpointedPageExecutor::new(

@@ -76,16 +76,19 @@ where
             if u32::from(page.page) != task.page {
                 return Err(PageProcessError::Permanent);
             }
-            let artifact = self
-                .writer
-                .write(product_id, tenant_id, job_id, &task, &page)
-                .await
-                .map_err(|error| match error {
-                    PageArtifactWriteError::Unavailable => PageProcessError::Retryable,
-                    PageArtifactWriteError::Invalid | PageArtifactWriteError::Conflict => {
-                        PageProcessError::Permanent
-                    }
-                })?;
+            let artifact = crate::stage_timing::measure_stage(
+                "page_storage",
+                job_id,
+                self.writer
+                    .write(product_id, tenant_id, job_id, &task, &page),
+            )
+            .await
+            .map_err(|error| match error {
+                PageArtifactWriteError::Unavailable => PageProcessError::Retryable,
+                PageArtifactWriteError::Invalid | PageArtifactWriteError::Conflict => {
+                    PageProcessError::Permanent
+                }
+            })?;
             if artifact.page != task.page
                 || artifact.attempt != task.attempt
                 || artifact.activity_key != task.activity_key

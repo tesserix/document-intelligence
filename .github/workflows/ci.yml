@@ -30,3 +30,21 @@ jobs:
     with:
       images: >-
         [{"name":"ocr-service","context":".","dockerfile":"Dockerfile","target":"","source_root":"crates/ocr-service","smoke_path":"/healthz","smoke_port":8080,"smoke_environment_file":"ci/ocr-service-smoke.env","trivy_ignore_file":"","build_args":"","requires_application_build_secret":false},{"name":"ocr-parser-sandbox","context":".","dockerfile":"Dockerfile.parser","target":"","source_root":"crates/ocr-parser-sandbox","smoke_path":"/","smoke_port":0,"smoke_environment_file":"","trivy_ignore_file":"","build_args":"","requires_application_build_secret":false}]
+
+  benchmark-tools:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Install pinned benchmark test tools
+        run: |
+          python3 -m venv /tmp/ocr-benchmark-tools
+          /tmp/ocr-benchmark-tools/bin/pip install --require-hashes -r scripts/requirements-test.txt
+      - name: Validate benchmark tools and frozen fixtures
+        env:
+          PYTHONPATH: scripts
+        run: |
+          /tmp/ocr-benchmark-tools/bin/ruff format --check scripts/ocr_benchmark.py scripts/tests
+          /tmp/ocr-benchmark-tools/bin/ruff check scripts/ocr_benchmark.py scripts/tests
+          /tmp/ocr-benchmark-tools/bin/mypy --strict scripts/ocr_benchmark.py
+          /tmp/ocr-benchmark-tools/bin/pytest scripts/tests -q
+          python3 -c 'from pathlib import Path; from ocr_benchmark import load_cases; print(len(load_cases(Path("benchmarks/v1/manifest.json"))), "verified benchmark fixtures")'

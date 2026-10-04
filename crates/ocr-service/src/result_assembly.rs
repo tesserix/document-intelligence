@@ -2,7 +2,7 @@ use std::collections::BTreeSet;
 
 use ocr_domain::{
     DocumentId, DocumentPage, DocumentResult, DocumentResultPayload, DocumentVersion, Evidence,
-    ObservationId,
+    ObservationId, StableCode, ValidationFailure, ValidationSeverity,
 };
 use thiserror::Error;
 
@@ -27,6 +27,7 @@ pub fn assemble_document_result(
     pages.sort_by_key(|page| u32::from(page.page));
     let mut text = String::new();
     let mut citations = Vec::new();
+    let mut low_confidence = false;
 
     for page in &pages {
         let parent_ids = page
@@ -49,6 +50,7 @@ pub fn assemble_document_result(
             if index > 0 {
                 append_bounded(&mut text, "\n")?;
             }
+            low_confidence |= f64::from(observation.confidence) < 0.6;
             append_bounded(&mut text, &observation.text)?;
             citations.push(Evidence::new(
                 page.page,
@@ -58,9 +60,38 @@ pub fn assemble_document_result(
         }
     }
 
-    let extraction = schema
+    let mut extraction = schema
         .map(|schema| schema.extract(&pages))
         .unwrap_or_default();
+    let mut warnings = Vec::new();
+    if low_confidence {
+        extraction.validation_failures.push(ValidationFailure::new(
+            StableCode::new("ocr_low_confidence")?,
+            ValidationSeverity::Warning,
+        ));
+    }
+    let incomplete_row = StableCode::new("nutrition_row_incomplete")?;
+    let missing_panel = StableCode::new("nutrition_panel_not_found")?;
+    if text.trim().is_empty() {
+        extraction.validation_failures.push(ValidationFailure::new(
+            StableCode::new("ocr_no_text_detected")?,
+            ValidationSeverity::Error,
+        ));
+        warnings.push(StableCode::new("retake_include_readable_document")?);
+    } else if low_confidence
+        || extraction
+            .validation_failures
+            .iter()
+            .any(|failure| failure.code == incomplete_row)
+    {
+        warnings.push(StableCode::new("retake_sharper_image")?);
+    } else if extraction
+        .validation_failures
+        .iter()
+        .any(|failure| failure.code == missing_panel)
+    {
+        warnings.push(StableCode::new("retake_include_column_headers")?);
+    }
     let result = DocumentResult::new(
         document_id,
         document_version,
@@ -69,6 +100,7 @@ pub fn assemble_document_result(
             pages,
             citations,
             fields: extraction.fields,
+            warnings,
             validation_failures: extraction.validation_failures,
             ..DocumentResultPayload::default()
         },

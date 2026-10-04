@@ -109,6 +109,35 @@ impl ParserProcess {
         encoded: &[u8],
         content_type: &str,
     ) -> Result<ParserInspectionReport, ParserProcessError> {
+        parse_report(&self.run(encoded, content_type, false).await?)
+    }
+
+    pub async fn prepare_ocr(
+        &self,
+        encoded: &[u8],
+        content_type: &str,
+    ) -> Result<Option<Vec<u8>>, ParserProcessError> {
+        let output = self.run(encoded, content_type, true).await?;
+        if output.is_empty() {
+            return Ok(None);
+        }
+        if !output.starts_with(b"\x89PNG\r\n\x1a\n") {
+            return Err(ParserProcessError::Unavailable);
+        }
+        Ok(Some(output))
+    }
+
+    async fn run(
+        &self,
+        encoded: &[u8],
+        content_type: &str,
+        prepare: bool,
+    ) -> Result<Vec<u8>, ParserProcessError> {
+        let output_limit = if prepare {
+            20 * 1024 * 1024
+        } else {
+            MAXIMUM_OUTPUT_BYTES
+        };
         if encoded.is_empty()
             || encoded.len() > MAXIMUM_INPUT_BYTES
             || !matches!(
@@ -120,7 +149,11 @@ impl ParserProcess {
         }
 
         let mut command = Command::new(&self.executable);
+        if prepare {
+            command.arg("prepare-ocr");
+        }
         command
+            .env_clear()
             .args([
                 "--content-type",
                 content_type,
@@ -160,11 +193,11 @@ impl ParserProcess {
             let read = async move {
                 let mut output = Vec::new();
                 stdout
-                    .take((MAXIMUM_OUTPUT_BYTES + 1) as u64)
+                    .take((output_limit + 1) as u64)
                     .read_to_end(&mut output)
                     .await
                     .map_err(|_| ParserProcessError::Unavailable)?;
-                if output.len() > MAXIMUM_OUTPUT_BYTES {
+                if output.len() > output_limit {
                     return Err(ParserProcessError::Unavailable);
                 }
                 Ok(output)
@@ -202,7 +235,7 @@ impl ParserProcess {
             }
         };
         match status.code() {
-            Some(0) => parse_report(&output),
+            Some(0) => Ok(output),
             Some(10) => Err(ParserProcessError::InvalidDocument),
             Some(11) => Err(ParserProcessError::LimitsExceeded),
             Some(12) => Err(ParserProcessError::PasswordRequired),

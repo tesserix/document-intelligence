@@ -129,3 +129,32 @@ fn rejects_an_assembled_result_over_the_service_limit() {
     )
     .is_err());
 }
+
+#[test]
+fn low_confidence_text_is_preserved_with_actionable_review_guidance() {
+    let mut line = observation(
+        "obs_uncertain",
+        ObservationLevel::Line,
+        "Total 18.90",
+        0,
+        None,
+    );
+    line.confidence = Confidence::new(0.4).unwrap();
+    let page = DocumentPage::new(PageNumber::new(1).unwrap(), 350, 270, vec![line]).unwrap();
+    let result = assemble_document_result(
+        DocumentId::new("doc_quality").unwrap(),
+        DocumentVersion::new(&format!("sha256:{}", "c".repeat(64))).unwrap(),
+        vec![page],
+        None,
+    )
+    .unwrap();
+    assert_eq!(result.text, "Total 18.90");
+    assert!(result
+        .validation_failures
+        .iter()
+        .any(|v| v.code == ocr_domain::StableCode::new("ocr_low_confidence").unwrap()));
+    assert!(result
+        .warnings
+        .iter()
+        .any(|v| *v == ocr_domain::StableCode::new("retake_sharper_image").unwrap()));
+}
