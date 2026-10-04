@@ -115,7 +115,7 @@ struct Reading<'a> {
     nutrient: Nutrient,
     slot: usize,
     amount: f64,
-    line: &'a Line<'a>,
+    lines: Vec<&'a Line<'a>>,
 }
 
 #[derive(Default)]
@@ -214,6 +214,18 @@ pub(crate) fn extract(pages: &[DocumentPage]) -> ExtractedFields {
         if let Some((row, label_unit)) = classify(text) {
             let before = readings.len();
             read_row(row, label_unit, line, &mut readings);
+            if readings.len() == before && quantities(text).is_empty() {
+                read_spatial_row(row, label_unit, line, &lines, &columns, &mut readings);
+                if !columns.is_empty()
+                    && (0..columns.len()).any(|slot| {
+                        !readings[before..]
+                            .iter()
+                            .any(|reading| reading.slot == slot)
+                    })
+                {
+                    output.fail("nutrition_row_incomplete", ValidationSeverity::Error);
+                }
+            }
             if readings.len() > before || quantities(text).iter().any(|q| q.upper_bound) {
                 panel_rows += 1;
             }
@@ -248,7 +260,7 @@ pub(crate) fn extract(pages: &[DocumentPage]) -> ExtractedFields {
                 continue;
             }
             values.insert((column, reading.nutrient), reading.amount);
-            output.put(&name, json!(round(reading.amount)), &[reading.line]);
+            output.put(&name, json!(round(reading.amount)), &reading.lines);
         }
         validate(&mut output, &columns, &values, serving);
     }
@@ -309,11 +321,14 @@ fn classify(text: &str) -> Option<(Row, Option<Unit>)> {
     {
         return None;
     }
-    let row = if label.contains("saturated") {
+    let row = if label.starts_with("saturated") {
         Row::Mass(Nutrient::SaturatedFat)
-    } else if label.contains("sugar") {
+    } else if label.starts_with("sugar") {
         Row::Mass(Nutrient::Sugars)
-    } else if label.contains("fibre") || label.contains("fiber") {
+    } else if ["fibre", "fiber", "dietary fibre", "dietary fiber"]
+        .iter()
+        .any(|prefix| label.starts_with(prefix))
+    {
         Row::Mass(Nutrient::Fibre)
     } else if label.starts_with("energy") {
         Row::Energy { calories: false }
@@ -371,10 +386,131 @@ fn read_row<'a>(
                 nutrient,
                 slot: *slot,
                 amount,
-                line,
+                lines: vec![line],
             });
         }
         *slot += 1;
+    }
+}
+
+// Project onto the panel's text direction, including quarter-turn and tilted photos.
+fn panel_axis(lines: &[Line<'_>], page: PageNumber) -> (f64, f64) {
+    let mut angles = lines
+        .iter()
+        .filter(|line| line.page == page && classify(&line.lower).is_some())
+        .filter_map(|line| {
+            let points = &line.observation.polygon.points;
+            let a = points.first()?;
+            let b = points.get(1)?;
+            let dx = b.x - a.x;
+            let dy = b.y - a.y;
+            (dx.hypot(dy) > f64::EPSILON).then(|| dy.atan2(dx))
+        })
+        .collect::<Vec<_>>();
+    angles.sort_by(f64::total_cmp);
+    let angle = angles.get(angles.len() / 2).copied().unwrap_or(0.0);
+    (angle.cos(), angle.sin())
+}
+
+fn bounds(line: &Line<'_>, axis: (f64, f64)) -> [f64; 4] {
+    let mut bounds = [
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+        f64::INFINITY,
+        f64::NEG_INFINITY,
+    ];
+    for point in &line.observation.polygon.points {
+        let x = point.x * axis.0 + point.y * axis.1;
+        let y = -point.x * axis.1 + point.y * axis.0;
+        bounds[0] = bounds[0].min(x);
+        bounds[1] = bounds[1].max(x);
+        bounds[2] = bounds[2].min(y);
+        bounds[3] = bounds[3].max(y);
+    }
+    bounds
+}
+
+fn aligned_row(a: [f64; 4], b: [f64; 4]) -> bool {
+    let overlap = a[3].min(b[3]) - a[2].max(b[2]);
+    overlap > 0.5 * (a[3] - a[2]).min(b[3] - b[2])
+}
+
+fn read_spatial_row<'a>(
+    row: Row,
+    label_unit: Option<Unit>,
+    label: &'a Line<'a>,
+    lines: &'a [Line<'a>],
+    columns: &[Column],
+    readings: &mut Vec<Reading<'a>>,
+) {
+    let axis = panel_axis(lines, label.page);
+    let label_bounds = bounds(label, axis);
+    let headers = lines
+        .iter()
+        .filter(|line| line.page == label.page)
+        .filter_map(|line| {
+            let headers = column_headers(&line.lower);
+            if headers.len() != 1 {
+                return None;
+            }
+            let slot = columns.iter().position(|column| *column == headers[0])?;
+            let position = bounds(line, axis);
+            (position[3] < label_bounds[2] && position[0] > label_bounds[1])
+                .then_some((slot, line, position))
+        })
+        .collect::<Vec<_>>();
+    // A missing or ambiguous header must never silently shift a value's column.
+    if headers.len() != columns.len() || columns.is_empty() {
+        return;
+    }
+    for slot in 0..columns.len() {
+        if headers.iter().filter(|header| header.0 == slot).count() != 1 {
+            return;
+        }
+    }
+    for (slot, header, position) in &headers {
+        let candidates = lines
+            .iter()
+            .filter(|line| {
+                if line.page != label.page
+                    || !line
+                        .lower
+                        .trim_start()
+                        .starts_with(|c: char| c.is_ascii_digit() || c == '<')
+                {
+                    return false;
+                }
+                let cell = bounds(line, axis);
+                if cell[0] <= label_bounds[1] || !aligned_row(label_bounds, cell) {
+                    return false;
+                }
+                let center = (cell[0] + cell[1]) / 2.0;
+                let distance = (center - (position[0] + position[1]) / 2.0).abs();
+                if distance > (position[1] - position[0]).max(cell[1] - cell[0]) {
+                    return false;
+                }
+                if headers.iter().any(|other| {
+                    other.0 != *slot && (center - (other.2[0] + other.2[1]) / 2.0).abs() <= distance
+                }) {
+                    return false;
+                }
+                // Overlapping nutrient labels make attribution ambiguous.
+                !lines.iter().any(|other| {
+                    other.page == label.page
+                        && other.observation.observation_id != label.observation.observation_id
+                        && classify(&other.lower).is_some()
+                        && aligned_row(bounds(other, axis), cell)
+                })
+            })
+            .collect::<Vec<_>>();
+        if let [cell] = candidates.as_slice() {
+            let start = readings.len();
+            read_row(row, label_unit, cell, readings);
+            for reading in &mut readings[start..] {
+                reading.slot = *slot;
+                reading.lines = vec![label, cell, header];
+            }
+        }
     }
 }
 

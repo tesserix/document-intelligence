@@ -301,3 +301,166 @@ fn leaves_fields_empty_without_a_schema() {
     assert!(result.fields.is_empty());
     assert!(result.validation_failures.is_empty());
 }
+
+#[test]
+fn extracts_separate_cells_from_production_ocr_with_original_evidence() {
+    let pages =
+        serde_json::from_str(include_str!("fixtures/nutrition-spatial-clear.json")).unwrap();
+    let result = assemble_document_result(
+        DocumentId::new("doc_SPATIAL").unwrap(),
+        DocumentVersion::new(&format!("sha256:{}", "d".repeat(64))).unwrap(),
+        pages,
+        ExtractionSchema::registered("kora.nutrition_label", "1"),
+    )
+    .unwrap();
+    assert_reference_nutrients(&result);
+}
+
+fn assert_reference_nutrients(result: &DocumentResult) {
+    for (nutrient, expected) in [
+        ("energy_kj", 836.8),
+        ("energy_kcal", 200.0),
+        ("protein_g", 10.0),
+        ("fat_g", 4.0),
+        ("saturated_fat_g", 1.0),
+        ("carbohydrate_g", 31.0),
+        ("sugars_g", 4.0),
+        ("fibre_g", 3.0),
+        ("sodium_mg", 200.0),
+    ] {
+        assert_eq!(
+            field(result, &format!("per_100g.{nutrient}")),
+            Some(json!(expected)),
+            "{nutrient}"
+        );
+        assert_eq!(
+            field(result, &format!("per_serving.{nutrient}")),
+            Some(json!(expected / 2.0)),
+            "{nutrient}"
+        );
+    }
+    assert!(
+        result.validation_failures.is_empty(),
+        "{:?}",
+        result.validation_failures
+    );
+    assert!(result.fields["per_100g.protein_g"].evidence.len() >= 2);
+}
+
+#[test]
+fn extracts_spatial_nutrition_across_readable_quality_variants() {
+    for (name, fixture) in [
+        (
+            "moderate_blur",
+            include_str!("fixtures/nutrition-spatial-moderate_blur.json"),
+        ),
+        (
+            "low_contrast",
+            include_str!("fixtures/nutrition-spatial-low_contrast.json"),
+        ),
+        ("dark", include_str!("fixtures/nutrition-spatial-dark.json")),
+        (
+            "rotated_12deg",
+            include_str!("fixtures/nutrition-spatial-rotated_12deg.json"),
+        ),
+        (
+            "rotated_90deg",
+            include_str!("fixtures/nutrition-spatial-rotated_90deg.json"),
+        ),
+        (
+            "jpeg_artifacts",
+            include_str!("fixtures/nutrition-spatial-jpeg_artifacts.json"),
+        ),
+    ] {
+        eprintln!("case: {name}");
+        let result = assemble_document_result(
+            DocumentId::new("doc_SPATIAL").unwrap(),
+            DocumentVersion::new(&format!("sha256:{}", "d".repeat(64))).unwrap(),
+            serde_json::from_str(fixture).unwrap(),
+            ExtractionSchema::registered("kora.nutrition_label", "1"),
+        )
+        .unwrap();
+        assert_reference_nutrients(&result);
+    }
+}
+
+#[test]
+fn flags_unreadable_spatial_units_without_inventing_values() {
+    let result = assemble_document_result(
+        DocumentId::new("doc_LOWRES").unwrap(),
+        DocumentVersion::new(&format!("sha256:{}", "d".repeat(64))).unwrap(),
+        serde_json::from_str(include_str!(
+            "fixtures/nutrition-spatial-low_resolution.json"
+        ))
+        .unwrap(),
+        ExtractionSchema::registered("kora.nutrition_label", "1"),
+    )
+    .unwrap();
+    assert_eq!(field(&result, "per_serving.fat_g"), None);
+    assert_eq!(field(&result, "per_100g.sugars_g"), None);
+    assert_eq!(field(&result, "per_100g.protein_g"), Some(json!(10.0)));
+    assert!(failure_codes(&result).contains(&"nutrition_row_incomplete".to_owned()));
+}
+
+fn spatial_result(pages: Vec<DocumentPage>) -> DocumentResult {
+    assemble_document_result(
+        DocumentId::new("doc_SPATIAL").unwrap(),
+        DocumentVersion::new(&format!("sha256:{}", "d".repeat(64))).unwrap(),
+        pages,
+        ExtractionSchema::registered("kora.nutrition_label", "1"),
+    )
+    .unwrap()
+}
+
+fn spatial_pages() -> Vec<DocumentPage> {
+    serde_json::from_str(include_str!("fixtures/nutrition-spatial-clear.json")).unwrap()
+}
+
+#[test]
+fn missing_cell_does_not_shift_the_second_column_into_the_first() {
+    let mut pages = spatial_pages();
+    pages[0].observations.retain(|o| o.text.trim() != "5.0 g");
+    let result = spatial_result(pages);
+    assert_eq!(field(&result, "per_serving.protein_g"), None);
+    assert_eq!(field(&result, "per_100g.protein_g"), Some(json!(10.0)));
+    assert!(failure_codes(&result).contains(&"nutrition_row_incomplete".to_owned()));
+}
+
+#[test]
+fn rejects_ambiguous_spatial_cells_and_does_not_borrow_from_another_page() {
+    let mut pages = spatial_pages();
+    let mut duplicate = pages[0]
+        .observations
+        .iter()
+        .find(|o| o.text.trim() == "5.0 g")
+        .unwrap()
+        .clone();
+    duplicate.observation_id = "obs_DUPLICATE".try_into().unwrap();
+    duplicate.text = "9.0 g".to_owned();
+    pages[0].observations.push(duplicate);
+    let result = spatial_result(pages);
+    assert_eq!(field(&result, "per_serving.protein_g"), None);
+    assert!(failure_codes(&result).contains(&"nutrition_row_incomplete".to_owned()));
+
+    let mut pages = spatial_pages();
+    let mut second = pages[0].clone();
+    second.page = PageNumber::new(2).unwrap();
+    second.observations.retain(|o| o.text.trim() == "5.0 g");
+    pages[0].observations.retain(|o| o.text.trim() != "5.0 g");
+    pages.push(second);
+    let result = spatial_result(pages);
+    assert_eq!(field(&result, "per_serving.protein_g"), None);
+}
+
+#[test]
+fn unreadable_or_headerless_inputs_require_review_without_invented_nutrients() {
+    for fixture in [
+        include_str!("fixtures/nutrition-spatial-heavy_blur.json"),
+        include_str!("fixtures/nutrition-spatial-cropped_headers.json"),
+        include_str!("fixtures/nutrition-spatial-blank.json"),
+    ] {
+        let result = spatial_result(serde_json::from_str(fixture).unwrap());
+        assert!(!result.validation_failures.is_empty());
+        assert!(result.fields.keys().all(|key| !key.starts_with("per_")));
+    }
+}

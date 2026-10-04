@@ -1,0 +1,11 @@
+Synthetic nutrition-label observations captured from production OCR on 2026-10-04.
+Inputs were generated test images, not customer documents. Only DocumentPage data
+and line observations are retained; there are no credentials or storage URLs.
+
+The label contains 4 servings of 50 g. Per 100 g: 836.8 kJ, 200 kcal,
+10 g protein, 4 g fat, 1 g saturated fat, 31 g carbohydrate, 4 g sugars,
+3 g fibre, 200 mg sodium. Per-serving values are half these quantities.
+
+Low resolution misreads some g units as 9. Those cells must remain absent and
+require review; expected values must not be inferred from the other column.
+Heavy blur, cropped headers and blank images must not invent nutrient values.
