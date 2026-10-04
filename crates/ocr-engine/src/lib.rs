@@ -28,6 +28,10 @@ const DEFAULT_MAX_ENCODED_BYTES: usize = 32 * 1024 * 1024;
 const BLANK_CONTRAST_THRESHOLD: f64 = 0.02;
 const UNDEREXPOSED_LUMINANCE_THRESHOLD: f64 = 0.05;
 const OVEREXPOSED_LUMINANCE_THRESHOLD: f64 = 0.95;
+const SATURATED_LUMINANCE: u8 = 250;
+const GLARE_SATURATED_FRACTION: f64 = 0.01;
+// Glare is saturation on a darker surface; white paper saturates its background too.
+const GLARE_BACKGROUND_CEILING: u8 = 217;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum Error {
@@ -102,6 +106,7 @@ impl ImageLimits {
 pub enum QualityWarning {
     Blank,
     Blurry,
+    Glare,
     LowResolution,
     Overexposed,
     Underexposed,
@@ -111,6 +116,23 @@ pub enum QualityWarning {
 pub enum QualityDisposition {
     Continue,
     RequestBetterSource,
+}
+
+/// What a client should do with the image, with one reason it can show the user.
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum QualityVerdict {
+    Usable,
+    Retake(RetakeReason),
+    Unusable,
+}
+
+#[derive(Debug, Copy, Clone, PartialEq, Eq)]
+pub enum RetakeReason {
+    MoveCloser,
+    HoldSteady,
+    AvoidGlare,
+    AddLight,
+    ReduceLight,
 }
 
 #[derive(Debug, Copy, Clone, PartialEq)]
@@ -151,6 +173,26 @@ pub struct QualityReport {
     pub quality_score: f64,
     pub warnings: Vec<QualityWarning>,
     pub disposition: QualityDisposition,
+}
+
+impl QualityReport {
+    pub fn verdict(&self) -> QualityVerdict {
+        if self.warnings.contains(&QualityWarning::Blank) {
+            return QualityVerdict::Unusable;
+        }
+        [
+            (QualityWarning::LowResolution, RetakeReason::MoveCloser),
+            (QualityWarning::Blurry, RetakeReason::HoldSteady),
+            (QualityWarning::Glare, RetakeReason::AvoidGlare),
+            (QualityWarning::Underexposed, RetakeReason::AddLight),
+            (QualityWarning::Overexposed, RetakeReason::ReduceLight),
+        ]
+        .into_iter()
+        .find(|(warning, _)| self.warnings.contains(warning))
+        .map_or(QualityVerdict::Usable, |(_, reason)| {
+            QualityVerdict::Retake(reason)
+        })
+    }
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -276,6 +318,7 @@ pub fn inspect_image_with_thresholds(
         / pixels as f64
         / 255.0;
     let sharpness = edge_difference_score(&grayscale);
+    let glare = has_glare(&grayscale, pixels);
     let blank = contrast < BLANK_CONTRAST_THRESHOLD;
     let low_resolution = width < thresholds.minimum_width || height < thresholds.minimum_height;
     let mut warnings = Vec::new();
@@ -284,6 +327,9 @@ pub fn inspect_image_with_thresholds(
     }
     if !blank && sharpness < thresholds.minimum_sharpness {
         warnings.push(QualityWarning::Blurry);
+    }
+    if !blank && glare {
+        warnings.push(QualityWarning::Glare);
     }
     if low_resolution {
         warnings.push(QualityWarning::LowResolution);
@@ -317,6 +363,24 @@ pub fn inspect_image_with_thresholds(
         },
         warnings,
     })
+}
+
+fn has_glare(image: &GrayImage, pixels: u64) -> bool {
+    let mut histogram = [0_u64; 256];
+    for pixel in image.pixels() {
+        histogram[usize::from(pixel.0[0])] += 1;
+    }
+    let saturated: u64 = histogram[usize::from(SATURATED_LUMINANCE)..].iter().sum();
+    let mut seen = 0_u64;
+    let third_quartile = histogram
+        .iter()
+        .position(|count| {
+            seen += count;
+            seen * 4 >= pixels * 3
+        })
+        .unwrap_or(255);
+    saturated as f64 / pixels as f64 >= GLARE_SATURATED_FRACTION
+        && third_quartile <= usize::from(GLARE_BACKGROUND_CEILING)
 }
 
 fn edge_difference_score(image: &image::GrayImage) -> f64 {
