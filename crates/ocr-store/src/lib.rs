@@ -44,6 +44,14 @@ pub struct CreateJob {
     pub request_digest: RequestDigest,
     pub upload_id: UploadId,
     pub webhook_subscription_id: Option<WebhookSubscriptionId>,
+    pub extraction: Option<SchemaReference>,
+}
+
+/// A registered extraction schema named by a job; the service resolves it.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct SchemaReference {
+    pub schema_id: String,
+    pub schema_version: String,
 }
 
 #[derive(Debug, PartialEq, Eq)]
@@ -79,6 +87,7 @@ pub struct StoredJob {
 pub struct StoredDocumentIdentity {
     pub document_id: DocumentId,
     pub document_version: DocumentVersion,
+    pub extraction: Option<SchemaReference>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -1374,8 +1383,8 @@ impl PgJobStore {
         let inserted = sqlx::query(
             "insert into ocr_jobs \
              (job_id, tenant_id, product_id, idempotency_key, request_digest, upload_id, \
-              webhook_subscription_id) \
-             select $1, $2, $3, $4, $5, $6, $7 from ocr_uploads \
+              webhook_subscription_id, extraction_schema_id, extraction_schema_version) \
+             select $1, $2, $3, $4, $5, $6, $7, $8, $9 from ocr_uploads \
              where product_id = $3 and tenant_id = $2 and upload_id = $6 and status = 'accepted' \
              on conflict (product_id, tenant_id, idempotency_key) do nothing \
              returning job_id, status::text as status, created_at",
@@ -1391,6 +1400,13 @@ impl PgJobStore {
                 .webhook_subscription_id
                 .as_ref()
                 .map(WebhookSubscriptionId::as_str),
+        )
+        .bind(request.extraction.as_ref().map(|e| e.schema_id.as_str()))
+        .bind(
+            request
+                .extraction
+                .as_ref()
+                .map(|e| e.schema_version.as_str()),
         )
         .fetch_optional(&mut *transaction)
         .await?;
@@ -1482,7 +1498,8 @@ impl PgJobStore {
         let mut transaction = self.pool.begin().await?;
         set_scope(&mut transaction, tenant_id, product_id).await?;
         let row = sqlx::query(
-            "select uploads.source_digest from ocr_jobs as jobs \
+            "select uploads.source_digest, jobs.extraction_schema_id, \
+             jobs.extraction_schema_version from ocr_jobs as jobs \
              join ocr_uploads as uploads on uploads.upload_id = jobs.upload_id \
                and uploads.product_id = jobs.product_id and uploads.tenant_id = jobs.tenant_id \
              where jobs.product_id = $1 and jobs.tenant_id = $2 and jobs.job_id = $3 \
@@ -1506,6 +1523,17 @@ impl PgJobStore {
                 .map_err(|_| Error::InvalidStoredJob)?,
             document_version: DocumentVersion::new(row.try_get("source_digest")?)
                 .map_err(|_| Error::InvalidStoredUpload)?,
+            extraction: match (
+                row.try_get::<Option<String>, _>("extraction_schema_id")?,
+                row.try_get::<Option<String>, _>("extraction_schema_version")?,
+            ) {
+                (Some(schema_id), Some(schema_version)) => Some(SchemaReference {
+                    schema_id,
+                    schema_version,
+                }),
+                (None, None) => None,
+                _ => return Err(Error::InvalidStoredJob),
+            },
         }))
     }
 

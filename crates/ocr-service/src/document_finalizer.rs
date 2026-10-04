@@ -9,8 +9,9 @@ use ocr_store::{CommitResultOutcome, PgJobStore};
 use thiserror::Error;
 
 use crate::{
-    assemble_document_result, PageArtifactReadError, PageArtifactReader, PublishResultError,
-    ResultArtifactWriter, ResultAssemblyError, ResultPublisher, MAXIMUM_RESULT_BYTES,
+    assemble_document_result, ExtractionSchema, PageArtifactReadError, PageArtifactReader,
+    PublishResultError, ResultArtifactWriter, ResultAssemblyError, ResultPublisher,
+    MAXIMUM_RESULT_BYTES,
 };
 
 #[derive(Debug, Error)]
@@ -23,6 +24,8 @@ pub enum DocumentFinalizeError {
     Cancelled,
     #[error("page artifact set is incomplete")]
     IncompleteArtifacts,
+    #[error("job names an extraction schema that is no longer registered")]
+    UnregisteredSchema,
     #[error("page artifact does not match its locator")]
     InvalidPageArtifact,
     #[error(transparent)]
@@ -71,6 +74,7 @@ where
         job_id: &JobId,
         document_id: DocumentId,
         document_version: DocumentVersion,
+        schema: Option<ExtractionSchema>,
     ) -> Result<CommitResultOutcome, DocumentFinalizeError> {
         let workflow = self
             .jobs
@@ -105,8 +109,7 @@ where
         .await
         .into_iter()
         .collect::<Result<Vec<_>, _>>()?;
-        // The job's requested schema is not persisted yet, so stored jobs finalize without extraction.
-        let result = assemble_document_result(document_id, document_version, pages, None)?;
+        let result = assemble_document_result(document_id, document_version, pages, schema)?;
         self.publisher
             .publish(tenant_id, product_id, job_id, terminal_state, &result)
             .await
@@ -124,12 +127,20 @@ where
             .load_document_identity(tenant_id, product_id, job_id)
             .await?
             .ok_or(DocumentFinalizeError::NotReady)?;
+        let schema = identity
+            .extraction
+            .map(|reference| {
+                ExtractionSchema::registered(&reference.schema_id, &reference.schema_version)
+                    .ok_or(DocumentFinalizeError::UnregisteredSchema)
+            })
+            .transpose()?;
         self.finalize(
             tenant_id,
             product_id,
             job_id,
             identity.document_id,
             identity.document_version,
+            schema,
         )
         .await
     }

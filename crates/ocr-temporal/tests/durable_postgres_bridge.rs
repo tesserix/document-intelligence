@@ -103,6 +103,7 @@ async fn seed_job(store: &PgJobStore, admin: &PgPool, page_count: u32) {
             request_digest: RequestDigest::new(&format!("sha256:{}", "c".repeat(64))).unwrap(),
             upload_id: UploadId::new(upload).unwrap(),
             webhook_subscription_id: None,
+            extraction: None,
         })
         .await
         .unwrap();

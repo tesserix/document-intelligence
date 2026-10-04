@@ -27,6 +27,8 @@ psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0013_page_artifacts.
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0014_webhook_subscription.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0015_work_scope_leases.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0016_parser_page_geometry.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0017_job_extraction_schema.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0017_job_extraction_schema.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0016_parser_page_geometry.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0015_work_scope_leases.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0014_webhook_subscription.down.sql >/dev/null
@@ -59,6 +61,7 @@ psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0013_page_artifacts.
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0014_webhook_subscription.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0015_work_scope_leases.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0016_parser_page_geometry.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0017_job_extraction_schema.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 <<SQL >/dev/null
 grant usage on schema public to ${application_role};
 grant select, insert, update, delete on ocr_jobs, ocr_outbox to ${application_role};

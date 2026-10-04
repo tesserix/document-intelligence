@@ -547,6 +547,7 @@ where
                     DocumentFinalizeError::Cancelled => DurableExecutionErrorKind::ScopeNotFound,
                     DocumentFinalizeError::InvalidConfiguration
                     | DocumentFinalizeError::InvalidPageArtifact
+                    | DocumentFinalizeError::UnregisteredSchema
                     | DocumentFinalizeError::Assembly(_) => DurableExecutionErrorKind::InvalidInput,
                     DocumentFinalizeError::NotReady
                     | DocumentFinalizeError::IncompleteArtifacts
