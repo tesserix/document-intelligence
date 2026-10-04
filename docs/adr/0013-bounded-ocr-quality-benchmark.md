@@ -31,7 +31,9 @@ page geometry and content identity remain tied to the accepted original.
 Preparation is optional: timeout, malformed output or process failure falls back
 to the original accepted bytes. No second provider call is introduced. Existing
 Temporal retry ownership, tenancy, signed identity and immutable publication stay
-in place. The parser runs without access to new credentials or network services.
+in place. The child environment is cleared before execution so service environment
+credentials are not inherited. The parser requires no new cloud credentials or
+network integrations.
 Source/provider/storage failures retain their existing bounded retry semantics.
 
 A leaf observation below 0.6 confidence adds `ocr_low_confidence` and

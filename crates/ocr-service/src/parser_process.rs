@@ -153,6 +153,7 @@ impl ParserProcess {
             command.arg("prepare-ocr");
         }
         command
+            .env_clear()
             .args([
                 "--content-type",
                 content_type,
