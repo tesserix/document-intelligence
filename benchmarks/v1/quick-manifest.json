@@ -1,0 +1,72 @@
+{
+  "version": "ocr-synthetic-quick-v1",
+  "provenance": "Synthetic Apache-2.0 fixtures; no customer data. Clear cases reuse the frozen v1 corpus. no_text.png is an 800x600 flat gray image.",
+  "cases": [
+    {
+      "id": "nutrition_clear",
+      "image": "images/clear.png",
+      "sha256": "fac5cd28a7014b53a1c96dc37a2d9332b60b6ee5a57cd2fb9bd354ba56048907",
+      "document_type": "nutrition_label",
+      "quality": "clear",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": null,
+      "expected_fields": {
+        "serving_size": {
+          "amount": 50,
+          "unit": "g"
+        },
+        "servings_per_pack": 4,
+        "per_100g.energy_kj": 836.8,
+        "per_serving.energy_kj": 418.4,
+        "per_100g.energy_kcal": 200,
+        "per_serving.energy_kcal": 100.0,
+        "per_100g.protein_g": 10,
+        "per_serving.protein_g": 5.0,
+        "per_100g.fat_g": 4,
+        "per_serving.fat_g": 2.0,
+        "per_100g.saturated_fat_g": 1,
+        "per_serving.saturated_fat_g": 0.5,
+        "per_100g.carbohydrate_g": 31,
+        "per_serving.carbohydrate_g": 15.5,
+        "per_100g.sugars_g": 4,
+        "per_serving.sugars_g": 2.0,
+        "per_100g.fibre_g": 3,
+        "per_serving.fibre_g": 1.5,
+        "per_100g.sodium_mg": 200,
+        "per_serving.sodium_mg": 100.0
+      },
+      "extraction": {
+        "schema_id": "kora.nutrition_label",
+        "schema_version": "1"
+      }
+    },
+    {
+      "id": "receipt_clear",
+      "image": "images/receipt_clear.png",
+      "sha256": "8c61cdb3c6c03d2e37b5664d66cbfa399776fab14502038589c1f4c11a4c2e03",
+      "document_type": "receipt",
+      "quality": "clear",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": "CORNER CAFE\nReceipt 1042\n04 October 2026\nCoffee 4.50\nSandwich 9.00\nSubtotal 13.50\nTax 1.35\nTOTAL 14.85\nPaid by card",
+      "expected_fields": {},
+      "extraction": null
+    },
+    {
+      "id": "no_text",
+      "image": "images/no_text.png",
+      "sha256": "7c549a69e3a62c9e594849b72dd91f0eec6eb408d8fb588e0c920256359024e3",
+      "document_type": "generic",
+      "quality": "no_text",
+      "language_hints": [
+        "en"
+      ],
+      "reference_text": "",
+      "expected_fields": {},
+      "extraction": null
+    }
+  ]
+}
