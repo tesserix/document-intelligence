@@ -1,5 +1,5 @@
 ARG RUST_BUILDER=rust:1.94-slim-bookworm@sha256:cf9dd0ec73e75f827fe59123fff9dc65af1a1c8363c3c31ee8d7f8ad0b6a5fb2
-ARG TESSERIX_RUNTIME=debian:bookworm-slim@sha256:7c7b2c966bc9ee8cedfeef67e0e279108992c77681fa595db4a9d65c06ccc587
+ARG TESSERIX_RUNTIME=gcr.io/distroless/cc-debian13:nonroot@sha256:e792ab3d241a468a4fd7519ddbbebe66b49b5f365771716ea688ad40b6c6f1c2
 FROM ${RUST_BUILDER} AS build
 WORKDIR /src
 
@@ -17,17 +17,17 @@ RUN apt-get update \
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
 RUN cargo build --locked --release \
-    -p ocr-service --bin ocr-service \
+    -p ocr-service --bin ocr-service --bin ocr-healthcheck \
     -p ocr-service --bin document-intelligence-mcp \
     -p ocr-parser-sandbox --bin ocr-parser-sandbox \
     -p ocr-temporal --bin ocr-dispatch-worker --bin ocr-execution-worker
 
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS init
+RUN apt-get update && apt-get install --no-install-recommends -y tini \
+    && rm -rf /var/lib/apt/lists/*
+
 FROM ${TESSERIX_RUNTIME}
-RUN apt-get update \
-    && apt-get install --no-install-recommends -y ca-certificates libssl3 tini curl \
-    && rm -rf /var/lib/apt/lists/* \
-    && mkdir /app \
-    && chown 10001:10001 /app
+COPY --from=init /usr/bin/tini /usr/bin/tini
 WORKDIR /app
 USER 10001:10001
 LABEL org.opencontainers.image.source="https://github.com/tesserix/document-intelligence" \
@@ -37,7 +37,8 @@ COPY --from=build --chown=10001:10001 /src/target/release/document-intelligence-
 COPY --from=build --chown=10001:10001 /src/target/release/ocr-dispatch-worker /app/ocr-dispatch-worker
 COPY --from=build --chown=10001:10001 /src/target/release/ocr-execution-worker /app/ocr-execution-worker
 COPY --from=build --chown=10001:10001 /src/target/release/ocr-parser-sandbox /app/ocr-parser-sandbox
-HEALTHCHECK --interval=30s --timeout=3s --start-period=10s CMD curl --fail --silent http://127.0.0.1:8080/healthz || exit 1
+HEALTHCHECK --interval=30s --timeout=4s --start-period=10s CMD ["/app/ocr-healthcheck"]
 ENTRYPOINT ["/usr/bin/tini", "--"]
+COPY --from=build --chown=10001:10001 /src/target/release/ocr-healthcheck /app/ocr-healthcheck
 EXPOSE 8080
 CMD ["/app/ocr-service"]

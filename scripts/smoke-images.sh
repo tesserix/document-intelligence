@@ -28,14 +28,16 @@ test "$parser_status" -eq 10
 
 docker run -d --name "$container" --read-only --cap-drop ALL \
   --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=64m \
-  --env-file ci/ocr-service-smoke.env "$service_image" >/dev/null
+  -p 127.0.0.1::8080 --env-file ci/ocr-service-smoke.env "$service_image" >/dev/null
+port="$(docker port "$container" 8080/tcp | sed 's/.*://')"
 for _attempt in $(seq 1 30); do
-  if docker exec "$container" curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null; then
+  if curl --fail --silent "http://127.0.0.1:${port}/healthz" >/dev/null; then
     break
   fi
   sleep 1
 done
-docker exec "$container" curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null
-test "$(docker exec "$container" curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/readyz)" = 503
-test "$(docker exec "$container" curl --silent --output /dev/null --write-out '%{http_code}' http://127.0.0.1:8080/v1/ocr/jobs/job_missing)" = 401
+curl --fail --silent "http://127.0.0.1:${port}/healthz" >/dev/null
+test "$(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:${port}/readyz")" = 503
+test "$(curl --silent --output /dev/null --write-out '%{http_code}' "http://127.0.0.1:${port}/v1/ocr/jobs/job_missing")" = 401
+docker exec "$container" /app/ocr-healthcheck
 printf 'Passed: non-root images, valid/invalid parser input, liveness, dependency readiness, unauthenticated denial\n'
