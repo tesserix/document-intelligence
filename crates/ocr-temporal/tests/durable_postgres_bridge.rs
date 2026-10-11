@@ -179,7 +179,7 @@ impl PageProcessor for PageTwoExhaustingProcessor {
                 activity_key: task.activity_key,
                 object_bucket: "dev-kora-ocr-pages".to_owned(),
                 object_name: format!("page-artifacts/{}.json", task.page),
-                object_generation: i64::from(task.attempt),
+                object_version: task.attempt.to_string(),
                 object_digest: format!("sha256:{}", "d".repeat(64)),
                 content_length: 256,
             })

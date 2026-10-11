@@ -94,7 +94,7 @@ pub struct StoredDocumentIdentity {
 pub struct StoredAcceptedSource {
     pub bucket: String,
     pub object_name: String,
-    pub generation: i64,
+    pub generation: String,
     pub digest: String,
     pub content_length: i64,
     pub content_type: String,
@@ -119,7 +119,7 @@ pub struct StoredPageArtifact {
     pub activity_key: String,
     pub object_bucket: String,
     pub object_name: String,
-    pub object_generation: i64,
+    pub object_version: String,
     pub object_digest: String,
     pub content_length: i64,
 }
@@ -202,7 +202,7 @@ pub struct StoredResultLocator {
     pub document_version: DocumentVersion,
     pub object_bucket: String,
     pub object_name: String,
-    pub object_generation: i64,
+    pub object_version: String,
     pub object_digest: String,
     pub content_length: i64,
 }
@@ -245,7 +245,7 @@ pub enum CreateUploadOutcome {
 
 #[derive(Debug)]
 pub struct RecordUpload {
-    pub object_generation: i64,
+    pub object_version: String,
     pub verified_content_type: String,
     pub verified_content_length: i64,
     pub verified_digest: String,
@@ -276,7 +276,7 @@ pub struct AcceptUpload {
     pub inspection_lease_owner: String,
     pub source_bucket: String,
     pub source_object_name: String,
-    pub source_object_generation: i64,
+    pub source_object_version: String,
     pub source_digest: String,
     pub source_content_length: i64,
     pub parser_inspection: ParserInspectionMetadata,
@@ -357,7 +357,7 @@ pub struct StoredUpload {
     pub expected_digest: String,
     pub expires_at: OffsetDateTime,
     pub created_at: OffsetDateTime,
-    pub object_generation: Option<i64>,
+    pub object_version: Option<String>,
     pub uploaded_at: Option<OffsetDateTime>,
 }
 
@@ -509,7 +509,7 @@ impl PgJobStore {
         set_scope(&mut transaction, tenant_id, product_id).await?;
         let artifacts = sqlx::query(
             "select page_number, attempt, activity_key, object_bucket, object_name, \
-             object_generation, object_digest, content_length from ocr_page_artifacts \
+             coalesce(object_version, object_generation::text) as object_version, object_digest, content_length from ocr_page_artifacts \
              where job_id = $1 and product_id = $2 and tenant_id = $3 order by page_number",
         )
         .bind(job_id.as_str())
@@ -600,7 +600,7 @@ impl PgJobStore {
                 .collect::<Vec<_>>();
             let generations = artifacts
                 .iter()
-                .map(|artifact| artifact.object_generation)
+                .map(|artifact| artifact.object_version.clone())
                 .collect::<Vec<_>>();
             let digests = artifacts
                 .iter()
@@ -612,10 +612,10 @@ impl PgJobStore {
                 .collect::<Vec<_>>();
             sqlx::query(
                 "insert into ocr_page_artifacts (job_id, product_id, tenant_id, page_number, \
-                 attempt, activity_key, object_bucket, object_name, object_generation, \
+                 attempt, activity_key, object_bucket, object_name, object_version, \
                  object_digest, content_length) select $1, $2, $3, batch.* from unnest( \
                  $4::integer[], $5::smallint[], $6::text[], $7::text[], $8::text[], \
-                 $9::bigint[], $10::text[], $11::bigint[]) as batch",
+                 $9::text[], $10::text[], $11::bigint[]) as batch",
             )
             .bind(job_id.as_str())
             .bind(product_id.as_str())
@@ -865,7 +865,7 @@ impl PgJobStore {
              on conflict (product_id, tenant_id, idempotency_key) do nothing \
              returning upload_id, object_bucket, object_name, expected_content_type, \
              expected_content_length, expected_digest, expires_at, created_at, status::text as status, \
-             object_generation, uploaded_at",
+             coalesce(object_version, object_generation::text) as object_version, uploaded_at",
         )
         .bind(request.upload_id.as_str())
         .bind(request.tenant_id.as_str())
@@ -890,7 +890,7 @@ impl PgJobStore {
         let existing = sqlx::query(
             "select upload_id, object_bucket, object_name, expected_content_type, \
              expected_content_length, expected_digest, expires_at, created_at, request_digest, \
-             status::text as status, object_generation, uploaded_at \
+             status::text as status, coalesce(object_version, object_generation::text) as object_version, uploaded_at \
              from ocr_uploads where product_id = $1 and tenant_id = $2 and idempotency_key = $3",
         )
         .bind(request.product_id.as_str())
@@ -918,7 +918,7 @@ impl PgJobStore {
         let row = sqlx::query(
             "select upload_id, object_bucket, object_name, expected_content_type, \
              expected_content_length, expected_digest, expires_at, created_at, status::text as status, \
-             object_generation, uploaded_at from ocr_uploads \
+             coalesce(object_version, object_generation::text) as object_version, uploaded_at from ocr_uploads \
              where product_id = $1 and tenant_id = $2 and upload_id = $3",
         )
         .bind(product_id.as_str())
@@ -973,7 +973,7 @@ impl PgJobStore {
         let row = sqlx::query(
             "select upload_id, object_bucket, object_name, expected_content_type, \
              expected_content_length, expected_digest, expires_at, created_at, \
-             status::text as status, object_generation, uploaded_at from ocr_uploads \
+             status::text as status, coalesce(object_version, object_generation::text) as object_version, uploaded_at from ocr_uploads \
              where product_id = $1 and tenant_id = $2 and upload_id = $3 \
              and status = 'inspecting' and inspection_lease_owner = $4 \
              and inspection_lease_expires_at > now()",
@@ -999,7 +999,7 @@ impl PgJobStore {
         let mut transaction = self.pool.begin().await?;
         set_scope(&mut transaction, tenant_id, product_id).await?;
         let updated = sqlx::query(
-            "update ocr_uploads set status = 'uploaded', object_generation = $4, \
+            "update ocr_uploads set status = 'uploaded', object_version = $4, \
              verified_content_type = $5, verified_content_length = $6, verified_digest = $7, \
              uploaded_at = now(), updated_at = now() \
              where product_id = $1 and tenant_id = $2 and upload_id = $3 \
@@ -1008,12 +1008,12 @@ impl PgJobStore {
              and expected_digest = $7 \
              returning upload_id, object_bucket, object_name, expected_content_type, \
              expected_content_length, expected_digest, expires_at, created_at, status::text as status, \
-             object_generation, uploaded_at",
+             coalesce(object_version, object_generation::text) as object_version, uploaded_at",
         )
         .bind(product_id.as_str())
         .bind(tenant_id.as_str())
         .bind(upload_id.as_str())
-        .bind(record.object_generation)
+        .bind(&record.object_version)
         .bind(&record.verified_content_type)
         .bind(record.verified_content_length)
         .bind(&record.verified_digest)
@@ -1041,7 +1041,7 @@ impl PgJobStore {
         let existing = sqlx::query(
             "select upload_id, object_bucket, object_name, expected_content_type, \
              expected_content_length, expected_digest, expires_at, created_at, status::text as status, \
-             object_generation, uploaded_at, verified_content_type, verified_content_length, \
+             coalesce(object_version, object_generation::text) as object_version, uploaded_at, verified_content_type, verified_content_length, \
              verified_digest from ocr_uploads \
              where product_id = $1 and tenant_id = $2 and upload_id = $3",
         )
@@ -1057,8 +1057,8 @@ impl PgJobStore {
         let state = parse_upload_state(existing.try_get("status")?)?;
         let outcome = match state {
             UploadState::Uploaded
-                if existing.try_get::<Option<i64>, _>("object_generation")?
-                    == Some(record.object_generation)
+                if existing.try_get::<Option<String>, _>("object_version")?
+                    == Some(record.object_version.clone())
                     && existing.try_get::<Option<&str>, _>("verified_content_type")?
                         == Some(record.verified_content_type.as_str())
                     && existing.try_get::<Option<i64>, _>("verified_content_length")?
@@ -1095,7 +1095,7 @@ impl PgJobStore {
         set_scope(&mut transaction, tenant_id, product_id).await?;
         let updated = sqlx::query(
             "update ocr_uploads set status = 'accepted', source_bucket = $4, \
-             source_object_name = $5, source_object_generation = $6, source_digest = $7, \
+             source_object_name = $5, source_object_version = $6, source_digest = $7, \
              source_content_length = $8, parser_page_count = $10, \
              parser_maximum_page_pixels = $11, parser_total_page_pixels = $12, \
              parser_page_geometries = $13::jsonb, parser_profile = $14, parser_version = $15, accepted_at = now(), \
@@ -1111,7 +1111,7 @@ impl PgJobStore {
         .bind(upload_id.as_str())
         .bind(&source.source_bucket)
         .bind(&source.source_object_name)
-        .bind(source.source_object_generation)
+        .bind(&source.source_object_version)
         .bind(&source.source_digest)
         .bind(source.source_content_length)
         .bind(&source.inspection_lease_owner)
@@ -1144,7 +1144,7 @@ impl PgJobStore {
 
         let existing = sqlx::query(
             "select status::text as status, source_bucket, source_object_name, \
-             source_object_generation, source_digest, source_content_length, parser_page_count, \
+             coalesce(source_object_version, source_object_generation::text) as source_object_version, source_digest, source_content_length, parser_page_count, \
              parser_maximum_page_pixels, parser_total_page_pixels, parser_page_geometries::text as parser_page_geometries, \
              parser_profile, parser_version \
              from ocr_uploads where product_id = $1 and tenant_id = $2 and upload_id = $3",
@@ -1164,8 +1164,8 @@ impl PgJobStore {
                 == Some(source.source_bucket.as_str())
                 && existing.try_get::<Option<&str>, _>("source_object_name")?
                     == Some(source.source_object_name.as_str())
-                && existing.try_get::<Option<i64>, _>("source_object_generation")?
-                    == Some(source.source_object_generation)
+                && existing.try_get::<Option<String>, _>("source_object_version")?
+                    == Some(source.source_object_version.clone())
                 && existing.try_get::<Option<&str>, _>("source_digest")?
                     == Some(source.source_digest.as_str())
                 && existing.try_get::<Option<i64>, _>("source_content_length")?
@@ -1547,7 +1547,7 @@ impl PgJobStore {
         set_scope(&mut transaction, tenant_id, product_id).await?;
         let row = sqlx::query(
             "select uploads.source_bucket, uploads.source_object_name, \
-             uploads.source_object_generation, uploads.source_digest, \
+             coalesce(uploads.source_object_version, uploads.source_object_generation::text) as source_object_version, uploads.source_digest, \
              uploads.source_content_length, uploads.expected_content_type, \
              uploads.parser_page_count, uploads.parser_maximum_page_pixels, \
              uploads.parser_total_page_pixels, uploads.parser_page_geometries::text as parser_page_geometries, \
@@ -1686,7 +1686,7 @@ impl PgJobStore {
         set_scope(&mut transaction, tenant_id, product_id).await?;
         let row = sqlx::query(
             "select j.status::text as status, r.document_id, r.document_version, \
-             r.object_bucket, r.object_name, r.object_generation, r.object_digest, \
+             r.object_bucket, r.object_name, coalesce(r.object_version, r.object_generation::text) as object_version, r.object_digest, \
              r.content_length \
              from ocr_jobs j left join ocr_results r on r.job_id = j.job_id \
              where j.product_id = $1 and j.tenant_id = $2 and j.job_id = $3",
@@ -1728,7 +1728,7 @@ impl PgJobStore {
                 .map_err(|_| Error::InvalidStoredResult)?,
             object_bucket: row.try_get("object_bucket")?,
             object_name: row.try_get("object_name")?,
-            object_generation: row.try_get("object_generation")?,
+            object_version: row.try_get("object_version")?,
             object_digest: row.try_get("object_digest")?,
             content_length: row.try_get("content_length")?,
         };
@@ -1770,7 +1770,7 @@ impl PgJobStore {
         let job = stored_job(row)?;
         let existing = sqlx::query(
             "select document_id, document_version, object_bucket, object_name, \
-             object_generation, object_digest, content_length from ocr_results \
+             coalesce(object_version, object_generation::text) as object_version, object_digest, content_length from ocr_results \
              where product_id = $1 and tenant_id = $2 and job_id = $3",
         )
         .bind(product_id.as_str())
@@ -1806,7 +1806,7 @@ impl PgJobStore {
         }
         sqlx::query(
             "insert into ocr_results (job_id, product_id, tenant_id, document_id, \
-             document_version, object_bucket, object_name, object_generation, object_digest, \
+             document_version, object_bucket, object_name, object_version, object_digest, \
              content_length) values ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)",
         )
         .bind(job_id.as_str())
@@ -1816,7 +1816,7 @@ impl PgJobStore {
         .bind(String::from(command.locator.document_version.clone()))
         .bind(&command.locator.object_bucket)
         .bind(&command.locator.object_name)
-        .bind(command.locator.object_generation)
+        .bind(&command.locator.object_version)
         .bind(&command.locator.object_digest)
         .bind(command.locator.content_length)
         .execute(&mut *transaction)
@@ -1969,7 +1969,7 @@ fn stored_page_artifact(row: sqlx::postgres::PgRow) -> Result<StoredPageArtifact
         activity_key: row.try_get("activity_key")?,
         object_bucket: row.try_get("object_bucket")?,
         object_name: row.try_get("object_name")?,
-        object_generation: row.try_get("object_generation")?,
+        object_version: row.try_get("object_version")?,
         object_digest: row.try_get("object_digest")?,
         content_length: row.try_get("content_length")?,
     };
@@ -1985,7 +1985,7 @@ fn stored_result_locator(row: sqlx::postgres::PgRow) -> Result<StoredResultLocat
             .map_err(|_| Error::InvalidStoredResult)?,
         object_bucket: row.try_get("object_bucket")?,
         object_name: row.try_get("object_name")?,
-        object_generation: row.try_get("object_generation")?,
+        object_version: row.try_get("object_version")?,
         object_digest: row.try_get("object_digest")?,
         content_length: row.try_get("content_length")?,
     };
@@ -2073,7 +2073,7 @@ fn stored_upload(row: sqlx::postgres::PgRow) -> Result<StoredUpload> {
         expected_digest: row.try_get("expected_digest")?,
         expires_at: row.try_get("expires_at")?,
         created_at: row.try_get("created_at")?,
-        object_generation: row.try_get("object_generation")?,
+        object_version: row.try_get("object_version")?,
         uploaded_at: row.try_get("uploaded_at")?,
     };
     validate_upload(&upload)?;
@@ -2084,7 +2084,7 @@ fn stored_accepted_source(row: sqlx::postgres::PgRow) -> Result<StoredAcceptedSo
     let source = StoredAcceptedSource {
         bucket: row.try_get("source_bucket")?,
         object_name: row.try_get("source_object_name")?,
-        generation: row.try_get("source_object_generation")?,
+        generation: row.try_get("source_object_version")?,
         digest: row.try_get("source_digest")?,
         content_length: row.try_get("source_content_length")?,
         content_type: row.try_get("expected_content_type")?,
@@ -2130,7 +2130,7 @@ fn validate_record(record: &RecordUpload) -> Result<()> {
         record.verified_content_type.as_str(),
         "application/pdf" | "image/jpeg" | "image/png" | "image/tiff" | "image/webp"
     );
-    if record.object_generation <= 0
+    if !valid_object_version(&record.object_version)
         || !(1..=104_857_600).contains(&record.verified_content_length)
         || !valid_digest
         || !valid_content_type
@@ -2154,10 +2154,10 @@ fn validate_accepted_source(source: &AcceptUpload) -> Result<()> {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     });
-    if !(3..=63).contains(&source.source_bucket.len())
+    if !(3..=222).contains(&source.source_bucket.len())
         || source.source_object_name.is_empty()
         || source.source_object_name.len() > 1024
-        || source.source_object_generation <= 0
+        || !valid_object_version(&source.source_object_version)
         || !(1..=104_857_600).contains(&source.source_content_length)
         || !valid_digest
         || !is_valid_lease_owner(&source.inspection_lease_owner)
@@ -2191,10 +2191,10 @@ fn validate_accepted_source_locator(source: &StoredAcceptedSource) -> Result<()>
         source.content_type.as_str(),
         "application/pdf" | "image/jpeg" | "image/png" | "image/tiff" | "image/webp"
     );
-    if !(3..=63).contains(&source.bucket.len())
+    if !(3..=222).contains(&source.bucket.len())
         || source.object_name.is_empty()
         || source.object_name.len() > 1024
-        || source.generation <= 0
+        || !valid_object_version(&source.generation)
         || !(1..=104_857_600).contains(&source.content_length)
         || !valid_digest
         || !valid_content_type
@@ -2280,9 +2280,9 @@ fn validate_upload(upload: &StoredUpload) -> Result<()> {
     );
     let verification_shape_is_valid = match upload.state {
         UploadState::Reserved | UploadState::Expired => {
-            upload.object_generation.is_none() && upload.uploaded_at.is_none()
+            upload.object_version.is_none() && upload.uploaded_at.is_none()
         }
-        _ => upload.object_generation.is_some() && upload.uploaded_at.is_some(),
+        _ => upload.object_version.is_some() && upload.uploaded_at.is_some(),
     };
     if upload.object_bucket.is_empty()
         || upload.object_name.is_empty()
@@ -2325,7 +2325,7 @@ fn validate_locator(locator: &StoredResultLocator) -> Result<()> {
         || locator.object_bucket.len() > 222
         || locator.object_name.is_empty()
         || locator.object_name.len() > 1024
-        || locator.object_generation <= 0
+        || !valid_object_version(&locator.object_version)
         || locator.content_length <= 0
         || !digest_is_valid
     {
@@ -2350,7 +2350,7 @@ fn validate_page_artifact(artifact: &StoredPageArtifact) -> Result<()> {
         || artifact.object_bucket.len() > 222
         || artifact.object_name.is_empty()
         || artifact.object_name.len() > 1024
-        || artifact.object_generation <= 0
+        || !valid_object_version(&artifact.object_version)
         || !(1..=16_777_216).contains(&artifact.content_length)
         || !digest_is_valid
     {
@@ -2393,4 +2393,12 @@ fn validate_page_artifact_batch(
         return Err(Error::InvalidStoredPageArtifact);
     }
     Ok(())
+}
+
+/// Validates a provider version token without interpreting it as a checksum.
+pub fn valid_object_version(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 1024
+        && value != "null"
+        && value.bytes().all(|b| b.is_ascii_graphic())
 }

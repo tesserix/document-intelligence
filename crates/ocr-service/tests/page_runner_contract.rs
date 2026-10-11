@@ -36,7 +36,7 @@ fn page_artifact(task: &PageTask) -> StoredPageArtifact {
         activity_key: task.activity_key.clone(),
         object_bucket: "dev-kora-ocr-pages".to_owned(),
         object_name: format!("page-artifacts/{}.json", task.activity_key),
-        object_generation: i64::from(task.attempt),
+        object_version: task.attempt.to_string(),
         object_digest: format!("sha256:{}", "a".repeat(64)),
         content_length: 256,
     }
@@ -282,7 +282,7 @@ impl ResultArtifactWriter for MatchingResultWriter {
                     tenant_id.as_str(),
                     job_id.as_str()
                 ),
-                object_generation: 11,
+                object_version: "11".to_owned(),
                 object_digest: format!("sha256:{}", "c".repeat(64)),
                 content_length: 256,
             })
@@ -655,7 +655,7 @@ async fn result_storage_failure_cannot_create_a_terminal_job_or_locator() {
         document_version: result.document_version.clone(),
         object_bucket: "dev-kora-ocr-results".to_owned(),
         object_name: "products/kora/tenants/ten_RESULT_PUBLISH_FAIL/results/job_RESULT_PUBLISH_FAIL/result.json".to_owned(),
-        object_generation: 9,
+        object_version: "9".to_owned(),
         object_digest: format!("sha256:{}", "b".repeat(64)),
         content_length: 256,
     };

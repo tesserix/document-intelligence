@@ -322,7 +322,7 @@ async fn upload_capability_does_not_expose_job_routes() {
         Arc::new(StaticUploadIssuer),
         Arc::new(StaticUploadArtifactReader {
             artifact: VerifiedUploadArtifact {
-                object_generation: 1,
+                object_version: "1".to_owned(),
                 content_type: "application/pdf".to_owned(),
                 content_length: 1,
                 digest: "sha256:00".to_owned(),
@@ -1130,7 +1130,7 @@ async fn uploaded_object_is_verified_pinned_and_completed_once_for_its_tenant() 
         Arc::new(StaticUploadIssuer),
         Arc::new(StaticUploadArtifactReader {
             artifact: VerifiedUploadArtifact {
-                object_generation: 73,
+                object_version: "73".to_owned(),
                 content_type: "application/pdf".to_owned(),
                 content_length: i64::try_from(bytes.len()).unwrap(),
                 digest: digest.clone(),
@@ -1340,7 +1340,7 @@ async fn a_second_product_uses_the_same_contract_without_cross_product_visibilit
         Arc::new(StaticUploadIssuer),
         Arc::new(StaticUploadArtifactReader {
             artifact: VerifiedUploadArtifact {
-                object_generation: 81,
+                object_version: "81".to_owned(),
                 content_type: "application/pdf".to_owned(),
                 content_length: i64::try_from(bytes.len()).unwrap(),
                 digest: digest.clone(),
@@ -1435,7 +1435,7 @@ async fn a_second_product_uses_the_same_contract_without_cross_product_visibilit
                     source_object_name: format!(
                         "products/{product}/tenants/ten_COMPAT/documents/{digest}/source"
                     ),
-                    source_object_generation: 82,
+                    source_object_version: "82".to_owned(),
                     source_digest: digest.clone(),
                     source_content_length: i64::try_from(bytes.len()).unwrap(),
                     parser_inspection: ParserInspectionMetadata {

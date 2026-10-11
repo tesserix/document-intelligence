@@ -5,8 +5,8 @@ use std::{
 
 use anyhow::{Context, Result};
 use ocr_service::{
-    ClamdScanner, DurableWorkflowStarter, GcsSourcePromoter, GcsUploadDocumentReader,
-    GcsUploadMalwareInspector, Importer, JobOutboxRelay, ParserProcess, TelemetryConfig,
+    ClamdScanner, CloudSourcePromoter, CloudUploadDocumentReader, CloudUploadMalwareInspector,
+    DurableWorkflowStarter, Importer, JobOutboxRelay, ParserProcess, TelemetryConfig,
     TelemetryRuntime,
 };
 use ocr_store::{PgJobStore, PgWorkScopeDirectory};
@@ -53,13 +53,13 @@ async fn run() -> Result<()> {
     let quarantine_buckets = quarantine.values().cloned().collect::<Vec<_>>();
     let importer = Arc::new(Importer::new(
         jobs.clone(),
-        Arc::new(GcsUploadMalwareInspector::new(
+        Arc::new(CloudUploadMalwareInspector::new(
             &quarantine_buckets,
             scanner,
         )?),
-        Arc::new(GcsUploadDocumentReader::new(&quarantine_buckets)?),
+        Arc::new(CloudUploadDocumentReader::new(&quarantine_buckets)?),
         parser,
-        Arc::new(GcsSourcePromoter::new(routes)?),
+        Arc::new(CloudSourcePromoter::new(routes)?),
     ));
     let gateway = Arc::new(OfficialTemporalGateway::new(temporal_client().await?));
     let starter = TemporalStarter::new(gateway, &required("TEMPORAL_TASK_QUEUE")?)?;

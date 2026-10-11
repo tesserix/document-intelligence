@@ -53,7 +53,7 @@ fn source() -> StoredAcceptedSource {
             "products/kora/tenants/ten_SOURCE/documents/sha256/{}",
             "a".repeat(64)
         ),
-        generation: 7,
+        generation: "7".to_owned(),
         digest: format!("sha256:{}", "a".repeat(64)),
         content_length: 16,
         content_type: "application/pdf".to_owned(),

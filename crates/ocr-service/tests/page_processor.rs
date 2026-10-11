@@ -74,7 +74,7 @@ impl PageArtifactWriter for StubWriter {
                 activity_key: task.activity_key.clone(),
                 object_bucket: "dev-kora-ocr-pages".to_owned(),
                 object_name: format!("pages/{}.json", task.activity_key),
-                object_generation: 7,
+                object_version: "7".to_owned(),
                 object_digest: format!("sha256:{}", "a".repeat(64)),
                 content_length: 128,
             })

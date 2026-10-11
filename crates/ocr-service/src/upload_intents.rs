@@ -1,14 +1,7 @@
-use std::{
-    collections::{BTreeMap, HashMap},
-    time::Duration,
-};
+use crate::storage_client::StorageClient;
+use std::{collections::HashMap, time::Duration};
 
-use axum::http::Method;
-use object_store::{
-    gcp::{GoogleCloudStorage, GoogleCloudStorageBuilder},
-    path::Path,
-    signer::Signer,
-};
+use object_store::path::Path;
 use thiserror::Error;
 
 use crate::{
@@ -27,7 +20,7 @@ pub enum UploadIntentConfigurationError {
 }
 
 pub struct GcsUploadIssuer {
-    stores: HashMap<String, GoogleCloudStorage>,
+    stores: HashMap<String, StorageClient>,
 }
 
 impl GcsUploadIssuer {
@@ -40,20 +33,12 @@ impl GcsUploadIssuer {
             if !is_bucket_name(bucket) || stores.contains_key(bucket) {
                 return Err(UploadIntentConfigurationError::InvalidBucket);
             }
-            let store = GoogleCloudStorageBuilder::new()
-                .with_bucket_name(bucket)
-                .build()
-                .map_err(|_| UploadIntentConfigurationError::Client)?;
+            let store =
+                StorageClient::new(bucket).map_err(|_| UploadIntentConfigurationError::Client)?;
             stores.insert(bucket.clone(), store);
         }
         Ok(Self { stores })
     }
-}
-
-fn required_upload_headers(content_type: String) -> BTreeMap<String, String> {
-    [("content-type".to_owned(), content_type)]
-        .into_iter()
-        .collect()
 }
 
 impl UploadIntentIssuer for GcsUploadIssuer {
@@ -69,30 +54,18 @@ impl UploadIntentIssuer for GcsUploadIssuer {
             if seconds == 0 {
                 return Err(UploadIssueError);
             }
-            let upload_url = store
-                .signed_url(Method::PUT, &path, Duration::from_secs(seconds))
+            let (upload_url, required_headers) = store
+                .signed_upload(
+                    &path,
+                    Duration::from_secs(seconds),
+                    &upload.expected_content_type,
+                )
                 .await
-                .map_err(|_| UploadIssueError)?
-                .to_string();
+                .map_err(|_| UploadIssueError)?;
             Ok(IssuedUpload {
                 upload_url,
-                required_headers: required_upload_headers(upload.expected_content_type.clone()),
+                required_headers,
             })
         })
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use std::collections::BTreeMap;
-
-    use super::required_upload_headers;
-
-    #[test]
-    fn signed_upload_contract_requires_only_the_signed_content_type_header() {
-        assert_eq!(
-            required_upload_headers("application/pdf".to_owned()),
-            BTreeMap::from([("content-type".to_owned(), "application/pdf".to_owned())])
-        );
     }
 }

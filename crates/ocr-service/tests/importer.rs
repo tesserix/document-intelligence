@@ -74,7 +74,7 @@ impl SourcePromoter for FixturePromoter {
                 product_id.as_str(),
                 tenant_id.as_str()
             ),
-            generation: 73,
+            generation: "73".to_owned(),
             digest: upload.expected_digest.clone(),
             content_length: upload.expected_content_length,
         })

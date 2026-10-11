@@ -1,10 +1,7 @@
+use crate::storage_client::StorageClient;
 use std::{collections::HashMap, future::Future, pin::Pin, time::Duration};
 
-use object_store::{
-    gcp::{GoogleCloudStorage, GoogleCloudStorageBuilder},
-    path::Path,
-    GetOptions, ObjectStore, ObjectStoreExt, PutMode,
-};
+use object_store::{path::Path, GetOptions, ObjectStoreExt, PutMode};
 use ocr_domain::{DocumentResult, JobId, ProductId, TenantId};
 use ocr_store::StoredResultLocator;
 use sha2::{Digest, Sha256};
@@ -56,7 +53,7 @@ pub trait ResultArtifactWriter: Send + Sync {
 
 struct ResultWriteRoute {
     bucket: String,
-    store: GoogleCloudStorage,
+    store: StorageClient,
 }
 
 struct PreparedResultArtifact {
@@ -84,9 +81,7 @@ impl GcsResultWriter {
             if !is_bucket_name(&bucket) || !buckets.insert(bucket.clone()) {
                 return Err(ResultArtifactConfigurationError::InvalidBucket);
             }
-            let store = GoogleCloudStorageBuilder::new()
-                .with_bucket_name(&bucket)
-                .build()
+            let store = StorageClient::new(&bucket)
                 .map_err(|_| ResultArtifactConfigurationError::Client)?;
             routes.insert(product, ResultWriteRoute { bucket, store });
         }
@@ -132,7 +127,9 @@ impl GcsResultWriter {
             .put_opts(&path, prepared.bytes.clone().into(), PutMode::Create.into())
             .await
         {
-            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {}
+            Ok(_)
+            | Err(object_store::Error::AlreadyExists { .. })
+            | Err(object_store::Error::Precondition { .. }) => {}
             Err(_) => return Err(ResultArtifactWriteError::Unavailable),
         }
         let stored = route
@@ -144,8 +141,8 @@ impl GcsResultWriter {
             .meta
             .version
             .as_deref()
-            .and_then(|value| value.parse::<i64>().ok())
-            .filter(|value| *value > 0)
+            .filter(|value| ocr_store::valid_object_version(value))
+            .map(str::to_owned)
             .ok_or(ResultArtifactWriteError::Unavailable)?;
         let expected_size =
             u64::try_from(prepared.bytes.len()).map_err(|_| ResultArtifactWriteError::Invalid)?;
@@ -166,7 +163,7 @@ impl GcsResultWriter {
             document_version: result.document_version.clone(),
             object_bucket: route.bucket.clone(),
             object_name: prepared.object_name,
-            object_generation: generation,
+            object_version: generation,
             object_digest: prepared.digest,
             content_length: i64::try_from(prepared.bytes.len())
                 .map_err(|_| ResultArtifactWriteError::Invalid)?,
@@ -213,7 +210,7 @@ fn prepare_result_artifact(
 }
 
 pub struct GcsResultReader {
-    stores: HashMap<String, GoogleCloudStorage>,
+    stores: HashMap<String, StorageClient>,
 }
 
 impl GcsResultReader {
@@ -226,10 +223,8 @@ impl GcsResultReader {
             if !is_bucket_name(bucket) || stores.contains_key(bucket) {
                 return Err(ResultArtifactConfigurationError::InvalidBucket);
             }
-            let store = GoogleCloudStorageBuilder::new()
-                .with_bucket_name(bucket)
-                .build()
-                .map_err(|_| ResultArtifactConfigurationError::Client)?;
+            let store =
+                StorageClient::new(bucket).map_err(|_| ResultArtifactConfigurationError::Client)?;
             stores.insert(bucket.clone(), store);
         }
         Ok(Self { stores })
@@ -248,7 +243,7 @@ impl ResultArtifactReader for GcsResultReader {
                 .get(&locator.object_bucket)
                 .ok_or(ResultArtifactError)?;
             let path = Path::parse(&locator.object_name).map_err(|_| ResultArtifactError)?;
-            let generation = locator.object_generation.to_string();
+            let generation = locator.object_version.to_string();
             let result = store
                 .get_opts(
                     &path,
@@ -275,16 +270,7 @@ impl ResultArtifactReader for GcsResultReader {
 }
 
 pub(crate) fn is_bucket_name(value: &str) -> bool {
-    let bytes = value.as_bytes();
-    (3..=63).contains(&bytes.len())
-        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
-        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
-        && bytes.iter().all(|byte| {
-            byte.is_ascii_lowercase() || byte.is_ascii_digit() || matches!(byte, b'.' | b'_' | b'-')
-        })
-        && !value.contains("..")
-        && !value.starts_with("goog")
-        && !value.contains("google")
+    crate::storage_client::is_storage_location(value)
 }
 
 #[cfg(test)]

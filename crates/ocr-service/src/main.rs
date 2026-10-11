@@ -4,7 +4,7 @@ use anyhow::{Context, Result};
 use ocr_domain::ProductId;
 use ocr_service::{
     router_with_runtime_dependencies, with_workload_identity, ApiCapability, CachePolicy,
-    GcsResultReader, GcsUploadArtifactReader, GcsUploadIssuer, JobStatusCache,
+    CloudResultReader, CloudUploadArtifactReader, CloudUploadIssuer, JobStatusCache,
     ResultArtifactReader, TelemetryConfig, TelemetryRuntime, UploadArtifactReader,
     UploadIntentIssuer, ValkeyJobStatusCache, WorkloadIdentityVerifier,
 };
@@ -39,7 +39,7 @@ async fn main() -> Result<()> {
     let upload_buckets = optional_product_buckets_env("QUARANTINE_BUCKETS")?;
     let results: Option<Arc<dyn ResultArtifactReader>> = result_buckets
         .map(|buckets| {
-            GcsResultReader::new(&buckets)
+            CloudResultReader::new(&buckets)
                 .map(|reader| Arc::new(reader) as Arc<dyn ResultArtifactReader>)
         })
         .transpose()
@@ -47,9 +47,9 @@ async fn main() -> Result<()> {
     let (upload_buckets, uploads, upload_artifacts) = match upload_buckets {
         Some(upload_buckets) => {
             let buckets = upload_buckets.values().cloned().collect::<Vec<_>>();
-            let issuer = GcsUploadIssuer::new(&buckets)
+            let issuer = CloudUploadIssuer::new(&buckets)
                 .context("QUARANTINE_BUCKETS contains invalid configuration")?;
-            let artifact_reader = GcsUploadArtifactReader::new(&buckets)
+            let artifact_reader = CloudUploadArtifactReader::new(&buckets)
                 .context("QUARANTINE_BUCKETS contains invalid configuration")?;
             (
                 upload_buckets,
