@@ -30,6 +30,7 @@ jobs:
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
+        if: github.ref == 'refs/heads/main'
         with:
           context: .
           file: Dockerfile
@@ -38,6 +39,7 @@ jobs:
           provenance: mode=max
           sbom: true
       - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
+        if: github.ref == 'refs/heads/main'
         with:
           context: .
           file: Dockerfile.parser
@@ -51,6 +53,7 @@ jobs:
           VERSION: ${{ github.ref_name }}
           SOURCE_SHA: ${{ github.sha }}
         run: |
+          git merge-base --is-ancestor "${SOURCE_SHA}" origin/main
           for image in ocr-service ocr-parser-sandbox; do
             docker buildx imagetools create \
               --tag "ghcr.io/tesserix/document-intelligence/${image}:${VERSION}" \
