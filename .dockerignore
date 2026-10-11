@@ -4,3 +4,7 @@ target
 docs
 tests
 **/*.md
+
+**/.terraform
+**/*.tfstate*
+**/*.tfvars

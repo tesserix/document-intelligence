@@ -35,6 +35,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Test sandbox benchmark scoring
+        run: |
+          node --check crates/ocr-sandbox/web/app.mjs
+          node --test crates/ocr-sandbox/web/score.test.mjs
       - name: Install pinned benchmark test tools
         run: |
           python3 -m venv /tmp/ocr-benchmark-tools
@@ -48,3 +52,30 @@ jobs:
           /tmp/ocr-benchmark-tools/bin/mypy --strict scripts/ocr_benchmark.py
           /tmp/ocr-benchmark-tools/bin/pytest scripts/tests -q
           python3 -c 'from pathlib import Path; from ocr_benchmark import load_cases; print(len(load_cases(Path("benchmarks/v1/manifest.json"))), "verified benchmark fixtures")'
+
+  sandbox-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Build sandbox container
+        run: docker build -f Dockerfile.sandbox -t ocr-sandbox:ci .
+      - name: Smoke test with admission disabled
+        env:
+          SANDBOX_ORIGIN: http://localhost:18881
+          SANDBOX_UPLOAD_API: http://127.0.0.1:19999
+          SANDBOX_JOB_API: http://127.0.0.1:19999
+          SANDBOX_DATABASE_URL: postgres://localhost/unused
+          SANDBOX_BUCKETS: ocr-sandbox-ci-q,ocr-sandbox-ci-s,ocr-sandbox-ci-p,ocr-sandbox-ci-r
+          SANDBOX_ADMISSION_ENABLED: 'false'
+        run: |
+          SANDBOX_WORKLOAD_IDENTITY="ci=ocr-sandbox:$(openssl rand -hex 32)"
+          export SANDBOX_WORKLOAD_IDENTITY
+          docker run --rm -d --name ocr-sandbox-ci --read-only --cap-drop=ALL \
+            --security-opt=no-new-privileges -p 127.0.0.1:18881:8080 \
+            -e SANDBOX_ORIGIN -e SANDBOX_UPLOAD_API -e SANDBOX_JOB_API \
+            -e SANDBOX_DATABASE_URL -e SANDBOX_BUCKETS \
+            -e SANDBOX_WORKLOAD_IDENTITY -e SANDBOX_ADMISSION_ENABLED ocr-sandbox:ci
+          trap 'docker stop ocr-sandbox-ci >/dev/null' EXIT
+          curl --fail --retry 10 --retry-connrefused --retry-delay 1 http://localhost:18881/healthz
+          curl --fail http://localhost:18881/ | grep -q 'OCR Sandbox'
+          test "$(curl -s -o /dev/null -w '%{http_code}' -X POST http://localhost:18881/v1/sandbox/sessions)" = 503

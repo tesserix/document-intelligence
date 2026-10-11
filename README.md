@@ -296,3 +296,10 @@ This is an open-source project released under the
 development workflow, [SECURITY.md](SECURITY.md) for how to report
 vulnerabilities, and [CODE_OF_CONDUCT.md](CODE_OF_CONDUCT.md) for community
 expectations.
+
+## OCR-only sandbox
+
+The optional [OCR sandbox UI and API](docs/OCR-SANDBOX.md) supports bounded image
+uploads, known-sample benchmarks, session isolation and durable image cleanup.
+It runs as a separate service with isolated storage and credentials; public
+admission is disabled by default.
