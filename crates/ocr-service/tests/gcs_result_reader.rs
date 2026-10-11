@@ -10,7 +10,7 @@ fn locator(bucket: &str) -> StoredResultLocator {
         document_version: DocumentVersion::new(&format!("sha256:{}", "a".repeat(64))).unwrap(),
         object_bucket: bucket.to_owned(),
         object_name: "products/kora/tenants/ten_TEST/results/job_TEST/v1.json".to_owned(),
-        object_generation: 7,
+        object_version: "7".to_owned(),
         object_digest: format!("sha256:{}", "b".repeat(64)),
         content_length: 128,
     }

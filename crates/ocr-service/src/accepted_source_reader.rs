@@ -1,10 +1,7 @@
+use crate::storage_client::StorageClient;
 use std::{collections::HashMap, future::Future, pin::Pin, time::Duration};
 
-use object_store::{
-    gcp::{GoogleCloudStorage, GoogleCloudStorageBuilder},
-    path::Path,
-    GetOptions, ObjectStore,
-};
+use object_store::{path::Path, GetOptions};
 use ocr_domain::{ProductId, TenantId};
 use ocr_store::StoredAcceptedSource;
 use thiserror::Error;
@@ -49,7 +46,7 @@ pub trait AcceptedSourceBytesReader: Send + Sync {
 
 struct SourceRoute {
     bucket: String,
-    store: GoogleCloudStorage,
+    store: StorageClient,
 }
 
 pub struct GcsAcceptedSourceReader {
@@ -70,9 +67,7 @@ impl GcsAcceptedSourceReader {
             if !is_bucket_name(bucket) || configured.contains_key(product) {
                 return Err(AcceptedSourceReaderConfigurationError::InvalidRoute);
             }
-            let store = GoogleCloudStorageBuilder::new()
-                .with_bucket_name(bucket)
-                .build()
+            let store = StorageClient::new(bucket)
                 .map_err(|_| AcceptedSourceReaderConfigurationError::Client)?;
             configured.insert(
                 product.clone(),

@@ -104,7 +104,7 @@ async fn result_commit_is_scoped_atomic_terminal_and_idempotent() {
         object_bucket: "dev-kora-ocr-results".to_owned(),
         object_name: "products/kora/tenants/ten_RESULT_COMMIT/results/job_RESULT_COMMIT/v1.json"
             .to_owned(),
-        object_generation: 7,
+        object_version: "7".to_owned(),
         object_digest: format!("sha256:{}", "d".repeat(64)),
         content_length: 512,
     };
@@ -362,7 +362,7 @@ async fn accepted_job_source_is_scoped_and_preserves_immutable_locator() {
         source.object_name,
         "products/kora/tenants/ten_SOURCE_BINDING/quarantine/upl_SOURCE_BINDING/accepted"
     );
-    assert_eq!(source.generation, 2);
+    assert_eq!(source.generation, "2");
     assert_eq!(source.digest, format!("sha256:{}", "f".repeat(64)));
     assert_eq!(source.content_length, 8);
     assert_eq!(source.content_type, "application/pdf");
@@ -813,7 +813,7 @@ async fn verified_upload_generation_and_event_are_recorded_exactly_once() {
         .await
         .unwrap();
     let record = || RecordUpload {
-        object_generation: 42,
+        object_version: "42".to_owned(),
         verified_content_type: "application/pdf".to_owned(),
         verified_content_length: 1024,
         verified_digest: format!("sha256:{}", "b".repeat(64)),
@@ -905,7 +905,7 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
             &product_id,
             &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
             RecordUpload {
-                object_generation: 42,
+                object_version: "42".to_owned(),
                 verified_content_type: "application/pdf".to_owned(),
                 verified_content_length: 1024,
                 verified_digest: digest.clone(),
@@ -918,7 +918,7 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
         source_bucket: "dev-kora-ocr-source".to_owned(),
         source_object_name: "products/kora/tenants/ten_ACCEPT_SOURCE/documents/sha256/source"
             .to_owned(),
-        source_object_generation: 73,
+        source_object_version: "73".to_owned(),
         source_digest: digest.clone(),
         source_content_length: 1024,
         parser_inspection: ParserInspectionMetadata {
@@ -1048,7 +1048,7 @@ async fn accepted_source_and_event_are_recorded_exactly_once() {
             &product_id,
             &UploadId::new("upl_ACCEPT_SOURCE").unwrap(),
             AcceptUpload {
-                source_object_generation: 74,
+                source_object_version: "74".to_owned(),
                 ..acceptance("importer-02")
             },
         )
@@ -1508,7 +1508,7 @@ async fn result_locator_is_immutable_and_hidden_across_tenant_boundaries() {
     let ResultLookup::Ready(locator) = lookup else {
         panic!("expected a ready immutable result locator")
     };
-    assert_eq!(locator.object_generation, 42);
+    assert_eq!(locator.object_version, "42");
     assert_eq!(locator.content_length, 512);
     assert_eq!(locator.document_id, DocumentId::new("doc_RESULT").unwrap());
 
@@ -1581,4 +1581,88 @@ async fn work_scope_leases_expose_only_scope_ids_and_recover_after_release() {
         .release(claimed, "runtime-worker-a")
         .await
         .unwrap());
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn opaque_cloud_versions_round_trip_without_numeric_conversion() {
+    let (store, admin, _) = store().await;
+    let long_resource = format!("az://{}/{}", "a".repeat(24), "b".repeat(63));
+    for (suffix, version, bucket) in [
+        (
+            "LONG",
+            "opaque-long-container-version",
+            long_resource.as_str(),
+        ),
+        ("S3", "opaque+s3/version==", "s3://example-quarantine"),
+        (
+            "AZ",
+            "2026-10-12T01:02:03.1234567Z",
+            "az://exampleaccount/quarantine",
+        ),
+    ] {
+        let tenant = TenantId::new(&format!("ten_VERSION{suffix}")).unwrap();
+        let product = ProductId::new("kora").unwrap();
+        let upload = UploadId::new(&format!("upl_VERSION{suffix}")).unwrap();
+        let digest = format!("sha256:{}", "a".repeat(64));
+        store
+            .create_upload(CreateUpload {
+                upload_id: upload.clone(),
+                tenant_id: tenant.clone(),
+                product_id: product.clone(),
+                idempotency_key: IdempotencyKey::new(&format!("opaque-version-{suffix}")).unwrap(),
+                request_digest: RequestDigest::new(&digest).unwrap(),
+                object_bucket: bucket.into(),
+                object_name: format!(
+                    "products/kora/tenants/{}/quarantine/{}",
+                    tenant.as_str(),
+                    upload.as_str()
+                ),
+                expected_content_type: "image/png".into(),
+                expected_content_length: 128,
+                expected_digest: digest.clone(),
+                expires_at: time::OffsetDateTime::now_utc() + time::Duration::minutes(10),
+            })
+            .await
+            .unwrap();
+        for _ in 0..2 {
+            let result = store
+                .record_uploaded(
+                    &tenant,
+                    &product,
+                    &upload,
+                    RecordUpload {
+                        object_version: version.into(),
+                        verified_content_type: "image/png".into(),
+                        verified_content_length: 128,
+                        verified_digest: digest.clone(),
+                    },
+                )
+                .await
+                .unwrap();
+            match result {
+                RecordUploadOutcome::Recorded(saved) | RecordUploadOutcome::Existing(saved) => {
+                    assert_eq!(saved.object_version.as_deref(), Some(version))
+                }
+                other => panic!("unexpected upload outcome: {other:?}"),
+            }
+        }
+        let stored: (Option<i64>, String) = sqlx::query_as(
+            "select object_generation, object_version from ocr_uploads where upload_id = $1",
+        )
+        .bind(upload.as_str())
+        .fetch_one(&admin)
+        .await
+        .unwrap();
+        assert_eq!(stored, (None, version.into()));
+        assert!(store
+            .find_upload(
+                &TenantId::new("ten_FOREIGNVERSION").unwrap(),
+                &product,
+                &upload
+            )
+            .await
+            .unwrap()
+            .is_none());
+    }
 }

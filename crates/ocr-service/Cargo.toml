@@ -13,6 +13,7 @@ base64.workspace = true
 bytes.workspace = true
 futures-util.workspace = true
 gcp_auth.workspace = true
+google-cloud-auth.workspace = true
 fred.workspace = true
 ocr-domain = { path = "../ocr-domain" }
 ocr-store = { path = "../ocr-store" }

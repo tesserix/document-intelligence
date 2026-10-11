@@ -13,6 +13,7 @@ backends and AI agents. Self-host it with your own infrastructure and credential
 | I want to… | Go to |
 | --- | --- |
 | Deploy my own instance | [Self-hosting guide](docs/SELF-HOSTING.md) |
+| Use my GCS, S3 or Azure storage | [Storage, IAM and API secrets](docs/BRING-YOUR-OWN-STORAGE.md) |
 | Try sample images | [Three-image quick test](benchmarks/README.md#quick-test-three-images) |
 | Integrate the API | [API usage guide](docs/design/OCR-API-USAGE.md) · [OpenAPI specification](contracts/v1/openapi.json) |
 | Evaluate OCR quality | [Benchmark suite](benchmarks/README.md) |
@@ -97,6 +98,7 @@ consumer integrations around the shared service.
 - [ADR-0005: CNPG, Qdrant, and Valkey](docs/adr/0005-data-platform.md)
 - [ADR-0006: Kora runtime storage as a consumer integration](docs/adr/0006-kora-runtime-storage.md)
 - [ADR-0007: sandbox, training, and held-out evaluation boundaries](docs/adr/0007-sandbox-evaluation-training-boundaries.md)
+- [ADR-0014: cloud-neutral storage](docs/adr/0014-cloud-neutral-storage.md)
 - [ADR-0009: signed workload identity envelope](docs/adr/0009-signed-workload-identity-envelope.md)
 
 </details>
@@ -123,8 +125,10 @@ The reference below explains configuration and runtime safeguards.
 | `RESULT_BUCKETS` | Comma-separated allowlist of product/environment result buckets |
 | `QUARANTINE_BUCKETS` | Isolated upload buckets, as comma-separated `product=bucket` entries |
 
-Both storage adapters use Application Default Credentials and GKE Workload
-Identity. Service-account key files are not accepted as application configuration.
+GCS defaults remain compatible with existing workload identities. For S3/Azure
+resource routes, cloud credentials and the required migration, see the
+[storage guide](docs/BRING-YOUR-OWN-STORAGE.md). Real-cloud S3/Azure qualification
+is still pending.
 A missing adapter keeps readiness at **HTTP 503**; liveness stays available for diagnostics.
 
 ### Workload identity, caching, and telemetry

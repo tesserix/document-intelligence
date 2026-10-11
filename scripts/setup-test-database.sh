@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-admin_url="postgres://postgres:local@127.0.0.1:5432/postgres"
+test_port="${OCR_TEST_PORT:-5432}"
+[[ "$test_port" =~ ^[0-9]{1,5}$ ]] || exit 1
+admin_url="postgres://postgres:local@127.0.0.1:${test_port}/postgres"
 database_name="ocr_test"
 application_role="ocr_test_app"
 
@@ -10,7 +12,7 @@ create role ${application_role} login password 'local' nosuperuser nocreatedb no
 create database ${database_name};
 SQL
 
-database_admin_url="postgres://postgres:local@127.0.0.1:5432/${database_name}"
+database_admin_url="${admin_url%/*}/${database_name}"
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0001_jobs.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0002_result_locators.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0003_upload_intents.sql >/dev/null
@@ -28,6 +30,19 @@ psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0014_webhook_subscri
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0015_work_scope_leases.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0016_parser_page_geometry.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0017_job_extraction_schema.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f scripts/fixtures/storage-legacy.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0018_storage_versions.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f scripts/fixtures/storage-versions.sql >/dev/null
+rollback_log="$(mktemp)"
+trap 'rm -f "$rollback_log"' EXIT
+if psql "$database_admin_url" -1 -v ON_ERROR_STOP=1 -f migrations/0018_storage_versions.down.sql >"$rollback_log" 2>&1; then
+    echo "storage downgrade unexpectedly accepted opaque references" >&2
+    exit 1
+fi
+grep -q 'cannot downgrade while opaque storage versions exist' "$rollback_log"
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -c "delete from ocr_uploads where upload_id in ('upl_MIGRATIONLEGACY', 'upl_MIGRATIONOPAQUE')" >/dev/null
+
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0018_storage_versions.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0017_job_extraction_schema.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0016_parser_page_geometry.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0015_work_scope_leases.down.sql >/dev/null
@@ -62,6 +77,19 @@ psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0014_webhook_subscri
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0015_work_scope_leases.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0016_parser_page_geometry.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0017_job_extraction_schema.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0018_storage_versions.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0018_storage_versions.down.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -c 'alter table ocr_uploads drop constraint ocr_uploads_verification_complete, drop constraint ocr_uploads_accepted_source_complete' >/dev/null
+psql "$database_admin_url" -1 -v ON_ERROR_STOP=1 -f migrations/0018_storage_versions.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+do $$ begin
+    if (select count(*) from pg_constraint where conrelid = 'ocr_uploads'::regclass
+        and conname in ('ocr_uploads_verification_complete', 'ocr_uploads_accepted_source_complete')
+        and convalidated) <> 2 then
+        raise exception 'storage migration did not restore validated upload constraints';
+    end if;
+end $$;
+SQL
 psql "$database_admin_url" -v ON_ERROR_STOP=1 <<SQL >/dev/null
 grant usage on schema public to ${application_role};
 grant select, insert, update, delete on ocr_jobs, ocr_outbox to ${application_role};
@@ -78,5 +106,5 @@ grant execute on function ocr_register_work_scope(text, text, text) to ${applica
 grant execute on function ocr_set_work_scope_pending(text, text, text, boolean) to ${application_role};
 SQL
 
-echo "TEST_DATABASE_URL=postgres://${application_role}:local@127.0.0.1:5432/${database_name}"
+echo "TEST_DATABASE_URL=postgres://${application_role}:local@127.0.0.1:${test_port}/${database_name}"
 echo "TEST_DATABASE_ADMIN_URL=${database_admin_url}"

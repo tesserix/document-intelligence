@@ -1,12 +1,9 @@
+use crate::storage_client::StorageClient;
 use std::collections::HashMap;
 
 use bytes::Bytes;
 use futures_util::{Stream, StreamExt};
-use object_store::{
-    gcp::{GoogleCloudStorage, GoogleCloudStorageBuilder},
-    path::Path,
-    GetOptions, ObjectStore,
-};
+use object_store::{path::Path, GetOptions};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::task;
@@ -30,7 +27,7 @@ pub enum GcsDocumentReaderConfigurationError {
 }
 
 pub struct GcsUploadDocumentReader {
-    stores: HashMap<String, GoogleCloudStorage>,
+    stores: HashMap<String, StorageClient>,
 }
 
 impl GcsUploadDocumentReader {
@@ -43,9 +40,7 @@ impl GcsUploadDocumentReader {
             if !is_bucket_name(bucket) || stores.contains_key(bucket) {
                 return Err(GcsDocumentReaderConfigurationError::InvalidBucket);
             }
-            let store = GoogleCloudStorageBuilder::new()
-                .with_bucket_name(bucket)
-                .build()
+            let store = StorageClient::new(bucket)
                 .map_err(|_| GcsDocumentReaderConfigurationError::Client)?;
             stores.insert(bucket.clone(), store);
         }
@@ -59,8 +54,9 @@ impl UploadDocumentReader for GcsUploadDocumentReader {
             return Err(DocumentReadError::Invalid);
         }
         let generation = upload
-            .object_generation
-            .filter(|generation| *generation > 0)
+            .object_version
+            .as_ref()
+            .filter(|generation| ocr_store::valid_object_version(generation))
             .ok_or(DocumentReadError::Invalid)?;
         let store = self
             .stores
@@ -163,7 +159,7 @@ mod tests {
             expected_digest: sha256_digest(Sha256::digest(bytes)),
             expires_at: OffsetDateTime::now_utc() + time::Duration::minutes(10),
             created_at: OffsetDateTime::now_utc(),
-            object_generation: Some(42),
+            object_version: Some("42".to_owned()),
             uploaded_at: Some(OffsetDateTime::now_utc()),
         };
         let valid = stream::iter([

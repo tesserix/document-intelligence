@@ -116,17 +116,41 @@ pub trait DocumentAiTransport: Send + Sync {
 
 pub struct MetadataDocumentAiTransport {
     configuration: DocumentAiConfiguration,
-    identity: gcp_auth::MetadataServiceAccount,
+    identity: DocumentAiIdentity,
     client: Client,
+}
+
+enum DocumentAiIdentity {
+    Metadata(Box<gcp_auth::MetadataServiceAccount>),
+    ApplicationDefault(google_cloud_auth::credentials::AccessTokenCredentials),
 }
 
 impl MetadataDocumentAiTransport {
     pub async fn new(
         configuration: DocumentAiConfiguration,
     ) -> Result<Self, DocumentAiTransportError> {
-        let identity = gcp_auth::MetadataServiceAccount::new()
-            .await
-            .map_err(|_| DocumentAiTransportError::Unavailable)?;
+        Self::new_with_auth(configuration, "metadata").await
+    }
+
+    pub async fn new_with_auth(
+        configuration: DocumentAiConfiguration,
+        mode: &str,
+    ) -> Result<Self, DocumentAiTransportError> {
+        let identity = match mode {
+            "metadata" => DocumentAiIdentity::Metadata(Box::new(
+                timeout(DOCUMENT_AI_TIMEOUT, gcp_auth::MetadataServiceAccount::new())
+                    .await
+                    .map_err(|_| DocumentAiTransportError::Unavailable)?
+                    .map_err(|_| DocumentAiTransportError::Unavailable)?,
+            )),
+            "application-default" => DocumentAiIdentity::ApplicationDefault(
+                google_cloud_auth::credentials::Builder::default()
+                    .with_scopes([CLOUD_PLATFORM_SCOPE])
+                    .build_access_token_credentials()
+                    .map_err(|_| DocumentAiTransportError::Unavailable)?,
+            ),
+            _ => return Err(DocumentAiTransportError::Invalid),
+        };
         let client = Client::builder()
             .connect_timeout(Duration::from_secs(5))
             .build()
@@ -148,11 +172,22 @@ impl MetadataDocumentAiTransport {
         {
             return Err(DocumentAiTransportError::Invalid);
         }
-        let token = self
-            .identity
-            .token(&[CLOUD_PLATFORM_SCOPE])
-            .await
-            .map_err(|_| DocumentAiTransportError::Unavailable)?;
+        let token = timeout(DOCUMENT_AI_TIMEOUT, async {
+            match &self.identity {
+                DocumentAiIdentity::Metadata(identity) => identity
+                    .token(&[CLOUD_PLATFORM_SCOPE])
+                    .await
+                    .map(|token| token.as_str().to_owned())
+                    .map_err(|_| DocumentAiTransportError::Unavailable),
+                DocumentAiIdentity::ApplicationDefault(identity) => identity
+                    .access_token()
+                    .await
+                    .map(|token| token.token)
+                    .map_err(|_| DocumentAiTransportError::Unavailable),
+            }
+        })
+        .await
+        .map_err(|_| DocumentAiTransportError::Unavailable)??;
         let body = ProcessRequest::from(request);
         let response = timeout(
             DOCUMENT_AI_TIMEOUT,
@@ -613,6 +648,15 @@ mod tests {
     use ocr_domain::{PageGeometry, PageNumber};
 
     use super::*;
+
+    #[tokio::test]
+    async fn unknown_auth_modes_are_rejected_without_credential_lookup() {
+        let config = DocumentAiConfiguration::new("example-project", "us", "processor").unwrap();
+        assert!(matches!(
+            MetadataDocumentAiTransport::new_with_auth(config, "anonymous").await,
+            Err(DocumentAiTransportError::Invalid)
+        ));
+    }
 
     struct StaticSource {
         source: Mutex<Option<Result<AcceptedPageSource, PageSourceError>>>,

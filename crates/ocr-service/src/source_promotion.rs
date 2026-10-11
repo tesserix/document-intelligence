@@ -6,11 +6,7 @@ use std::{
 };
 
 use futures_util::StreamExt;
-use object_store::{
-    gcp::{GoogleCloudStorage, GoogleCloudStorageBuilder},
-    path::Path,
-    GetOptions, ObjectStore,
-};
+use object_store::{path::Path, GetOptions, PutMode};
 use ocr_domain::{ProductId, TenantId};
 use ocr_store::{StoredUpload, UploadState};
 use serde::Deserialize;
@@ -29,7 +25,7 @@ const PROMOTION_TIMEOUT: Duration = Duration::from_secs(120);
 pub struct PromotedSource {
     pub bucket: String,
     pub object_name: String,
-    pub generation: i64,
+    pub generation: String,
     pub digest: String,
     pub content_length: i64,
 }
@@ -48,8 +44,8 @@ pub enum SourcePromotionError {
 
 struct PromotionRoute {
     destination_bucket: String,
-    source: GoogleCloudStorage,
-    destination: GoogleCloudStorage,
+    source: crate::storage_client::StorageClient,
+    destination: crate::storage_client::StorageClient,
 }
 
 pub struct GcsSourcePromoter {
@@ -81,19 +77,15 @@ impl GcsSourcePromoter {
         for (source_bucket, destination_bucket) in routes {
             if !is_bucket_name(&source_bucket)
                 || !is_bucket_name(&destination_bucket)
-                || source_bucket == destination_bucket
+                || !crate::storage_client::promotion_compatible(&source_bucket, &destination_bucket)
                 || configured.contains_key(&source_bucket)
                 || !destinations.insert(destination_bucket.clone())
             {
                 return Err(SourcePromotionError::InvalidConfiguration);
             }
-            let source = GoogleCloudStorageBuilder::new()
-                .with_bucket_name(&source_bucket)
-                .build()
+            let source = crate::storage_client::StorageClient::new(&source_bucket)
                 .map_err(|_| SourcePromotionError::InvalidConfiguration)?;
-            let destination = GoogleCloudStorageBuilder::new()
-                .with_bucket_name(&destination_bucket)
-                .build()
+            let destination = crate::storage_client::StorageClient::new(&destination_bucket)
                 .map_err(|_| SourcePromotionError::InvalidConfiguration)?;
             configured.insert(
                 source_bucket,
@@ -150,8 +142,9 @@ impl GcsSourcePromoter {
         upload: &StoredUpload,
     ) -> Result<PromotedSource, SourcePromotionError> {
         let generation = upload
-            .object_generation
-            .filter(|value| *value > 0)
+            .object_version
+            .as_ref()
+            .filter(|value| ocr_store::valid_object_version(value))
             .ok_or(SourcePromotionError::InvalidSource)?;
         let route = self
             .routes
@@ -184,8 +177,16 @@ impl GcsSourcePromoter {
             product_id.as_str(),
             tenant_id.as_str()
         );
-        let credential = route
-            .source
+        let crate::storage_client::StorageClient::Gcs(gcs) = &route.source else {
+            return promote_stream(route, upload, &destination_name, generation).await;
+        };
+        if !matches!(
+            route.destination,
+            crate::storage_client::StorageClient::Gcs(_)
+        ) {
+            return Err(SourcePromotionError::InvalidConfiguration);
+        }
+        let credential = gcs
             .credentials()
             .get_credential()
             .await
@@ -194,11 +195,19 @@ impl GcsSourcePromoter {
         for _ in 0..MAXIMUM_REWRITE_CALLS {
             let url = rewrite_url(
                 &self.rewrite_base_url,
-                &upload.object_bucket,
+                upload
+                    .object_bucket
+                    .strip_prefix("gs://")
+                    .unwrap_or(&upload.object_bucket),
                 &upload.object_name,
-                &route.destination_bucket,
+                route
+                    .destination_bucket
+                    .strip_prefix("gs://")
+                    .unwrap_or(&route.destination_bucket),
                 &destination_name,
-                generation,
+                generation
+                    .parse::<i64>()
+                    .map_err(|_| SourcePromotionError::InvalidSource)?,
                 rewrite_token.as_deref(),
             )?;
             let mut request = self.client.post(url);
@@ -241,16 +250,20 @@ impl GcsSourcePromoter {
                     .size
                     .parse::<i64>()
                     .map_err(|_| SourcePromotionError::Unavailable)?;
-                if resource.bucket != route.destination_bucket
+                if resource.bucket
+                    != route
+                        .destination_bucket
+                        .strip_prefix("gs://")
+                        .unwrap_or(&route.destination_bucket)
                     || resource.name != destination_name
                     || promoted_length != upload.expected_content_length
                 {
                     return Err(SourcePromotionError::DestinationConflict);
                 }
                 return Ok(PromotedSource {
-                    bucket: resource.bucket,
+                    bucket: route.destination_bucket.clone(),
                     object_name: resource.name,
-                    generation: promoted_generation,
+                    generation: promoted_generation.to_string(),
                     digest: upload.expected_digest.clone(),
                     content_length: promoted_length,
                 });
@@ -263,6 +276,59 @@ impl GcsSourcePromoter {
         }
         Err(SourcePromotionError::Unavailable)
     }
+}
+
+async fn promote_stream(
+    route: &PromotionRoute,
+    upload: &StoredUpload,
+    destination_name: &str,
+    version: &str,
+) -> Result<PromotedSource, SourcePromotionError> {
+    if std::mem::discriminant(&route.source) != std::mem::discriminant(&route.destination) {
+        return Err(SourcePromotionError::InvalidConfiguration);
+    }
+    let source_path =
+        Path::parse(&upload.object_name).map_err(|_| SourcePromotionError::InvalidSource)?;
+    let source = route
+        .source
+        .get_opts(
+            &source_path,
+            GetOptions::new().with_version(Some(version.to_owned())),
+        )
+        .await
+        .map_err(|_| SourcePromotionError::Unavailable)?;
+    if source.meta.version.as_deref() != Some(version) {
+        return Err(SourcePromotionError::InvalidSource);
+    }
+    let bytes = crate::document_reader::collect_verified(
+        upload.expected_content_length,
+        &upload.expected_digest,
+        source.meta.size,
+        source.into_stream(),
+    )
+    .await
+    .map_err(|error| match error {
+        crate::importer::DocumentReadError::Invalid => SourcePromotionError::InvalidSource,
+        crate::importer::DocumentReadError::Unavailable => SourcePromotionError::Unavailable,
+    })?;
+    let path = Path::parse(destination_name).map_err(|_| SourcePromotionError::InvalidSource)?;
+    match route
+        .destination
+        .put_opts(&path, bytes.into(), PutMode::Create.into())
+        .await
+    {
+        Ok(_)
+        | Err(object_store::Error::AlreadyExists { .. })
+        | Err(object_store::Error::Precondition { .. }) => {}
+        Err(_) => return Err(SourcePromotionError::Unavailable),
+    }
+    verify_existing(
+        route,
+        destination_name,
+        &upload.expected_digest,
+        upload.expected_content_length,
+    )
+    .await
 }
 
 async fn bounded_response(response: reqwest::Response) -> Result<Vec<u8>, SourcePromotionError> {
@@ -294,8 +360,8 @@ async fn verify_existing(
         .meta
         .version
         .as_deref()
-        .and_then(|value| value.parse::<i64>().ok())
-        .filter(|value| *value > 0)
+        .filter(|value| ocr_store::valid_object_version(value))
+        .map(str::to_owned)
         .ok_or(SourcePromotionError::DestinationConflict)?;
     let expected_length_u64 =
         u64::try_from(expected_length).map_err(|_| SourcePromotionError::InvalidSource)?;
@@ -456,8 +522,8 @@ mod tests {
             "dev-kora-ocr-quarantine".to_owned(),
             PromotionRoute {
                 destination_bucket: "dev-kora-ocr-source".to_owned(),
-                source,
-                destination,
+                source: source.into(),
+                destination: destination.into(),
             },
         )]);
         let promoter = GcsSourcePromoter::with_parts(
@@ -476,7 +542,7 @@ mod tests {
             expected_digest: digest.clone(),
             expires_at: OffsetDateTime::now_utc() + time::Duration::minutes(10),
             created_at: OffsetDateTime::now_utc(),
-            object_generation: Some(42),
+            object_version: Some("42".to_owned()),
             uploaded_at: Some(OffsetDateTime::now_utc()),
         };
 
@@ -490,7 +556,7 @@ mod tests {
             .unwrap();
 
         assert_eq!(promoted.bucket, "dev-kora-ocr-source");
-        assert_eq!(promoted.generation, 73);
+        assert_eq!(promoted.generation, "73");
         assert_eq!(promoted.content_length, 8);
         assert_eq!(promoted.digest, digest);
         server.await.unwrap();
@@ -539,8 +605,8 @@ mod tests {
             "dev-kora-ocr-quarantine".to_owned(),
             PromotionRoute {
                 destination_bucket: "dev-kora-ocr-source".to_owned(),
-                source,
-                destination,
+                source: source.into(),
+                destination: destination.into(),
             },
         )]);
         let promoter = GcsSourcePromoter::with_parts(
@@ -558,7 +624,7 @@ mod tests {
             expected_digest: format!("sha256:{}", "a".repeat(64)),
             expires_at: OffsetDateTime::now_utc() + time::Duration::minutes(10),
             created_at: OffsetDateTime::now_utc(),
-            object_generation: Some(42),
+            object_version: Some("42".to_owned()),
             uploaded_at: Some(OffsetDateTime::now_utc()),
         };
 
@@ -573,5 +639,158 @@ mod tests {
 
         assert_eq!(error, super::SourcePromotionError::DestinationConflict);
         server.await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod cloud_protocol_tests {
+    use super::*;
+    use crate::storage_client::StorageClient;
+    use object_store::{aws::AmazonS3Builder, azure::MicrosoftAzureBuilder};
+    use tokio::{
+        io::{AsyncReadExt, AsyncWriteExt},
+        net::TcpListener,
+    };
+
+    #[tokio::test]
+    async fn cloud_promotion_pins_sources_and_verifies_replayed_destinations() {
+        for azure in [false, true] {
+            for conflict in [false, true] {
+                let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+                let endpoint = format!("http://{}", listener.local_addr().unwrap());
+                let server = tokio::spawn(async move {
+                    for step in 0..3 {
+                        let (mut socket, _) = listener.accept().await.unwrap();
+                        let mut buffer = Vec::new();
+                        while !buffer.windows(4).any(|b| b == b"\r\n\r\n") {
+                            let mut chunk = [0; 4096];
+                            let read = socket.read(&mut chunk).await.unwrap();
+                            assert!(read > 0 && buffer.len() < 32768);
+                            buffer.extend_from_slice(&chunk[..read]);
+                        }
+                        let request = String::from_utf8_lossy(&buffer);
+                        let target = request
+                            .lines()
+                            .next()
+                            .unwrap()
+                            .split_whitespace()
+                            .nth(1)
+                            .unwrap();
+                        let url = Url::parse(&format!("http://fixture{target}")).unwrap();
+                        if step == 1 {
+                            assert!(request.starts_with("PUT "));
+                            assert!(request
+                                .to_ascii_lowercase()
+                                .contains("if-none-match: *\r\n"));
+                            let body = "<Error><Code>PreconditionFailed</Code></Error>";
+                            socket.write_all(format!("HTTP/1.1 412 Precondition Failed\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{body}", body.len()).as_bytes()).await.unwrap();
+                        } else {
+                            assert!(request.starts_with("GET "));
+                            if step == 0 {
+                                let key = if azure { "versionid" } else { "versionId" };
+                                assert!(url
+                                    .query_pairs()
+                                    .any(|(k, v)| k == key && v == "opaque+source/version"));
+                            }
+                            let header = if azure {
+                                "x-ms-version-id"
+                            } else {
+                                "x-amz-version-id"
+                            };
+                            let version = if step == 0 {
+                                "opaque+source/version"
+                            } else {
+                                "opaque-destination"
+                            };
+                            let body = if step == 2 && conflict {
+                                "EVIL"
+                            } else {
+                                "DATA"
+                            };
+                            socket.write_all(format!("HTTP/1.1 200 OK\r\ncontent-length: 4\r\netag: \"fixture\"\r\nlast-modified: Mon, 12 Oct 2026 00:00:00 GMT\r\n{header}: {version}\r\nconnection: close\r\n\r\n{body}").as_bytes()).await.unwrap();
+                        }
+                    }
+                });
+                let client = |bucket: &str| {
+                    if azure {
+                        StorageClient::Azure(
+                            MicrosoftAzureBuilder::new()
+                                .with_account("fixtureaccount")
+                                .with_container_name(bucket)
+                                .with_bearer_token_authorization("synthetic-test-token")
+                                .with_endpoint(endpoint.clone())
+                                .with_allow_http(true)
+                                .build()
+                                .unwrap(),
+                        )
+                    } else {
+                        StorageClient::S3(
+                            AmazonS3Builder::new()
+                                .with_bucket_name(bucket)
+                                .with_region("us-east-1")
+                                .with_access_key_id("fixture-access")
+                                .with_secret_access_key("synthetic-test-credential")
+                                .with_endpoint(endpoint.clone())
+                                .with_allow_http(true)
+                                .build()
+                                .unwrap(),
+                        )
+                    }
+                };
+                let source_bucket = if azure {
+                    "az://fixtureaccount/quarantine"
+                } else {
+                    "s3://fixture-quarantine"
+                };
+                let destination_bucket = if azure {
+                    "az://fixtureaccount/sources"
+                } else {
+                    "s3://fixture-sources"
+                };
+                let promoter = GcsSourcePromoter::with_parts(
+                    HashMap::from([(
+                        source_bucket.to_owned(),
+                        PromotionRoute {
+                            destination_bucket: destination_bucket.to_owned(),
+                            source: client("quarantine"),
+                            destination: client("sources"),
+                        },
+                    )]),
+                    Arc::new(reqwest::Client::new()),
+                    Url::parse("https://unused.example").unwrap(),
+                );
+                let upload = StoredUpload {
+                    upload_id: ocr_domain::UploadId::new("upl_CLOUDPROMOTION").unwrap(),
+                    state: UploadState::Inspecting,
+                    object_bucket: source_bucket.to_owned(),
+                    object_name:
+                        "products/example/tenants/ten_CLOUDPROMOTION/quarantine/upl_CLOUDPROMOTION"
+                            .into(),
+                    expected_content_type: "image/png".into(),
+                    expected_content_length: 4,
+                    expected_digest: sha256_digest(Sha256::digest(b"DATA")),
+                    expires_at: time::OffsetDateTime::UNIX_EPOCH,
+                    created_at: time::OffsetDateTime::UNIX_EPOCH,
+                    object_version: Some("opaque+source/version".into()),
+                    uploaded_at: Some(time::OffsetDateTime::UNIX_EPOCH),
+                };
+                let outcome = promoter
+                    .promote(
+                        &ProductId::new("example").unwrap(),
+                        &TenantId::new("ten_CLOUDPROMOTION").unwrap(),
+                        &upload,
+                    )
+                    .await;
+                if conflict {
+                    assert_eq!(outcome, Err(SourcePromotionError::DestinationConflict));
+                } else {
+                    let promoted = outcome.unwrap();
+                    assert_eq!(promoted.generation, "opaque-destination");
+                    assert_eq!(promoted.bucket, destination_bucket);
+                    assert_eq!(promoted.digest, upload.expected_digest);
+                }
+                server.await.unwrap();
+            }
+        }
     }
 }

@@ -2,7 +2,7 @@ use std::{env, str::FromStr, sync::Arc};
 
 use anyhow::{Context, Result};
 use ocr_service::{
-    mcp_router, GcsResultReader, McpAccessGrantVerifier, McpUpstreamKeyVerifier,
+    mcp_router, CloudResultReader, McpAccessGrantVerifier, McpUpstreamKeyVerifier,
     ResultArtifactReader, TelemetryConfig, TelemetryRuntime,
 };
 use ocr_store::PgJobStore;
@@ -35,7 +35,7 @@ async fn main() -> Result<()> {
         .filter(|bucket| !bucket.is_empty())
         .map(str::to_owned)
         .collect::<Vec<_>>();
-    let results = GcsResultReader::new(&result_buckets)
+    let results = CloudResultReader::new(&result_buckets)
         .context("RESULT_BUCKETS contains invalid configuration")?;
     let application = mcp_router(
         PgJobStore::new(pool),

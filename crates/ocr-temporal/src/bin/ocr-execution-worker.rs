@@ -8,9 +8,9 @@ use std::{
 
 use anyhow::{Context, Result};
 use ocr_service::{
-    AcceptedPageSourceLoader, ArtifactPageProcessor, DocumentAiConfiguration,
-    DocumentAiPageRecognizer, DocumentFinalizer, GcsAcceptedSourceReader, GcsPageArtifactReader,
-    GcsPageArtifactWriter, GcsResultWriter, MetadataDocumentAiTransport, ResultPublisher,
+    AcceptedPageSourceLoader, ArtifactPageProcessor, CloudAcceptedSourceReader,
+    CloudPageArtifactReader, CloudPageArtifactWriter, CloudResultWriter, DocumentAiConfiguration,
+    DocumentAiPageRecognizer, DocumentFinalizer, MetadataDocumentAiTransport, ResultPublisher,
     TelemetryConfig, TelemetryRuntime,
 };
 use ocr_store::PgJobStore;
@@ -67,7 +67,7 @@ async fn run() -> Result<()> {
 
     let source = Arc::new(AcceptedPageSourceLoader::new(
         Arc::new(store.clone()),
-        Arc::new(GcsAcceptedSourceReader::new(
+        Arc::new(CloudAcceptedSourceReader::new(
             &source_buckets
                 .iter()
                 .map(|(product, bucket)| (product.clone(), bucket.clone()))
@@ -75,15 +75,18 @@ async fn run() -> Result<()> {
         )?),
     ));
     let transport = Arc::new(
-        MetadataDocumentAiTransport::new(DocumentAiConfiguration::new(
-            required("DOCUMENT_AI_PROJECT_ID")?,
-            required("DOCUMENT_AI_LOCATION")?,
-            required("DOCUMENT_AI_PROCESSOR_ID")?,
-        )?)
+        MetadataDocumentAiTransport::new_with_auth(
+            DocumentAiConfiguration::new(
+                required("DOCUMENT_AI_PROJECT_ID")?,
+                required("DOCUMENT_AI_LOCATION")?,
+                required("DOCUMENT_AI_PROCESSOR_ID")?,
+            )?,
+            &env::var("DOCUMENT_AI_AUTH_MODE").unwrap_or_else(|_| "metadata".to_owned()),
+        )
         .await
         .map_err(|_| anyhow::anyhow!("Document AI workload identity is unavailable"))?,
     );
-    let pages = Arc::new(GcsPageArtifactWriter::new(page_buckets.clone())?);
+    let pages = Arc::new(CloudPageArtifactWriter::new(page_buckets.clone())?);
     let processor = ArtifactPageProcessor::new(
         Arc::new(
             DocumentAiPageRecognizer::new(source, transport).with_preprocessor(
@@ -101,10 +104,10 @@ async fn run() -> Result<()> {
         bounded("PAGE_BATCH_SIZE", 8, 1, 64)?,
         bounded("PAGE_CONCURRENCY", 4, 1, 64)?,
     )?;
-    let page_reader = Arc::new(GcsPageArtifactReader::new(
+    let page_reader = Arc::new(CloudPageArtifactReader::new(
         &page_buckets.values().cloned().collect::<Vec<_>>(),
     )?);
-    let result_writer = Arc::new(GcsResultWriter::new(result_buckets)?);
+    let result_writer = Arc::new(CloudResultWriter::new(result_buckets)?);
     let finalizer = DocumentFinalizer::new(
         store.clone(),
         page_reader,

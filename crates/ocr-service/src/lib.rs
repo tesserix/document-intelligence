@@ -1,5 +1,7 @@
 //! HTTP boundary for the document intelligence service.
 
+mod storage_client;
+
 mod accepted_source_reader;
 mod digest;
 mod document_ai;
@@ -185,7 +187,7 @@ pub enum UploadArtifactError {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct VerifiedUploadArtifact {
-    pub object_generation: i64,
+    pub object_version: String,
     pub content_type: String,
     pub content_length: i64,
     pub digest: String,
@@ -941,7 +943,7 @@ async fn complete_upload(
             &identity.0.product_id,
             &upload_id,
             RecordUpload {
-                object_generation: artifact.object_generation,
+                object_version: artifact.object_version,
                 verified_content_type: artifact.content_type,
                 verified_content_length: artifact.content_length,
                 verified_digest: artifact.digest,
@@ -1119,10 +1121,10 @@ fn validate_issued_upload(
 ) -> std::result::Result<(), UploadIssueError> {
     let uri: Uri = issued.upload_url.parse().map_err(|_| UploadIssueError)?;
     let valid_url = uri.scheme_str() == Some("https") && uri.authority().is_some();
-    let expected_headers = BTreeMap::from([(
-        "content-type".to_owned(),
-        upload.expected_content_type.clone(),
-    )]);
+    let expected_headers = storage_client::upload_headers(
+        &upload.expected_content_type,
+        upload.object_bucket.starts_with("az://"),
+    );
     if !valid_url || issued.required_headers != expected_headers {
         return Err(UploadIssueError);
     }
@@ -1449,3 +1451,53 @@ pub use outbox_relay::{
     WorkflowDispatchOutcome, WorkflowStarter,
 };
 pub use source_promotion::{GcsSourcePromoter, PromotedSource, SourcePromotionError};
+
+// Legacy Gcs* names remain source-compatible aliases during the storage transition.
+pub use accepted_source_reader::GcsAcceptedSourceReader as CloudAcceptedSourceReader;
+pub use document_reader::GcsUploadDocumentReader as CloudUploadDocumentReader;
+pub use malware::GcsUploadMalwareInspector as CloudUploadMalwareInspector;
+pub use page_artifacts::{
+    GcsPageArtifactReader as CloudPageArtifactReader,
+    GcsPageArtifactWriter as CloudPageArtifactWriter,
+};
+pub use result_artifacts::{
+    GcsResultReader as CloudResultReader, GcsResultWriter as CloudResultWriter,
+};
+pub use source_promotion::GcsSourcePromoter as CloudSourcePromoter;
+pub use upload_artifacts::GcsUploadArtifactReader as CloudUploadArtifactReader;
+pub use upload_intents::GcsUploadIssuer as CloudUploadIssuer;
+
+#[cfg(test)]
+mod cloud_upload_contract_tests {
+    use super::*;
+
+    #[test]
+    fn azure_upload_contract_accepts_only_required_blob_headers() {
+        let upload = StoredUpload {
+            upload_id: UploadId::new("upl_AZURECONTRACT").unwrap(),
+            state: ocr_store::UploadState::Reserved,
+            object_bucket: "az://exampleaccount/quarantine".into(),
+            object_name: "products/example/tenants/ten_TEST/quarantine/upl_AZURECONTRACT".into(),
+            expected_content_type: "image/png".into(),
+            expected_content_length: 128,
+            expected_digest: format!("sha256:{}", "a".repeat(64)),
+            expires_at: time::OffsetDateTime::UNIX_EPOCH,
+            created_at: time::OffsetDateTime::UNIX_EPOCH,
+            object_version: None,
+            uploaded_at: None,
+        };
+        let mut issued = IssuedUpload {
+            upload_url: "https://exampleaccount.blob.core.windows.net/quarantine/test?sv=fixture"
+                .into(),
+            required_headers: BTreeMap::from([
+                ("content-type".into(), "image/png".into()),
+                ("x-ms-blob-type".into(), "BlockBlob".into()),
+            ]),
+        };
+        assert!(validate_issued_upload(&issued, &upload).is_ok());
+        issued
+            .required_headers
+            .insert("authorization".into(), "unexpected".into());
+        assert!(validate_issued_upload(&issued, &upload).is_err());
+    }
+}

@@ -12,7 +12,7 @@ fn artifact(bucket: &str) -> StoredPageArtifact {
         activity_key: "ocr-job-job_PAGE_READ-page-1-attempt-1".to_owned(),
         object_bucket: bucket.to_owned(),
         object_name: "products/kora/tenants/ten_PAGE_READ/pages/job_PAGE_READ/1.json".to_owned(),
-        object_generation: 7,
+        object_version: "7".to_owned(),
         object_digest: format!("sha256:{}", "a".repeat(64)),
         content_length: 128,
     }

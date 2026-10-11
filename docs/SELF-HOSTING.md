@@ -2,7 +2,9 @@
 
 The source is Apache-2.0. You can build it without Tesserix registry credentials.
 The complete OCR pipeline currently requires PostgreSQL, Temporal, ClamAV,
-Google Cloud Storage and Google Document AI. It is not an offline OCR appliance.
+versioned object storage and Google Document AI. GCS remains the default;
+S3/Azure adapters require migration 0018 and real-cloud qualification. See
+[bring your own storage](BRING-YOUR-OWN-STORAGE.md) for routes, IAM and secrets. It is not an offline OCR appliance.
 Use your own accounts, buckets, processor and credentials; provider charges are
 separate. Valkey and OTLP telemetry are optional.
 
@@ -48,8 +50,9 @@ never use it in a deployed environment.
    residency region and enable the relevant Google APIs and billing.
 4. Use workload identities for each service, with only the required bucket and
    processor permissions. Upload issuance needs permission to issue its upload
-   capability. The execution worker requires Google metadata-server credentials (for example
-   GKE Workload Identity); a local ADC login alone is insufficient. Validate it
+   capability. The execution worker defaults to Google metadata-server credentials (for example
+   GKE Workload Identity). Outside GCP, explicitly configure the documented
+   `application-default` mode and your own credential federation. Validate it
    from the actual worker environment before accepting traffic. Do not distribute
    service-account keys, reuse Tesserix identities, or put credentials in images.
 5. Run an updated ClamAV daemon on the dispatch worker's loopback network

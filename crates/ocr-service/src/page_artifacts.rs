@@ -1,10 +1,7 @@
+use crate::storage_client::StorageClient;
 use std::{collections::HashMap, future::Future, pin::Pin, time::Duration};
 
-use object_store::{
-    gcp::{GoogleCloudStorage, GoogleCloudStorageBuilder},
-    path::Path,
-    GetOptions, ObjectStore, ObjectStoreExt, PutMode,
-};
+use object_store::{path::Path, GetOptions, ObjectStoreExt, PutMode};
 use ocr_domain::{DocumentPage, JobId, PageTask, ProductId, TenantId};
 use ocr_store::StoredPageArtifact;
 use sha2::{Digest, Sha256};
@@ -73,12 +70,12 @@ pub trait PageArtifactReader: Send + Sync {
 }
 
 pub struct GcsPageArtifactReader {
-    buckets: HashMap<String, GoogleCloudStorage>,
+    buckets: HashMap<String, StorageClient>,
 }
 
 struct PageWriteRoute {
     bucket: String,
-    store: GoogleCloudStorage,
+    store: StorageClient,
 }
 
 pub struct GcsPageArtifactWriter {
@@ -99,10 +96,8 @@ impl GcsPageArtifactWriter {
             if !is_bucket_name(&bucket) || !buckets.insert(bucket.clone()) {
                 return Err(PageArtifactConfigurationError::InvalidBucket);
             }
-            let store = GoogleCloudStorageBuilder::new()
-                .with_bucket_name(&bucket)
-                .build()
-                .map_err(|_| PageArtifactConfigurationError::Client)?;
+            let store =
+                StorageClient::new(&bucket).map_err(|_| PageArtifactConfigurationError::Client)?;
             routes.insert(product, PageWriteRoute { bucket, store });
         }
         Ok(Self { routes })
@@ -166,7 +161,9 @@ impl GcsPageArtifactWriter {
             .put_opts(&path, bytes.clone().into(), PutMode::Create.into())
             .await
         {
-            Ok(_) | Err(object_store::Error::AlreadyExists { .. }) => {}
+            Ok(_)
+            | Err(object_store::Error::AlreadyExists { .. })
+            | Err(object_store::Error::Precondition { .. }) => {}
             Err(_) => return Err(PageArtifactWriteError::Unavailable),
         }
         let stored = route
@@ -178,8 +175,8 @@ impl GcsPageArtifactWriter {
             .meta
             .version
             .as_deref()
-            .and_then(|value| value.parse::<i64>().ok())
-            .filter(|value| *value > 0)
+            .filter(|value| ocr_store::valid_object_version(value))
+            .map(str::to_owned)
             .ok_or(PageArtifactWriteError::Unavailable)?;
         if stored.meta.size
             != u64::try_from(bytes.len()).map_err(|_| PageArtifactWriteError::Invalid)?
@@ -201,7 +198,7 @@ impl GcsPageArtifactWriter {
             activity_key: task.activity_key.clone(),
             object_bucket: route.bucket.clone(),
             object_name,
-            object_generation: generation,
+            object_version: generation,
             object_digest: digest,
             content_length: i64::try_from(bytes.len())
                 .map_err(|_| PageArtifactWriteError::Invalid)?,
@@ -232,10 +229,8 @@ impl GcsPageArtifactReader {
             if !is_bucket_name(bucket) || stores.contains_key(bucket) {
                 return Err(PageArtifactConfigurationError::InvalidBucket);
             }
-            let store = GoogleCloudStorageBuilder::new()
-                .with_bucket_name(bucket)
-                .build()
-                .map_err(|_| PageArtifactConfigurationError::Client)?;
+            let store =
+                StorageClient::new(bucket).map_err(|_| PageArtifactConfigurationError::Client)?;
             stores.insert(bucket.clone(), store);
         }
         Ok(Self { buckets: stores })
@@ -259,7 +254,7 @@ impl PageArtifactReader for GcsPageArtifactReader {
                     .ok_or(PageArtifactReadError::Invalid)?;
                 let path = Path::parse(&artifact.object_name)
                     .map_err(|_| PageArtifactReadError::Invalid)?;
-                let generation = artifact.object_generation.to_string();
+                let generation = artifact.object_version.to_string();
                 let result = match store
                     .get_opts(
                         &path,

@@ -326,7 +326,7 @@ where
                     inspection_lease_owner: lease_owner.to_owned(),
                     source_bucket: source.bucket,
                     source_object_name: source.object_name,
-                    source_object_generation: source.generation,
+                    source_object_version: source.generation,
                     source_digest: source.digest,
                     source_content_length: source.content_length,
                     parser_inspection: ParserInspectionMetadata {

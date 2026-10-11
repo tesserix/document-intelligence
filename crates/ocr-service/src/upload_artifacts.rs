@@ -1,12 +1,9 @@
+use crate::storage_client::StorageClient;
 use std::collections::HashMap;
 
 use bytes::Bytes;
 use futures_util::StreamExt;
-use object_store::{
-    gcp::{GoogleCloudStorage, GoogleCloudStorageBuilder},
-    path::Path,
-    ObjectStoreExt,
-};
+use object_store::{path::Path, ObjectStoreExt};
 use sha2::{Digest, Sha256};
 use thiserror::Error;
 use tokio::{sync::mpsc, task};
@@ -27,7 +24,7 @@ pub enum UploadArtifactConfigurationError {
 }
 
 pub struct GcsUploadArtifactReader {
-    stores: HashMap<String, GoogleCloudStorage>,
+    stores: HashMap<String, StorageClient>,
 }
 
 impl GcsUploadArtifactReader {
@@ -40,10 +37,8 @@ impl GcsUploadArtifactReader {
             if !is_bucket_name(bucket) || stores.contains_key(bucket) {
                 return Err(UploadArtifactConfigurationError::InvalidBucket);
             }
-            let store = GoogleCloudStorageBuilder::new()
-                .with_bucket_name(bucket)
-                .build()
-                .map_err(|_| UploadArtifactConfigurationError::Client)?;
+            let store =
+                StorageClient::new(bucket).map_err(|_| UploadArtifactConfigurationError::Client)?;
             stores.insert(bucket.clone(), store);
         }
         Ok(Self { stores })
@@ -65,9 +60,8 @@ impl UploadArtifactReader for GcsUploadArtifactReader {
                 .version
                 .as_deref()
                 .ok_or(UploadArtifactError::Invalid)?
-                .parse::<i64>()
-                .map_err(|_| UploadArtifactError::Invalid)?;
-            if generation <= 0 {
+                .to_owned();
+            if !ocr_store::valid_object_version(&generation) {
                 return Err(UploadArtifactError::Invalid);
             }
             let size = result.meta.size;
@@ -79,7 +73,7 @@ impl UploadArtifactReader for GcsUploadArtifactReader {
 
 async fn verify_stream(
     upload: &StoredUpload,
-    generation: i64,
+    generation: String,
     size: u64,
     stream: &mut (impl futures_util::Stream<Item = object_store::Result<Bytes>> + Unpin),
 ) -> Result<VerifiedUploadArtifact, UploadArtifactError> {
@@ -134,7 +128,7 @@ async fn verify_stream(
         return Err(UploadArtifactError::Invalid);
     }
     Ok(VerifiedUploadArtifact {
-        object_generation: generation,
+        object_version: generation,
         content_type: content_type.to_owned(),
         content_length: i64::try_from(content_length).map_err(|_| UploadArtifactError::Invalid)?,
         digest,
@@ -203,7 +197,7 @@ mod tests {
             expected_digest: sha256_digest(Sha256::digest(bytes)),
             expires_at: OffsetDateTime::now_utc() + time::Duration::minutes(10),
             created_at: OffsetDateTime::now_utc(),
-            object_generation: None,
+            object_version: None,
             uploaded_at: None,
         };
         let mut valid = stream::iter([
@@ -211,17 +205,22 @@ mod tests {
             Ok(Bytes::from_static(b"F-1.7\nsynthetic")),
         ])
         .boxed();
-        let verified = verify_stream(&upload, 71, u64::try_from(bytes.len()).unwrap(), &mut valid)
-            .await
-            .unwrap();
-        assert_eq!(verified.object_generation, 71);
+        let verified = verify_stream(
+            &upload,
+            "71".to_owned(),
+            u64::try_from(bytes.len()).unwrap(),
+            &mut valid,
+        )
+        .await
+        .unwrap();
+        assert_eq!(verified.object_version, "71");
         assert_eq!(verified.digest, upload.expected_digest);
         assert_eq!(verified.content_type, "application/pdf");
 
         let mut wrong_type = stream::iter([Ok(Bytes::from_static(b"<html>not a pdf!!"))]).boxed();
         assert!(verify_stream(
             &upload,
-            72,
+            "72".to_owned(),
             u64::try_from(bytes.len()).unwrap(),
             &mut wrong_type,
         )

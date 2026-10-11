@@ -17,7 +17,7 @@ fn upload() -> StoredUpload {
         expected_digest: format!("sha256:{}", "a".repeat(64)),
         expires_at: OffsetDateTime::now_utc() + time::Duration::minutes(10),
         created_at: OffsetDateTime::now_utc(),
-        object_generation: Some(42),
+        object_version: Some("42".to_owned()),
         uploaded_at: Some(OffsetDateTime::now_utc()),
     }
 }
