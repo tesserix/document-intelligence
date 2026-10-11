@@ -398,11 +398,16 @@ fn parse_document(
     width: u32,
     height: u32,
 ) -> Result<DocumentPage, PageRecognitionError> {
-    let response: ProcessResponse =
-        serde_json::from_slice(encoded).map_err(|_| PageRecognitionError::Permanent)?;
-    let document = response.document.ok_or(PageRecognitionError::Permanent)?;
+    let response: ProcessResponse = serde_json::from_slice(encoded).map_err(|error| {
+        tracing::warn!(reason = "invalid_response_schema", category = ?error.classify(),
+                "document ai response rejected");
+        PageRecognitionError::Permanent
+    })?;
+    let document = response
+        .document
+        .ok_or_else(|| invalid_document("missing_document"))?;
     if document.text.len() > MAXIMUM_MANAGED_RESPONSE_BYTES || document.pages.len() != 1 {
-        return Err(PageRecognitionError::Permanent);
+        return Err(invalid_document("invalid_document_bounds"));
     }
     let page = document
         .pages
@@ -410,7 +415,7 @@ fn parse_document(
         .next()
         .ok_or(PageRecognitionError::Permanent)?;
     if page.page_number != expected_page || page.lines.len() > 100_000 {
-        return Err(PageRecognitionError::Permanent);
+        return Err(invalid_document("invalid_page_bounds"));
     }
     let page_number =
         PageNumber::new(expected_page).map_err(|_| PageRecognitionError::Permanent)?;
@@ -419,10 +424,18 @@ fn parse_document(
         .lines
         .into_iter()
         .enumerate()
-        .map(|(index, line)| observation(&text, page_number, index, line))
+        .map(|(index, line)| {
+            observation(&text, page_number, index, line)
+                .map_err(|_| invalid_document("invalid_line_evidence"))
+        })
         .collect::<Result<Vec<_>, _>>()?;
     DocumentPage::new(page_number, width, height, observations)
         .map_err(|_| PageRecognitionError::Permanent)
+}
+
+fn invalid_document(reason: &'static str) -> PageRecognitionError {
+    tracing::warn!(reason, "document ai response rejected");
+    PageRecognitionError::Permanent
 }
 
 fn observation(
@@ -522,6 +535,7 @@ struct ProcessResponse {
 
 #[derive(Deserialize)]
 struct WireDocument {
+    #[serde(default)]
     text: String,
     pages: Vec<WirePage>,
 }
@@ -530,6 +544,7 @@ struct WireDocument {
 #[serde(rename_all = "camelCase")]
 struct WirePage {
     page_number: u32,
+    #[serde(default)]
     lines: Vec<WireLine>,
 }
 
@@ -723,6 +738,25 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn omitted_empty_provider_fields_produce_a_valid_text_free_page() {
+        for response in [
+            r#"{"document":{"pages":[{"pageNumber":2}]}}"#,
+            r#"{"document":{"text":"","pages":[{"pageNumber":2}]}}"#,
+            r#"{"document":{"pages":[{"pageNumber":2,"lines":[]}]}}"#,
+            r#"{"document":{"text":"","pages":[{"pageNumber":2,"lines":[]}]}}"#,
+        ] {
+            let (recognizer, _) = recognizer(Ok(source()), Ok(response.as_bytes().to_vec()));
+            let (product, tenant, job) = scope();
+            let page = recognizer
+                .recognize(&product, &tenant, &job, &task(2))
+                .await
+                .expect("text-free provider pages are successful OCR results");
+            assert_eq!((page.width, page.height), (1_000, 1_400));
+            assert!(page.observations.is_empty());
+        }
+    }
+
+    #[tokio::test]
     async fn text_anchors_index_unicode_characters_not_bytes() {
         let response = r#"{
             "document": {
@@ -788,6 +822,31 @@ mod tests {
                 .await,
             Err(PageRecognitionError::Permanent)
         );
+    }
+
+    #[tokio::test]
+    async fn empty_field_defaults_do_not_accept_malformed_provider_responses() {
+        for response in [
+            r#"{"document":null}"#,
+            r#"{"document":{}}"#,
+            r#"{"document":{"pages":[]}}"#,
+            r#"{"document":{"pages":[{}]}}"#,
+            r#"{"document":{"pages":[{"pageNumber":2},{"pageNumber":2}]}}"#,
+            r#"{"document":{"text":null,"pages":[{"pageNumber":2}]}}"#,
+            r#"{"document":{"pages":[{"pageNumber":2,"lines":null}]}}"#,
+            r#"{"document":{"pages":[{"pageNumber":2,"lines":[{}]}]}}"#,
+            r#"{"document":{"pages":[{"pageNumber":2,"lines":[{"layout":{"textAnchor":{"textSegments":[{"endIndex":"1"}]},"confidence":0.98,"boundingPoly":{"normalizedVertices":[{},{"x":1},{"x":1,"y":1},{"y":1}]}}}]}]}}"#,
+        ] {
+            let (recognizer, _) = recognizer(Ok(source()), Ok(response.as_bytes().to_vec()));
+            let (product, tenant, job) = scope();
+            assert_eq!(
+                recognizer
+                    .recognize(&product, &tenant, &job, &task(2))
+                    .await,
+                Err(PageRecognitionError::Permanent),
+                "{response}"
+            );
+        }
     }
 
     #[tokio::test]
