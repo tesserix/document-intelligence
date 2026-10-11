@@ -29,7 +29,7 @@ test "$parser_status" -eq 10
 docker run -d --name "$container" --read-only --cap-drop ALL \
   --security-opt no-new-privileges --tmpfs /tmp:rw,noexec,nosuid,size=64m \
   --env-file ci/ocr-service-smoke.env "$service_image" >/dev/null
-for attempt in $(seq 1 30); do
+for _attempt in $(seq 1 30); do
   if docker exec "$container" curl --fail --silent http://127.0.0.1:8080/healthz >/dev/null; then
     break
   fi
