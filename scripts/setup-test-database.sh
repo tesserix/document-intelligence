@@ -78,6 +78,18 @@ psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0015_work_scope_leas
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0016_parser_page_geometry.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0017_job_extraction_schema.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0018_storage_versions.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0018_storage_versions.down.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -c 'alter table ocr_uploads drop constraint ocr_uploads_verification_complete, drop constraint ocr_uploads_accepted_source_complete' >/dev/null
+psql "$database_admin_url" -1 -v ON_ERROR_STOP=1 -f migrations/0018_storage_versions.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
+do $$ begin
+    if (select count(*) from pg_constraint where conrelid = 'ocr_uploads'::regclass
+        and conname in ('ocr_uploads_verification_complete', 'ocr_uploads_accepted_source_complete')
+        and convalidated) <> 2 then
+        raise exception 'storage migration did not restore validated upload constraints';
+    end if;
+end $$;
+SQL
 psql "$database_admin_url" -v ON_ERROR_STOP=1 <<SQL >/dev/null
 grant usage on schema public to ${application_role};
 grant select, insert, update, delete on ocr_jobs, ocr_outbox to ${application_role};

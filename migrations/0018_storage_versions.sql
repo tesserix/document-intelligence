@@ -59,7 +59,7 @@ create trigger ocr_results_version_sync before insert or update on ocr_results
 create trigger ocr_page_artifacts_version_sync before insert or update on ocr_page_artifacts
     for each row execute function ocr_sync_object_version();
 
-alter table ocr_uploads drop constraint ocr_uploads_verification_complete;
+alter table ocr_uploads drop constraint if exists ocr_uploads_verification_complete;
 alter table ocr_uploads add constraint ocr_uploads_verification_complete check (
     (status in ('reserved', 'expired') and object_generation is null and object_version is null
         and verified_content_type is null and verified_content_length is null
@@ -75,7 +75,7 @@ alter table ocr_uploads add constraint ocr_uploads_verification_complete check (
 ) not valid;
 alter table ocr_uploads validate constraint ocr_uploads_verification_complete;
 
-alter table ocr_uploads drop constraint ocr_uploads_accepted_source_complete;
+alter table ocr_uploads drop constraint if exists ocr_uploads_accepted_source_complete;
 alter table ocr_uploads add constraint ocr_uploads_accepted_source_complete check (
     (status = 'accepted' and source_bucket is not null and source_object_name is not null
         and coalesce(source_object_version, source_object_generation::text) is not null
