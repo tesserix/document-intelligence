@@ -21,6 +21,9 @@ Start with the [self-hosting guide](docs/SELF-HOSTING.md) and
 real-world accuracy guarantee. OCR extracts visible text; it cannot measure food
 weight or determine how much someone ate from a photograph.
 
+Try the [three-image quick test](benchmarks/README.md#quick-test-three-images)
+against your deployment; sample images and expected results are included.
+
 ## Workflow status
 
 The badges above always show the latest `main` result. Each workflow can also
