@@ -1,7 +1,7 @@
 # OCR API usage guide
 
 This guide is for product services and AI-agent adapters consuming the shared
-Document Intelligence API. The API is private to the platform: a product
+Document Intelligence API. The API should be private to your deployment: a product
 authenticates its user at its own edge, derives product and tenant scope there,
 and uses its server-side adapter to sign calls. Browsers and prompts never
 receive OCR workload credentials, bucket names, object keys, or signed URLs.
@@ -142,8 +142,9 @@ evidence. Agents do not call raw OCR endpoints or manage workload identity.
 
 ## Delivery, observability, and retention
 
-Production workloads are delivered only by immutable Kargo Freight promotion
-and Argo CD reconciliation. Release proof requires Kargo promotion success,
+Tesserix-operated production workloads use immutable Kargo Freight promotion
+and Argo CD reconciliation. External self-hosters can use their own deployment
+tooling; see [the self-hosting guide](../SELF-HOSTING.md). Release proof requires Kargo promotion success,
 Argo `Synced` and `Healthy`, requested replicas ready, ready service endpoints,
 and `200` from both `/healthz` and `/readyz`. Never modify a live Deployment or
 use a floating tag such as `main`; rollback is promotion of a prior immutable
@@ -154,7 +155,8 @@ provider/model version, latency, retries, confidence bands, evaluation score,
 and cost. Do not trace text, fields, filenames, object locations, URLs,
 signatures, prompts, or credentials.
 
-Sandbox uploads are isolated from production and retain for 24 hours.
+Tesserix sandbox uploads are isolated from production and retain for 24 hours.
+External operators must configure and verify their own retention rules.
 Production retention and residency are product policy enforced by the
 product-specific integration, not a client request parameter.
 
