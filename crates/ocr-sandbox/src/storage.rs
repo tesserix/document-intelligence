@@ -8,6 +8,8 @@ pub struct Storage {
     credentials: GoogleCloudStorage,
     buckets: [String; 4],
     base: Url,
+    #[cfg(test)]
+    anonymous_fixture: bool,
 }
 
 fn validate_policy(value: &Value) -> Result<(), Error> {
@@ -32,6 +34,7 @@ impl Storage {
     #[cfg(test)]
     pub(crate) fn fixture(&mut self, base: Url) {
         self.base = base;
+        self.anonymous_fixture = true;
         self.credentials = GoogleCloudStorageBuilder::new()
             .with_bucket_name(&self.buckets[0])
             .with_skip_signature(true)
@@ -45,6 +48,8 @@ impl Storage {
             .map_err(|_| Error::Configuration)?;
         Ok(Self {
             client: config.client()?,
+            #[cfg(test)]
+            anonymous_fixture: false,
             credentials,
             buckets: config.buckets.clone(),
             base: Url::parse("https://storage.googleapis.com/storage/v1/")
@@ -53,15 +58,19 @@ impl Storage {
     }
 
     async fn request(&self, method: Method, url: Url) -> Result<Value, Error> {
-        let credential = self
-            .credentials
-            .credentials()
-            .get_credential()
-            .await
-            .map_err(|_| Error::Unavailable)?;
         let mut request = self.client.request(method.clone(), url);
-        if !credential.bearer.is_empty() {
-            request = request.bearer_auth(&credential.bearer)
+        #[cfg(test)]
+        let authenticate = !self.anonymous_fixture;
+        #[cfg(not(test))]
+        let authenticate = true;
+        if authenticate {
+            let credential = self
+                .credentials
+                .credentials()
+                .get_credential()
+                .await
+                .map_err(|_| Error::Unavailable)?;
+            request = request.bearer_auth(&credential.bearer);
         }
         let response = request.send().await.map_err(|_| Error::Unavailable)?;
         if method == Method::DELETE
@@ -216,6 +225,7 @@ mod tests {
         let address = listener.local_addr().unwrap();
         let server = tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
         let storage = Storage {
+            anonymous_fixture: true,
             client: reqwest::Client::new(),
             credentials: object_store::gcp::GoogleCloudStorageBuilder::new()
                 .with_bucket_name("ocr-sandbox-test")
