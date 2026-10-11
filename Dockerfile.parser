@@ -13,6 +13,8 @@ RUN apt-get update && apt-get install --no-install-recommends -y tini \
 
 FROM ${TESSERIX_RUNTIME}
 COPY --from=init /usr/bin/tini /usr/bin/tini
+COPY --from=init /usr/share/doc/tini/copyright /usr/share/doc/tini/copyright
+COPY LICENSE /licenses/document-intelligence.LICENSE
 WORKDIR /app
 USER 10001:10001
 LABEL org.opencontainers.image.source="https://github.com/tesserix/document-intelligence" \
