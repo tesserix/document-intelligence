@@ -5,14 +5,21 @@
 [![Release image](https://github.com/tesserix/document-intelligence/actions/workflows/release-image.yml/badge.svg?branch=main)](https://github.com/tesserix/document-intelligence/actions/workflows/release-image.yml)
 [![License: Apache-2.0](https://img.shields.io/badge/License-Apache--2.0-blue.svg)](LICENSE)
 
-Reusable, multi-tenant OCR and document-intelligence service for Tesserix
-products and AI agents.
+Open-source, multi-tenant OCR and document-intelligence service for product
+backends and AI agents. Self-host it with your own infrastructure and credentials.
 
 ## Project status
 
-The implementation is pre-production. Production infrastructure, model and
-provider promotion, real datasets, and product rollout remain gated by the
-recorded design reviews.
+Used by Kora, with external self-hosting initially offered as a **beta**.
+Apache-2.0 permits commercial use, modification, and redistribution subject to
+its terms. The license does not include access to Tesserix production services,
+customer data, Google Document AI, or cloud credits.
+
+Start with the [self-hosting guide](docs/SELF-HOSTING.md) and
+[release qualification checklist](docs/RELEASE-READINESS.md). The current
+[benchmark](benchmarks/README.md) is synthetic regression coverage, not a
+real-world accuracy guarantee. OCR extracts visible text; it cannot measure food
+weight or determine how much someone ate from a photograph.
 
 ## Workflow status
 
@@ -89,7 +96,7 @@ consumer integrations around the shared service.
 
 ## Delivery gates
 
-Before implementation, reviewers must confirm the launch scale, residency
+Before deploying a new installation, operators must confirm the launch scale, residency
 regions, retention defaults, supported identity issuer, review-application
 owner, Google Document AI processor locations, Temporal hosting model, and the
 quality and cost thresholds in the evaluation plan.
@@ -156,22 +163,20 @@ the same worker renews it, another worker is excluded, an expired lease is
 reclaimable, and ten exhausted attempts atomically reject the upload and emit a
 content-free event. Acceptance also persists the bounded page count, maximum
 and aggregate pixel counts, and parser profile/version; document text never
-enters upload metadata or events. Importer orchestration remains the next
-quarantine stage before OCR processing.
+enters upload metadata or events. The dispatch worker performs quarantine inspection before OCR processing.
 
 The malware adapter implements the bounded ClamAV `INSTREAM` protocol over a
 loopback-only TCP connection to a separately sandboxed sidecar. It streams only
 the recorded GCS generation, rechecks generation and length, caps chunks,
 response bytes, total bytes and wall time, and treats unknown replies or scanner
-failure as unavailable rather than clean. It is not yet started by a production
-importer; outbox consumption remains required before rollout.
+failure as unavailable rather than clean. The dispatch worker invokes it during upload inspection; a running scanner and
+dispatch worker are required for uploaded documents to become accepted.
 
 The source-promotion adapter uses GCS rewrite with the exact quarantined source
 generation and destination `ifGenerationMatch=0`. Its destination is a
 tenant/product-scoped SHA-256 path. A replay after an ambiguous successful copy
 streams and hashes the existing destination before returning its pinned
-generation; mismatched bytes fail closed. The adapter is not yet wired to a
-production importer.
+generation; mismatched bytes fail closed. The dispatch worker invokes this adapter after successful inspection.
 
 `ocr-parser-sandbox` is a separate no-network parser executable and image. It
 accepts document bytes only on standard input, verifies PDF or declared image
