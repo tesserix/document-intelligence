@@ -38,7 +38,7 @@ jobs:
       - name: Test sandbox benchmark scoring
         run: |
           node --check crates/ocr-sandbox/web/app.mjs
-          node --test crates/ocr-sandbox/web/score.test.mjs
+          node --test crates/ocr-sandbox/web/*.test.mjs
       - name: Install pinned benchmark test tools
         run: |
           python3 -m venv /tmp/ocr-benchmark-tools

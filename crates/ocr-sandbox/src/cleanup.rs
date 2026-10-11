@@ -13,7 +13,7 @@ pub async fn images(app: &App, session: &Session) -> Result<(), Error> {
 fn terminal(value: &Value) -> bool {
     matches!(
         value.get("status").and_then(Value::as_str),
-        Some("completed" | "partial" | "review_required" | "failed" | "cancelled")
+        Some("completed" | "partial" | "review_required" | "rejected" | "failed" | "cancelled")
     )
 }
 
@@ -139,4 +139,15 @@ pub async fn pass(app: Arc<App>) -> Result<(), Error> {
         .collect::<Vec<_>>()
         .await;
     app.store.prune().await
+}
+
+#[cfg(test)]
+mod tests {
+    #[test]
+    fn rejected_jobs_are_terminal_for_cleanup() {
+        assert!(super::terminal(&serde_json::json!({"status":"rejected"})));
+        assert!(!super::terminal(
+            &serde_json::json!({"status":"cancelling"})
+        ));
+    }
 }

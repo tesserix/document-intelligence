@@ -64,7 +64,7 @@ for attempt in {1..120}; do
     -H "Authorization: Bearer $TOKEN" | jq -er .status)
   case "$STATUS" in
     completed|partial|review_required) break;;
-    failed|cancelled) printf 'Job: %s\n' "$STATUS"; exit 1;;
+    rejected|failed|cancelled) printf 'Job: %s\n' "$STATUS"; exit 1;;
   esac
   sleep 2
 done
@@ -188,7 +188,7 @@ cargo clippy -p ocr-sandbox --all-targets -- -D warnings
 TEST_DATABASE_ADMIN_URL=postgres://postgres:local@localhost:5432/ocr_test \
   cargo test -p ocr-sandbox -- --include-ignored
 node --check crates/ocr-sandbox/web/app.mjs
-node --test crates/ocr-sandbox/web/score.test.mjs
+node --test crates/ocr-sandbox/web/*.test.mjs
 ```
 
 Integration tests use a local HTTP OCR/storage fixture and a real PostgreSQL

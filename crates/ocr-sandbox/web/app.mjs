@@ -1,3 +1,4 @@
+import {isTerminalJob,isFailedJob} from './status.mjs';
 import {score} from './score.mjs';
 const $=id=>document.getElementById(id);
 let selected=null,reference=null,previewUrl=null,lastResult=null,busy=false,runNumber=0;
