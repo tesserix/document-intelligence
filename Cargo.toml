@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/ocr-domain", "crates/ocr-engine", "crates/ocr-eval", "crates/ocr-parser-sandbox", "crates/ocr-service", "crates/ocr-store", "crates/ocr-temporal"]
+members = ["crates/ocr-domain", "crates/ocr-engine", "crates/ocr-eval", "crates/ocr-parser-sandbox", "crates/ocr-sandbox", "crates/ocr-service", "crates/ocr-store", "crates/ocr-temporal"]
 resolver = "2"
 
 [workspace.package]
