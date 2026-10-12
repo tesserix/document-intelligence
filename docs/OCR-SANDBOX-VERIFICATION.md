@@ -21,8 +21,12 @@ the dedicated OCR workers on 2026-10-12. No generative model was invoked.
 | Browser rejected-job regression | Failed with two polls before fix; passed with one poll, no result retrieval, and controls restored |
 
 The initial API example omitted required `output.markdown` and returned HTTP 400;
-the example is corrected. Its abandoned upload remains subject to session-expiry
-cleanup, independently of successful job cleanup. Timings are individual samples,
+the example is corrected. Waiting for its abandoned session to expire exposed a
+cleanup defect: definitive 400/422 job-creation responses were retried forever.
+The fix purges expired rejected requests while retaining ambiguous 503 failures.
+A real-PostgreSQL regression failed before the fix and passed afterward; all 11
+sandbox tests passed, along with Clippy, formatting, build and 5 browser tests.
+Live removal of the previously abandoned image remains a release gate. Timings are individual samples,
 not throughput or latency guarantees.
 
 ## Earlier local qualification
