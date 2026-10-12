@@ -14,6 +14,7 @@ futures-util.workspace = true
 hmac.workspace = true
 image.workspace = true
 object_store.workspace = true
+ocr-service = { path = "../ocr-service" }
 reqwest.workspace = true
 serde.workspace = true
 serde_json.workspace = true

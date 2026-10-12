@@ -1,5 +1,6 @@
 import {isTerminalJob,isFailedJob} from './status.mjs';
 import {score} from './score.mjs';
+import {prepareFile} from './document.mjs';
 const $=id=>document.getElementById(id);
 let selected=null,reference=null,previewUrl=null,lastResult=null,busy=false,runNumber=0;
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -29,19 +30,24 @@ async function poll(path,token,states){
   throw new Error('This document is taking longer than expected. The sandbox will finish or cancel the job and clean up its images automatically.');
 }
 
-function choose(file,sample=null){
+async function choose(file,sample=null){
   $('error').hidden=true;
-  if(!['image/png','image/jpeg'].includes(file.type)||file.size>4194304||file.size===0){selected=null;$('run').disabled=true;error('Choose a PNG or JPEG image up to 4 MiB.');return;}
-  selected=file;reference=sample;
+  selected=null;reference=null;setBusy(true);
   if(previewUrl)URL.revokeObjectURL(previewUrl);
-  previewUrl=URL.createObjectURL(file);$('preview').src=previewUrl;$('preview-wrap').hidden=false;
-  $('file-title').textContent='Change selected image';$('file-hint').textContent='Choose another file or drop it here';
+  previewUrl=null;$('preview-wrap').hidden=true;
+  try{file=await prepareFile(file);}catch(failure){error(failure.message);setBusy(false);return;}
+  selected=file;reference=sample;
+  const pdf=file.type==='application/pdf';
+  $('preview').hidden=pdf;$('pdf-preview').hidden=!pdf;
+  if(!pdf){previewUrl=URL.createObjectURL(file);$('preview').src=previewUrl;}
+  $('preview-wrap').hidden=false;
+  $('file-title').textContent='Change selected document';$('file-hint').textContent='Choose another file or drop it here';
   $('file-meta').textContent=`${file.name} · ${(file.size/1024).toFixed(0)} KiB${sample?' · benchmark sample':''}`;
-  $('nutrition').checked=Boolean(sample?.extraction);$('run').disabled=busy;
+  $('nutrition').checked=Boolean(sample?.extraction);setBusy(false);
 }
 
 $('dropzone').addEventListener('click',()=>$('file').click());
-$('file').addEventListener('change',event=>{if(event.target.files[0])choose(event.target.files[0]);});
+$('file').addEventListener('change',async event=>{if(event.target.files[0])await choose(event.target.files[0]);});
 for(const name of ['dragover','dragleave','drop'])$('dropzone').addEventListener(name,event=>{event.preventDefault();if(busy)return;$('dropzone').classList.toggle('drag',name==='dragover');if(name==='drop'&&event.dataTransfer.files[0])choose(event.dataTransfer.files[0]);});
 for(const button of document.querySelectorAll('[data-sample]'))button.addEventListener('click',async()=>{
   setBusy(true);
@@ -49,7 +55,7 @@ for(const button of document.querySelectorAll('[data-sample]'))button.addEventLi
     const manifest=await fetch('/samples/manifest.json',{cache:'no-store'}).then(r=>{if(!r.ok)throw new Error('Samples are unavailable.');return r.json();});
     const sample=manifest.cases.find(item=>item.id===button.dataset.sample);
     const response=await fetch(`/samples/${sample.id}.png`);if(!response.ok)throw new Error('The sample image is unavailable.');
-    choose(new File([await response.blob()],`${sample.id}.png`,{type:'image/png'}),sample);
+    await choose(new File([await response.blob()],`${sample.id}.png`,{type:'image/png'}),sample);
   }catch(failure){error(failure.message);}finally{setBusy(false);}
 });
 
@@ -59,7 +65,7 @@ function render(result,status,elapsed,benchmark,deleted){
   if(benchmark?.kind==='fields'){$('benchmark').textContent=`${benchmark.correct} / ${benchmark.total}`;$('benchmark-note').textContent='Expected reference fields matched. A sample result is not a guarantee for other images.';}
   else if(benchmark?.kind==='text'){$('benchmark').textContent=`${(benchmark.characterErrorRate*100).toFixed(1)}% CER`;$('benchmark-note').textContent='Character error rate against the sample reference after whitespace normalization. Lower is better.';}
   else if(benchmark?.kind==='blank'){$('benchmark').textContent=benchmark.passed?'No invented text':'Unexpected text';$('benchmark-note').textContent='The reference image contains no readable text.';}
-  else{$('benchmark').textContent='Not scored';$('benchmark-note').textContent='Your image has no known reference. We do not infer an accuracy percentage.';}
+  else{$('benchmark').textContent='Not scored';$('benchmark-note').textContent='Your document has no known reference. We do not infer an accuracy percentage.';}
   cleanupStatus(deleted);
   $('text').textContent=result.text||'No readable text detected.';$('json').textContent=JSON.stringify(result,null,2);
   const warnings=[...(result.warnings??[]),...(result.validation_failures??[])];
@@ -72,7 +78,7 @@ function render(result,status,elapsed,benchmark,deleted){
   }
   $('result-title').focus();
 }
-function cleanupStatus(deleted){$('cleanup').textContent=deleted?'✓ Server image copies deleted and absence verified.':'Image deletion pending. Server-side cleanup will retry automatically.';$('cleanup').classList.toggle('pending',!deleted);}
+function cleanupStatus(deleted){$('cleanup').textContent=deleted?'✓ Server document copies deleted and absence verified.':'Document deletion pending. Server-side cleanup will retry automatically.';$('cleanup').classList.toggle('pending',!deleted);}
 
 $('run').addEventListener('click',async()=>{
   if(busy||!selected)return;
@@ -85,22 +91,22 @@ $('run').addEventListener('click',async()=>{
     const digest=Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256',await file.arrayBuffer())),n=>n.toString(16).padStart(2,'0')).join('');
     const upload=(await request('/v1/ocr/uploads',{token,method:'POST',body:{content_type:file.type,content_length:file.size,sha256:`sha256:${digest}`}})).value;
     const uploadUrl=new URL(upload.upload_url);if(uploadUrl.origin!==location.origin)throw new Error('The sandbox returned an invalid upload destination.');
-    stage('upload','Uploading your image…');await request(uploadUrl.pathname,{token,method:'PUT',body:file,headers:upload.required_headers});
+    stage('upload','Uploading your document…');await request(uploadUrl.pathname,{token,method:'PUT',body:file,headers:upload.required_headers});
     await request(`/v1/ocr/uploads/${upload.upload_id}/complete`,{token,method:'POST',body:{}});
-    stage('inspect','Checking file safety and image structure…');
+    stage('inspect','Checking file safety and document structure…');
     const inspection=await poll(`/v1/ocr/uploads/${upload.upload_id}`,token,status=>['accepted','rejected','expired'].includes(status));
-    if(inspection.status!=='accepted')throw new Error('The image did not pass inspection. Please try another image; cleanup will run automatically.');
+    if(inspection.status!=='accepted')throw new Error('The document did not pass inspection. Please try another document; cleanup will run automatically.');
     const payload={source:{upload_id:upload.upload_id},document_type:'general',output:{text:true,markdown:false,layout:true,evidence:true},language_hints:['en'],processing_class:'interactive'};
     if($('nutrition').checked)payload.extraction={schema_id:'kora.nutrition_label',schema_version:'1'};
     jobId=(await request('/v1/ocr/jobs',{token,method:'POST',body:payload})).value.job_id;
-    stage('ocr','Reading the image with the OCR service…');const state=await poll(`/v1/ocr/jobs/${jobId}`,token,isTerminalJob);
-    if(isFailedJob(state.status))throw new Error('OCR could not complete this image. Cleanup continues automatically.');
+    stage('ocr','Reading the document with the OCR service…');const state=await poll(`/v1/ocr/jobs/${jobId}`,token,isTerminalJob);
+    if(isFailedJob(state.status))throw new Error('OCR could not complete this document. Cleanup continues automatically.');
     const {value:result,response}=await request(`/v1/ocr/jobs/${jobId}/result`,{token});
     const deleted=response.headers.get('x-sandbox-images-deleted')==='true';
     render(result,state.status,performance.now()-start,score(sample?.sha256===digest?sample:null,result),deleted);
     stage('done','OCR finished. Inspect the output below.');
     if(!deleted)void waitForCleanup(token,number);
-  }catch(failure){error(failure.message);$('result-state').textContent='Could not complete';$('status').textContent='You can try another image. Cleanup continues independently.';if(token&&jobId)try{await request(`/v1/ocr/jobs/${jobId}/cancel`,{token,method:'POST',body:{}});}catch{/* The durable cleanup worker retries cancellation. */}}
+  }catch(failure){error(failure.message);$('result-state').textContent='Could not complete';$('status').textContent='You can try another document. Cleanup continues independently.';if(token&&jobId)try{await request(`/v1/ocr/jobs/${jobId}/cancel`,{token,method:'POST',body:{}});}catch{/* The durable cleanup worker retries cancellation. */}}
   finally{setBusy(false);}
 });
 

@@ -35,6 +35,15 @@ pub fn router() -> Router<Arc<App>> {
             }),
         )
         .route(
+            "/document.mjs",
+            get(|| async {
+                (
+                    [("content-type", "text/javascript; charset=utf-8")],
+                    include_str!("../web/document.mjs"),
+                )
+            }),
+        )
+        .route(
             "/score.mjs",
             get(|| async {
                 (

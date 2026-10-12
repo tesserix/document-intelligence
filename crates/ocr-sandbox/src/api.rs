@@ -25,6 +25,8 @@ pub struct App {
     pub(crate) storage: Storage,
     pub(crate) upstream: Upstream,
     permits: Semaphore,
+    pdf_permits: Semaphore,
+    parser: ocr_service::ParserProcess,
 }
 
 impl App {
@@ -35,6 +37,12 @@ impl App {
             upstream: Upstream::new(&config)?,
             config,
             permits: Semaphore::new(8),
+            pdf_permits: Semaphore::new(1),
+            parser: ocr_service::ParserProcess::new(
+                "/app/ocr-parser-sandbox".into(),
+                std::time::Duration::from_secs(5),
+            )
+            .map_err(|_| Error::Configuration)?,
         }))
     }
 
@@ -163,8 +171,10 @@ struct UploadInput {
 fn validate_upload(body: &Value) -> Result<UploadInput, Error> {
     let input: UploadInput = serde_json::from_value(body.clone()).map_err(|_| Error::Invalid)?;
     let digest = input.sha256.strip_prefix("sha256:").ok_or(Error::Invalid)?;
-    if !matches!(input.content_type.as_str(), "image/jpeg" | "image/png")
-        || !(1..=MAX_BYTES).contains(&input.content_length)
+    if !matches!(
+        input.content_type.as_str(),
+        "application/pdf" | "image/jpeg" | "image/png"
+    ) || !(1..=MAX_BYTES).contains(&input.content_length)
         || digest.len() != 64
         || !digest
             .bytes()
@@ -255,6 +265,33 @@ fn validate_image(body: &[u8], input: &UploadInput) -> Result<(), Error> {
     Ok(())
 }
 
+async fn validate_pdf(
+    body: &[u8],
+    input: &UploadInput,
+    parser: &ocr_service::ParserProcess,
+) -> Result<(), Error> {
+    if body.len() != input.content_length
+        || body.len() > MAX_BYTES
+        || format!("sha256:{}", hash(body)) != input.sha256
+        || !body.starts_with(b"%PDF-")
+    {
+        return Err(Error::Invalid);
+    }
+    let report = parser
+        .inspect(body, "application/pdf")
+        .await
+        .map_err(|error| match error {
+            ocr_service::ParserProcessError::PasswordRequired => Error::PasswordProtected,
+            ocr_service::ParserProcessError::InvalidDocument
+            | ocr_service::ParserProcessError::LimitsExceeded => Error::InvalidDocument,
+            _ => Error::Unavailable,
+        })?;
+    if report.page_count != 1 || report.maximum_page_pixels > MAX_PIXELS as i64 {
+        return Err(Error::InvalidDocument);
+    }
+    Ok(())
+}
+
 async fn upload_content(
     State(app): State<Arc<App>>,
     Path(id): Path<String>,
@@ -265,9 +302,14 @@ async fn upload_content(
     owned(&session, &id, false)?;
     let input = validate_upload(session.upload_request.as_ref().ok_or(Error::Conflict)?)?;
     let bytes = body.clone();
-    tokio::task::spawn_blocking(move || validate_image(&bytes, &input))
-        .await
-        .map_err(|_| Error::Unavailable)??;
+    if input.content_type == "application/pdf" {
+        let _permit = app.pdf_permits.try_acquire().map_err(|_| Error::Limited)?;
+        validate_pdf(&bytes, &input, &app.parser).await?;
+    } else {
+        tokio::task::spawn_blocking(move || validate_image(&bytes, &input))
+            .await
+            .map_err(|_| Error::Unavailable)??;
+    }
     if session.content_uploaded {
         return Ok(StatusCode::NO_CONTENT);
     }
@@ -498,6 +540,52 @@ async fn job_result(
 #[cfg(test)]
 mod tests {
     use serde_json::json;
+    #[tokio::test]
+    async fn sandbox_pdf_validation_checks_bytes_and_one_page_budget() {
+        let path = std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("ocr-parser-sandbox");
+        let parser =
+            ocr_service::ParserProcess::new(path, std::time::Duration::from_secs(5)).unwrap();
+        for (bytes, accepted) in [
+            (
+                include_bytes!("../tests/fixtures/ocr-upload-test.pdf").as_slice(),
+                true,
+            ),
+            (
+                include_bytes!("../tests/fixtures/two-page.pdf").as_slice(),
+                false,
+            ),
+            (
+                include_bytes!("../tests/fixtures/ocr-upload-test.png").as_slice(),
+                false,
+            ),
+            (b"%PDF-1.7\nnot a document".as_slice(), false),
+        ] {
+            let input = super::UploadInput {
+                content_type: "application/pdf".into(),
+                content_length: bytes.len(),
+                sha256: format!("sha256:{}", crate::store::hash(bytes)),
+            };
+            assert_eq!(
+                super::validate_pdf(bytes, &input, &parser).await.is_ok(),
+                accepted
+            );
+        }
+    }
+    #[test]
+    fn sandbox_accepts_pdf_upload_reservations() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        assert!(super::validate_upload(
+            &json!({"content_type":"application/pdf","content_length":100,"sha256":digest})
+        )
+        .is_ok());
+    }
+
     #[test]
     fn sandbox_rejects_unknown_or_non_boolean_output_options() {
         for output in [
@@ -515,14 +603,14 @@ mod tests {
     }
 
     #[test]
-    fn sandbox_rejects_documents_outside_its_image_budget() {
+    fn sandbox_rejects_documents_outside_its_upload_budget() {
         let digest = format!("sha256:{}", "a".repeat(64));
         assert!(super::validate_upload(
             &json!({"content_type":"image/png","content_length":100,"sha256":digest})
         )
         .is_ok());
         for body in [
-            json!({"content_type":"application/pdf","content_length":100,"sha256":digest}),
+            json!({"content_type":"image/tiff","content_length":100,"sha256":digest}),
             json!({"content_type":"image/png","content_length":4194305,"sha256":digest}),
             json!({"content_type":"image/png","content_length":100,"sha256":digest,"tenant_id":"ten_OTHER"}),
         ] {

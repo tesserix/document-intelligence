@@ -31,8 +31,8 @@ test('browser stops polling rejected jobs and restores upload controls', async (
   };
   try {
     await import('./app.mjs');
-    const file = new File(['synthetic image'], 'fixture.png', {type: 'image/png'});
-    element('file').listeners.change({target: {files: [file]}});
+    const file = new File([new Uint8Array([137,80,78,71,13,10,26,10])], 'fixture.png', {type: 'image/png'});
+    await element('file').listeners.change({target: {files: [file]}});
     await element('run').listeners.click();
     assert.equal(polls, 1);
     assert.equal(results, 0);

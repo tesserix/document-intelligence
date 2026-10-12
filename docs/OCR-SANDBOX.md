@@ -12,7 +12,7 @@ the examples below.
 
 ## What you can test
 
-- Upload one JPEG or PNG (at most 4 MiB and 12 megapixels).
+- Upload one PDF, JPEG or PNG document (at most 4 MiB, one page and 12 megapixels).
 - Read extracted text, warnings, provider confidence, and optional nutrition fields.
 - Download the result JSON.
 - Compare the bundled nutrition label, receipt and blank-image samples against

@@ -7,7 +7,7 @@ Serve a small static UI and a server-side API adapter from one GKE service at
 perform durable cleanup. The adapter calls the existing OCR upload/job APIs;
 it never calls a chat model, JEV or a generative extraction service.
 
-Initial limits: JPEG/PNG only, one image per session, 4 MiB and 12 megapixels,
+Initial limits: PDF/JPEG/PNG, one document and one page per session, 4 MiB and 12 megapixels,
 ten sessions per network per hour, 100 uploads per UTC day across the deployment,
 60 API requests per session per minute, and a 15-minute session lifetime. At
 100 images/day this is at most 400 MiB/day of original uploads before deletion;
@@ -34,6 +34,8 @@ The assets are visitor documents, API signing credentials and the OCR budget.
 Threats include anonymous automation, cross-session access and hostile files.
 The browser-to-adapter, adapter-to-OCR and adapter-to-storage boundaries validate
 input separately. The private OCR service retains its malware/parser checks.
+PDF intake reuses the existing parser in a separate process with a five-second deadline; its environment is cleared and only one PDF inspection runs at a time. Require exactly one page and at most 12 megapixels before forwarding content, preserving the 100-page/day budget. Malformed, encrypted and over-budget PDFs fail closed; parser unavailability returns 503. The one-page cap avoids an increase in provider spend. No service, database, migration or retention policy is added. Rollback restores the earlier adapter image through GitOps; cleanup stays running.
+
 No session token, signed URL, image or OCR text is logged. The frontend renders
 text as text, never HTML. No localStorage, analytics or third-party UI scripts.
 

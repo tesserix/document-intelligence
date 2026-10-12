@@ -13,6 +13,10 @@ pub enum Error {
     Unavailable,
     #[error("invalid request")]
     Invalid,
+    #[error("invalid document or document budget exceeded")]
+    InvalidDocument,
+    #[error("password-protected document")]
+    PasswordProtected,
     #[error("session expired or invalid")]
     Unauthorized,
     #[error("object not found")]
@@ -34,6 +38,16 @@ impl From<sqlx::Error> for Error {
 impl IntoResponse for Error {
     fn into_response(self) -> Response {
         let (status, code, message) = match self {
+            Self::InvalidDocument => (
+                StatusCode::BAD_REQUEST,
+                "InvalidDocument",
+                "Choose a valid PDF with one page and at most 12 megapixels.",
+            ),
+            Self::PasswordProtected => (
+                StatusCode::BAD_REQUEST,
+                "PasswordProtected",
+                "Password-protected PDFs cannot be processed in this sandbox.",
+            ),
             Self::Invalid => (
                 StatusCode::BAD_REQUEST,
                 "InvalidRequest",
@@ -57,7 +71,7 @@ impl IntoResponse for Error {
             Self::Conflict => (
                 StatusCode::CONFLICT,
                 "SessionConflict",
-                "This session already has an image or a request in progress.",
+                "This session already has a document or a request in progress.",
             ),
             Self::Upstream(status) if status.is_client_error() => (
                 status,
