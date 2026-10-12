@@ -49,7 +49,17 @@ async fn clean(app: &App, mut session: Session) -> Result<(bool, bool), Error> {
                                 Some(payload),
                                 true,
                             )
-                            .await?;
+                            .await;
+                        let job = match job {
+                            Ok(job) => job,
+                            Err(Error::Upstream(status))
+                                if matches!(status.as_u16(), 400 | 422) =>
+                            {
+                                app.storage.purge(&session.tenant_id, true).await?;
+                                return Ok((true, true));
+                            }
+                            Err(error) => return Err(error),
+                        };
                         let id = job
                             .get("job_id")
                             .and_then(Value::as_str)

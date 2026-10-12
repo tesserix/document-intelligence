@@ -21,6 +21,7 @@ struct Cloud {
     fail_delete: bool,
     objects: Vec<(String, String, String)>,
     rejected: bool,
+    job_error: Option<StatusCode>,
     signed_calls: usize,
 }
 
@@ -71,6 +72,9 @@ async fn fixture(
                 .into_response();
         }
         if path == "/v1/ocr/jobs" {
+            if let Some(status) = cloud.job_error {
+                return status.into_response();
+            }
             assert!(!body.is_empty());
             return (
                 StatusCode::ACCEPTED,
@@ -451,6 +455,82 @@ async fn quotas_and_session_expiry_fail_closed() {
         store.authorize(&token).await,
         Err(crate::Error::Unauthorized)
     ));
+    pool.close().await;
+    sqlx::query(sqlx::AssertSqlSafe(format!("drop schema {schema} cascade")))
+        .execute(&admin)
+        .await
+        .unwrap();
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_ADMIN_URL"]
+async fn expired_rejected_job_requests_are_purged_but_ambiguous_failures_are_retained() {
+    let (admin, pool, schema) = database().await;
+    let cloud = Arc::new(Mutex::new(Cloud::default()));
+    let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let base = url::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
+    let upstream = Router::new()
+        .fallback(any(fixture))
+        .with_state(cloud.clone());
+    let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
+    let app = app(pool.clone(), &base);
+    let router = crate::router(app.clone());
+    for status in [
+        StatusCode::BAD_REQUEST,
+        StatusCode::UNPROCESSABLE_ENTITY,
+        StatusCode::SERVICE_UNAVAILABLE,
+    ] {
+        cloud.lock().unwrap().job_error = Some(status);
+        let (token, session) = app.store.create_session("network").await.unwrap();
+        app.store.reserve_upload(&session.token_hash, &json!({"content_type":"image/png","content_length":100,"sha256":format!("sha256:{}","a".repeat(64))})).await.unwrap();
+        app.store
+            .record_id(&session.token_hash, "upl_FIXTURE", false)
+            .await
+            .unwrap();
+        app.store
+            .content_finished(&session.token_hash, true)
+            .await
+            .unwrap();
+        cloud.lock().unwrap().objects.push((
+            "ocr-sandbox-q".into(),
+            format!(
+                "products/ocr-sandbox/tenants/{}/quarantine/upl_FIXTURE",
+                session.tenant_id
+            ),
+            status.as_u16().to_string(),
+        ));
+        let body = json!({"source":{"upload_id":"upl_FIXTURE"},"document_type":"general","processing_class":"interactive","output":{"text":true,"markdown":false,"layout":true,"evidence":true}});
+        assert_eq!(
+            call(
+                &router,
+                Method::POST,
+                "/v1/ocr/jobs",
+                Some(&token),
+                serde_json::to_vec(&body).unwrap()
+            )
+            .await
+            .0,
+            status
+        );
+        sqlx::query("update ocr_sandbox_sessions set expires_at=now()-interval '3 minutes',cleanup_after=now() where token_hash=$1").bind(&session.token_hash).execute(&pool).await.unwrap();
+        crate::cleanup::pass(app.clone()).await.unwrap();
+        let purged: bool = sqlx::query_scalar(
+            "select purged_at is not null from ocr_sandbox_sessions where token_hash=$1",
+        )
+        .bind(&session.token_hash)
+        .fetch_one(&pool)
+        .await
+        .unwrap();
+        assert_eq!(purged, status.is_client_error(), "status {status}");
+        assert_eq!(
+            cloud.lock().unwrap().objects.is_empty(),
+            status.is_client_error(),
+            "status {status}"
+        );
+    }
+    server.abort();
+    drop(router);
+    drop(app);
     pool.close().await;
     sqlx::query(sqlx::AssertSqlSafe(format!("drop schema {schema} cascade")))
         .execute(&admin)
