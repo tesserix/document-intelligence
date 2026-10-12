@@ -2,7 +2,6 @@ import {isTerminalJob,isFailedJob} from './status.mjs';
 import {score} from './score.mjs';
 const $=id=>document.getElementById(id);
 let selected=null,reference=null,previewUrl=null,lastResult=null,busy=false,runNumber=0;
-const terminal=new Set(['completed','partial','review_required','failed','cancelled']);
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 
 function setBusy(value){busy=value;$('inputs').disabled=value;$('run').disabled=value||!selected;}
@@ -23,7 +22,7 @@ async function request(path,{token,method='GET',body,headers={}}={}){
 async function poll(path,token,states){
   const end=Date.now()+240000;
   while(Date.now()<end){
-    try{const {value}=await request(path,{token});if(states.has(value.status))return value;}
+    try{const {value}=await request(path,{token});if(states(value.status))return value;}
     catch(failure){if(failure.status!==429)throw failure;await pause(60000);continue;}
     await pause(2500);
   }
@@ -89,13 +88,13 @@ $('run').addEventListener('click',async()=>{
     stage('upload','Uploading your image…');await request(uploadUrl.pathname,{token,method:'PUT',body:file,headers:upload.required_headers});
     await request(`/v1/ocr/uploads/${upload.upload_id}/complete`,{token,method:'POST',body:{}});
     stage('inspect','Checking file safety and image structure…');
-    const inspection=await poll(`/v1/ocr/uploads/${upload.upload_id}`,token,new Set(['accepted','rejected','expired']));
+    const inspection=await poll(`/v1/ocr/uploads/${upload.upload_id}`,token,status=>['accepted','rejected','expired'].includes(status));
     if(inspection.status!=='accepted')throw new Error('The image did not pass inspection. Please try another image; cleanup will run automatically.');
     const payload={source:{upload_id:upload.upload_id},document_type:'general',output:{text:true,markdown:false,layout:true,evidence:true},language_hints:['en'],processing_class:'interactive'};
     if($('nutrition').checked)payload.extraction={schema_id:'kora.nutrition_label',schema_version:'1'};
     jobId=(await request('/v1/ocr/jobs',{token,method:'POST',body:payload})).value.job_id;
-    stage('ocr','Reading the image with the OCR service…');const state=await poll(`/v1/ocr/jobs/${jobId}`,token,terminal);
-    if(['failed','cancelled'].includes(state.status))throw new Error('OCR could not complete this image. Cleanup continues automatically.');
+    stage('ocr','Reading the image with the OCR service…');const state=await poll(`/v1/ocr/jobs/${jobId}`,token,isTerminalJob);
+    if(isFailedJob(state.status))throw new Error('OCR could not complete this image. Cleanup continues automatically.');
     const {value:result,response}=await request(`/v1/ocr/jobs/${jobId}/result`,{token});
     const deleted=response.headers.get('x-sandbox-images-deleted')==='true';
     render(result,state.status,performance.now()-start,score(sample?.sha256===digest?sample:null,result),deleted);
