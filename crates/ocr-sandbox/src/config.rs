@@ -3,8 +3,9 @@ use reqwest::Url;
 use std::{env, time::Duration};
 
 pub const PRODUCT: &str = "ocr-sandbox";
-pub const MAX_BYTES: usize = 4 * 1024 * 1024;
+pub const MAX_BYTES: usize = 20 * 1024 * 1024;
 pub const MAX_PIXELS: u64 = 12_000_000;
+pub const MAX_PAGES: u32 = 20;
 
 pub struct Config {
     pub origin: Url,

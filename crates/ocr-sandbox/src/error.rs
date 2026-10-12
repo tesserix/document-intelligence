@@ -41,7 +41,7 @@ impl IntoResponse for Error {
             Self::InvalidDocument => (
                 StatusCode::BAD_REQUEST,
                 "InvalidDocument",
-                "Choose a valid PDF with one page and at most 12 megapixels.",
+                "Choose a valid PDF or supported image with at most 20 PDF pages and 12 megapixels per page.",
             ),
             Self::PasswordProtected => (
                 StatusCode::BAD_REQUEST,

@@ -1,8 +1,10 @@
+use crate::config::{MAX_BYTES, MAX_PAGES, MAX_PIXELS};
 use crate::App;
-use axum::{response::Html, routing::get, Router};
+use axum::{response::Html, routing::get, Json, Router};
 use std::sync::Arc;
 pub fn router() -> Router<Arc<App>> {
     Router::new()
+        .route("/limits.json", get(|| async { Json(serde_json::json!({"max_bytes":MAX_BYTES,"max_pages":MAX_PAGES,"max_pixels":MAX_PIXELS})) }))
         .route(
             "/",
             get(|| async { Html(include_str!("../web/index.html")) }),

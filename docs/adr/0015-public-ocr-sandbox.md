@@ -7,16 +7,18 @@ Serve a small static UI and a server-side API adapter from one GKE service at
 perform durable cleanup. The adapter calls the existing OCR upload/job APIs;
 it never calls a chat model, JEV or a generative extraction service.
 
-Initial limits: PDF/JPEG/PNG, one document and one page per session, 4 MiB and 12 megapixels,
-ten sessions per network per hour, 100 uploads per UTC day across the deployment,
-60 API requests per session per minute, and a 15-minute session lifetime. At
-100 images/day this is at most 400 MiB/day of original uploads before deletion;
-there is no planned image dataset at 12 or 36 months. Budget counters are shared
-in Postgres and admission fails closed if the database is unavailable. Initial
-target: 99% demo availability, p95 OCR completion within 60 seconds, approximately
-1 upload/second burst and ten concurrent visitors. These are targets, not SLAs
-or load-test results. The daily page cap bounds provider spend; operators must
-price it against their Document AI tariff plus the small pod/database footprint.
+Benchmark limits: PDF/PNG/JPEG/TIFF/WebP, one document per session, 20 MiB,
+up to 20 PDF pages, 12 megapixels per page and 240 megapixels per document.
+The 20 MiB size cap matches the managed OCR path. Existing limits remain ten
+sessions per network per hour, 100 uploads per UTC day across the deployment,
+60 API requests per session per minute and a 15-minute session lifetime.
+The largest admitted workload is 2,000 PDF pages/day and 2,000 MiB/day of original
+uploads. Page tasks may read the same source repeatedly, increasing traffic.
+Counters are shared in Postgres and admission fails closed on database outages.
+The targets for small single-page samples remain 99% demo availability and p95
+completion within 60 seconds; multi-page benchmarks require separate measurement.
+These are targets, not SLAs or load-test results. Price the page/byte ceiling
+against the Document AI tariff, traffic and pod/database footprint.
 
 ## Isolation and API
 
@@ -34,7 +36,22 @@ The assets are visitor documents, API signing credentials and the OCR budget.
 Threats include anonymous automation, cross-session access and hostile files.
 The browser-to-adapter, adapter-to-OCR and adapter-to-storage boundaries validate
 input separately. The private OCR service retains its malware/parser checks.
-PDF intake reuses the existing parser in a separate process with a five-second deadline; its environment is cleared and only one PDF inspection runs at a time. Require exactly one page and at most 12 megapixels before forwarding content, preserving the 100-page/day budget. Malformed, encrypted and over-budget PDFs fail closed; parser unavailability returns 503. The one-page cap avoids an increase in provider spend. No service, database, migration or retention policy is added. Rollback restores the earlier adapter image through GitOps; cleanup stays running.
+All intake reuses the existing parser subprocess with a five-second deadline and
+a cleared environment. Apply the page/pixel limits in the child and validate its
+returned report. Apply a 64 MiB allocation budget before image header inspection
+and raster decode. Reject PNG metadata exceeding a cumulative 1 MiB encoded/decoded
+budget before the image decoder can ignore oversized ICC profiles. Admit one
+upload body per process before buffering; enforce 20 MiB on content and 64 KiB on
+metadata. The browser reads `/limits.json`, and every server upload independently
+checks length, SHA-256 and canonical content type. Malformed, encrypted, corrupt
+or over-budget files fail closed; parser unavailability returns 503. The core
+quarantine/ClamAV gate remains mandatory. Unsupported image types can be selected
+and receive an explicit error. TIFF processing currently covers its first image;
+use PDF for multi-page tests. No database migration, credentials or retention
+policy changes are required. Rollback restores the adapter image through GitOps;
+cleanup remains running. The sandbox runtime CI scan rejects HIGH/CRITICAL OS or
+library findings, including unfixed issues; Rust dependency checks remain in CI.
+
 
 No session token, signed URL, image or OCR text is logged. The frontend renders
 text as text, never HTML. No localStorage, analytics or third-party UI scripts.

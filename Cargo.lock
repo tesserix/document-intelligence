@@ -2502,6 +2502,7 @@ dependencies = [
 name = "ocr-parser-sandbox"
 version = "0.1.0"
 dependencies = [
+ "fdeflate",
  "image",
  "lopdf",
  "ocr-domain",
@@ -2520,7 +2521,6 @@ dependencies = [
  "futures-util",
  "hmac",
  "http-body-util",
- "image",
  "object_store",
  "ocr-service",
  "reqwest",

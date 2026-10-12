@@ -91,6 +91,9 @@ struct WireReport {
 pub struct ParserProcess {
     executable: PathBuf,
     deadline: Duration,
+    maximum_pages: u32,
+    maximum_page_pixels: u64,
+    maximum_total_pixels: u64,
 }
 
 impl ParserProcess {
@@ -101,7 +104,17 @@ impl ParserProcess {
         Ok(Self {
             executable,
             deadline,
+            maximum_pages: 300,
+            maximum_page_pixels: 100_000_000,
+            maximum_total_pixels: 1_000_000_000,
         })
+    }
+
+    pub fn with_document_limits(mut self, pages: u32, page_pixels: u64, total_pixels: u64) -> Self {
+        self.maximum_pages = pages;
+        self.maximum_page_pixels = page_pixels;
+        self.maximum_total_pixels = total_pixels;
+        self
     }
 
     pub async fn inspect(
@@ -109,7 +122,14 @@ impl ParserProcess {
         encoded: &[u8],
         content_type: &str,
     ) -> Result<ParserInspectionReport, ParserProcessError> {
-        parse_report(&self.run(encoded, content_type, false).await?)
+        let report = parse_report(&self.run(encoded, content_type, false).await?)?;
+        if i64::from(report.page_count) > i64::from(self.maximum_pages)
+            || report.maximum_page_pixels > self.maximum_page_pixels as i64
+            || report.total_page_pixels > self.maximum_total_pixels as i64
+        {
+            return Err(ParserProcessError::LimitsExceeded);
+        }
+        Ok(report)
     }
 
     pub async fn prepare_ocr(
@@ -158,11 +178,11 @@ impl ParserProcess {
                 "--content-type",
                 content_type,
                 "--max-pages",
-                "300",
+                &self.maximum_pages.to_string(),
                 "--max-page-pixels",
-                "100000000",
+                &self.maximum_page_pixels.to_string(),
                 "--max-total-pixels",
-                "1000000000",
+                &self.maximum_total_pixels.to_string(),
             ])
             .stdin(Stdio::piped())
             .stdout(Stdio::piped())

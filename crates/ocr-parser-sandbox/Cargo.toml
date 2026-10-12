@@ -7,6 +7,7 @@ license.workspace = true
 rust-version.workspace = true
 
 [dependencies]
+fdeflate.workspace = true
 image.workspace = true
 lopdf.workspace = true
 ocr-domain = { path = "../ocr-domain" }

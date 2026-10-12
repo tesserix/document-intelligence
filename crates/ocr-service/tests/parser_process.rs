@@ -150,3 +150,16 @@ async fn parser_does_not_inherit_the_service_environment() {
         .unwrap()
         .is_some());
 }
+
+#[tokio::test]
+async fn configured_limits_reject_a_forged_over_budget_parser_report() {
+    let _guard = parser_test_guard().lock().await;
+    let (_directory, parser) = fixture("cat >/dev/null; printf '{\"page_count\":2,\"maximum_page_pixels\":100,\"total_page_pixels\":200,\"pages\":[{\"page\":1,\"width\":10,\"height\":10},{\"page\":2,\"width\":10,\"height\":10}],\"password_protected\":false}'");
+    assert!(matches!(
+        parser
+            .with_document_limits(1, 100, 100)
+            .inspect(b"%PDF-fixture", "application/pdf")
+            .await,
+        Err(ParserProcessError::LimitsExceeded)
+    ));
+}

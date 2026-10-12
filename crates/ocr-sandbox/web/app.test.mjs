@@ -1,4 +1,5 @@
 import test from 'node:test';
+import {readFileSync} from 'node:fs';
 import assert from 'node:assert/strict';
 
 test('browser stops polling rejected jobs and restores upload controls', async () => {
@@ -18,7 +19,8 @@ test('browser stops polling rejected jobs and restores upload controls', async (
   let results = 0;
   globalThis.fetch = async (path, options) => {
     let body = {};
-    if (path === '/v1/sandbox/sessions') body = {token: 'synthetic'};
+    if (path === '/limits.json') body = {max_bytes:20*1024*1024,max_pages:20};
+    else if (path === '/v1/sandbox/sessions') body = {token: 'synthetic'};
     else if (path === '/v1/ocr/uploads') body = {upload_id: 'fixture', upload_url: 'https://sandbox.example/content'};
     else if (path === '/v1/ocr/uploads/fixture') body = {status: 'accepted'};
     else if (path === '/v1/ocr/jobs' && options.method === 'POST') body = {job_id: 'fixture'};
@@ -42,4 +44,10 @@ test('browser stops polling rejected jobs and restores upload controls', async (
   } finally {
     Object.assign(globalThis, original);
   }
+});
+
+test('allows selecting other images for explicit format validation', () => {
+  const html=readFileSync(new URL('./index.html',import.meta.url),'utf8');
+  assert.match(html,/accept="[^"]*image\/\*[^"]*"/);
+  assert.match(html,/20 MiB/);
 });
