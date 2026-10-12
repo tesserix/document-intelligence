@@ -55,7 +55,7 @@ for attempt in {1..60}; do
 done
 [ "$STATUS" = accepted ] || exit 1
 JOB=$(jq -n --arg id "$ID" \
-  '{source:{upload_id:$id},document_type:"general",processing_class:"interactive",output:{text:true,layout:true,evidence:true}}' |
+  '{source:{upload_id:$id},document_type:"general",processing_class:"interactive",output:{text:true,markdown:false,layout:true,evidence:true}}' |
   curl --fail-with-body -sS -X POST "$BASE/v1/ocr/jobs" \
     -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' --data-binary @-)
 JOB_ID=$(printf '%s' "$JOB" | jq -er .job_id)

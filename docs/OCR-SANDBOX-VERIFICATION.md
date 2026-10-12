@@ -1,8 +1,31 @@
 # Sandbox verification — 2026-10-12
 
-Status: implemented and verified locally in `feat/ocr-web-demo`. No commit,
-public hostname, cloud resources, production migration or rollout was performed
-for this feature. Real Document AI/GCS qualification remains a deployment gate.
+Status: deployed to isolated GKE infrastructure at `ocr-test.tesserix.app`.
+Application PR #106 and infrastructure PRs #1356–#1358 are merged. Public API
+access remains closed while final browser qualification completes.
+
+## Live qualification
+
+Synthetic fixtures were uploaded through the deployed adapter and processed by
+the dedicated OCR workers on 2026-10-12. No generative model was invoked.
+
+| Check | Observed result |
+| --- | --- |
+| Nutrition label | Completed; 331 text characters, structured nutrition fields; 16.59 seconds end to end |
+| Receipt | Completed; 124 text characters; 13.45 seconds end to end |
+| Blank image | Review required; zero text characters; retake warning; 14.38 seconds |
+| Source cleanup | All three results reported verified deletion; independent all-generation GCS listing confirmed their source images absent |
+| Disconnected client | Receipt completed during a 45-second pause without client polling; source deletion verified on return |
+| Cross-session access | Result lookup returned HTTP 404 |
+| Session request budget | Bounded burst returned 59 HTTP 200 and 66 HTTP 429 after one authorized lookup |
+| Browser rejected-job regression | Failed with two polls before fix; passed with one poll, no result retrieval, and controls restored |
+
+The initial API example omitted required `output.markdown` and returned HTTP 400;
+the example is corrected. Its abandoned upload remains subject to session-expiry
+cleanup, independently of successful job cleanup. Timings are individual samples,
+not throughput or latency guarantees.
+
+## Earlier local qualification
 
 | Check actually run | Result |
 | --- | --- |
