@@ -306,11 +306,7 @@ fn validate_png_metadata(encoded: &[u8]) -> Result<()> {
         }
         chunks = &chunks[end..];
         if kind == b"IEND" {
-            return if chunks.is_empty() {
-                Ok(())
-            } else {
-                Err(Error::InvalidDocument)
-            };
+            return Ok(());
         }
     }
     Err(Error::InvalidDocument)

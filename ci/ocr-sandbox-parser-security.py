@@ -92,6 +92,9 @@ def main() -> None:
     args = parser.parse_args()
     check(args.image, "valid PNG", png(), 0)
     check(
+        args.image, "valid PNG with trailing padding", png() + bytes(5 * 1024 * 1024), 0
+    )
+    check(
         args.image,
         "PNG with valid compressed metadata",
         png(chunk(b"iCCP", b"SyntheticProfile\0\0" + zlib.compress(bytes(128)))),
