@@ -59,6 +59,8 @@ jobs:
       - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
       - name: Build sandbox container
         run: docker build -f Dockerfile.sandbox -t ocr-sandbox:ci .
+      - name: Test parser resource isolation
+        run: python3 ci/ocr-sandbox-parser-security.py
       - name: Scan sandbox runtime vulnerabilities
         uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
         with:

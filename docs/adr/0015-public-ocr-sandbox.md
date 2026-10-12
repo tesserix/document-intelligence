@@ -38,7 +38,9 @@ The browser-to-adapter, adapter-to-OCR and adapter-to-storage boundaries validat
 input separately. The private OCR service retains its malware/parser checks.
 All intake reuses the existing parser subprocess with a five-second deadline and
 a cleared environment. Apply the page/pixel limits in the child and validate its
-returned report. Decode raster data with a 64 MiB allocation budget. Admit one
+returned report. Apply a 64 MiB allocation budget before image header inspection
+and raster decode. Reject PNG metadata exceeding a cumulative 1 MiB encoded/decoded
+budget before the image decoder can ignore oversized ICC profiles. Admit one
 upload body per process before buffering; enforce 20 MiB on content and 64 KiB on
 metadata. The browser reads `/limits.json`, and every server upload independently
 checks length, SHA-256 and canonical content type. Malformed, encrypted, corrupt

@@ -23,6 +23,7 @@ tower = { version = "0.5", features = ["util"] }
 tower-http = { version = "0.7", features = ["limit", "request-id", "timeout", "trace"] }
 http-body-util = "0.1"
 uuid = { version = "1.26", features = ["v4"] }
+fdeflate = "0.3.7"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "pnm", "tiff", "webp"] }
 jsonschema = { version = "0.53", default-features = false }
 anyhow = "1.0"

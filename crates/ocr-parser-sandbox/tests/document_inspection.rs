@@ -210,3 +210,13 @@ fn rejects_corrupt_pixel_data_even_with_valid_dimensions() {
     )
     .is_err());
 }
+
+#[test]
+fn rejects_png_metadata_expansion_before_header_inspection() {
+    let result = inspect_document(
+        include_bytes!("fixtures/png-oversized-profile.png"),
+        "image/png",
+        DocumentLimits::new(1, 100, 100).unwrap(),
+    );
+    assert_eq!(result.unwrap_err(), Error::InvalidDocument);
+}

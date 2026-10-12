@@ -16,6 +16,7 @@ const HARD_MAXIMUM_DECODED_STREAM_BYTES: usize = 64 * 1024 * 1024;
 const MAXIMUM_DECOMPRESSION_RATIO: usize = 200;
 const MAXIMUM_PDF_OBJECTS: usize = 500_000;
 const MAXIMUM_PAGE_TREE_DEPTH: usize = 64;
+const MAXIMUM_PNG_METADATA_BYTES: usize = 1024 * 1024;
 const RENDER_DPI: f64 = 300.0;
 const PDF_POINTS_PER_INCH: f64 = 72.0;
 
@@ -253,17 +254,85 @@ fn validate_pdf_streams(document: &Document, maximum_decoded_bytes: usize) -> Re
     Ok(())
 }
 
+fn png_text_field(data: &[u8]) -> Result<&[u8]> {
+    let end = data
+        .iter()
+        .position(|byte| *byte == 0)
+        .ok_or(Error::InvalidDocument)?;
+    Ok(&data[end + 1..])
+}
+
+fn validate_png_metadata(encoded: &[u8]) -> Result<()> {
+    let mut chunks = encoded.get(8..).ok_or(Error::InvalidDocument)?;
+    let mut remaining = MAXIMUM_PNG_METADATA_BYTES;
+    while !chunks.is_empty() {
+        let header = chunks.get(..8).ok_or(Error::InvalidDocument)?;
+        let length = u32::from_be_bytes(header[..4].try_into().map_err(|_| Error::InvalidDocument)?)
+            as usize;
+        let end = length.checked_add(12).ok_or(Error::InvalidDocument)?;
+        let chunk = chunks.get(..end).ok_or(Error::InvalidDocument)?;
+        let kind = &header[4..];
+        let data = &chunk[8..end - 4];
+        if kind[0].is_ascii_lowercase() && kind != b"fdAT" {
+            remaining = remaining
+                .checked_sub(data.len())
+                .ok_or(Error::InvalidDocument)?;
+        }
+        let compressed = match kind {
+            b"iCCP" | b"zTXt" => {
+                let value = png_text_field(data)?;
+                if value.first() != Some(&0) {
+                    return Err(Error::InvalidDocument);
+                }
+                Some(&value[1..])
+            }
+            b"iTXt" => {
+                let value = png_text_field(data)?;
+                let flags = value.get(..2).ok_or(Error::InvalidDocument)?;
+                if flags[0] > 1 || flags[1] != 0 {
+                    return Err(Error::InvalidDocument);
+                }
+                let text = png_text_field(png_text_field(&value[2..])?)?;
+                (flags[0] == 1).then_some(text)
+            }
+            _ => None,
+        };
+        if let Some(compressed) = compressed {
+            let decoded = fdeflate::decompress_to_vec_bounded(compressed, remaining)
+                .map_err(|_| Error::InvalidDocument)?;
+            remaining = remaining
+                .checked_sub(decoded.len())
+                .ok_or(Error::InvalidDocument)?;
+        }
+        chunks = &chunks[end..];
+        if kind == b"IEND" {
+            return if chunks.is_empty() {
+                Ok(())
+            } else {
+                Err(Error::InvalidDocument)
+            };
+        }
+    }
+    Err(Error::InvalidDocument)
+}
+
 fn inspect_image(
     encoded: &[u8],
     expected_format: ImageFormat,
     limits: DocumentLimits,
 ) -> Result<InspectionReport> {
-    let reader = ImageReader::new(Cursor::new(encoded))
+    let mut decode_limits = image::Limits::default();
+    decode_limits.max_alloc = Some(64 * 1024 * 1024);
+    let mut reader = ImageReader::new(Cursor::new(encoded))
         .with_guessed_format()
         .map_err(|_| Error::InvalidDocument)?;
     if reader.format() != Some(expected_format) {
         return Err(Error::InvalidDocument);
     }
+    if expected_format == ImageFormat::Png {
+        validate_png_metadata(encoded)?;
+    }
+    reader.limits(decode_limits.clone());
     let (width, height) = reader
         .into_dimensions()
         .map_err(|_| Error::InvalidDocument)?;
@@ -283,10 +352,8 @@ fn inspect_image(
             limit: limits.maximum_page_pixels,
         });
     }
-    let mut decode_limits = image::Limits::default();
     decode_limits.max_image_width = Some(width);
     decode_limits.max_image_height = Some(height);
-    decode_limits.max_alloc = Some(64 * 1024 * 1024);
     let mut decoder = ImageReader::with_format(Cursor::new(encoded), expected_format);
     decoder.limits(decode_limits);
     decoder.decode().map_err(|_| Error::InvalidDocument)?;

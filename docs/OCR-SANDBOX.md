@@ -33,7 +33,9 @@ The browser reads `/limits.json` from the server before accepting a selection.
 Actual content is verified independently on the server using byte length, SHA-256,
 MIME/signature agreement, page counts and pixel budgets. Every format is inspected
 in the existing parser subprocess with a cleared environment and five-second
-deadline. Pixel decoding is bounded to 64 MiB; page and pixel limits are supplied
+deadline. PNG metadata has a cumulative 1 MiB encoded/decoded budget, including
+compressed ICC profiles and text. Header inspection and pixel decoding are bounded
+to 64 MiB; page and pixel limits are supplied
 to the child and checked against its returned report. Corrupted image data,
 malformed/encrypted PDFs, over-budget files and failed inspections fail closed.
 Only one upload body is admitted per adapter process before body buffering.
