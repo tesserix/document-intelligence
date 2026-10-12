@@ -2520,7 +2520,6 @@ dependencies = [
  "futures-util",
  "hmac",
  "http-body-util",
- "image",
  "object_store",
  "ocr-service",
  "reqwest",

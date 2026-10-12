@@ -2,19 +2,19 @@
 <html lang="en">
 <head>
   <meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-  <meta name="description" content="Try the document-intelligence OCR service with a PDF, JPEG or PNG document or a benchmark sample.">
+  <meta name="description" content="Try the document-intelligence OCR service with a PDF, PNG, JPEG, TIFF or WebP document or a benchmark sample.">
   <title>OCR Sandbox · Tesserix</title>
   <link rel="stylesheet" href="/app.css"><script type="module" src="/app.mjs"></script>
 </head>
 <body>
 <header class="topbar"><a class="brand" href="/" aria-label="OCR sandbox home"><span class="brand-icon" aria-hidden="true">↗</span> tesserix <span class="brand-divider">/</span> <span>OCR sandbox</span></a><a class="source-link" href="https://github.com/tesserix/document-intelligence" target="_blank" rel="noreferrer">Source & docs ↗</a></header>
 <main>
-  <section class="intro"><p class="eyebrow"><span class="live-dot"></span> REAL OCR. SMALL, SHARED SANDBOX.</p><h1>From document<br>to <span>something readable.</span></h1><p class="lede">See what our OCR service can read. Upload a PDF, JPEG or PNG file, or try a known sample, then inspect the text, fields and benchmark results.</p><div class="tags"><span>OCR only</span><span>No chat or generative AI</span><span>Automatic image cleanup</span></div></section>
+  <section class="intro"><p class="eyebrow"><span class="live-dot"></span> REAL OCR. SMALL, SHARED SANDBOX.</p><h1>From document<br>to <span>something readable.</span></h1><p class="lede">See what our OCR service can read. Upload a PDF, PNG, JPEG, TIFF or WebP file, or try a known sample, then inspect the text, fields and benchmark results.</p><div class="tags"><span>OCR only</span><span>No chat or generative AI</span><span>Automatic document cleanup</span></div></section>
   <div class="workspace">
-    <section class="panel input-panel" aria-labelledby="input-title"><div class="panel-heading"><span class="step-number">01</span><h2 id="input-title">Choose a document</h2><span class="tiny-label">PDF / PNG / JPEG</span></div>
-      <fieldset id="inputs"><legend class="sr-only">Document controls</legend><input id="file" type="file" accept=".pdf,.png,.jpg,.jpeg" hidden>
-        <button id="dropzone" type="button" class="dropzone"><span class="upload-icon" aria-hidden="true">↑</span><strong id="file-title">Drop a document here</strong><span id="file-hint">or choose from your device</span><small>Up to 4 MiB · 12 megapixels · one page per document</small></button>
-        <figure id="preview-wrap" hidden><img id="preview" alt="Your selected image"><p id="pdf-preview" hidden>PDF document selected. Up to one page.</p><figcaption id="file-meta"></figcaption></figure>
+    <section class="panel input-panel" aria-labelledby="input-title"><div class="panel-heading"><span class="step-number">01</span><h2 id="input-title">Choose a document</h2><span class="tiny-label">PDF / IMAGES</span></div>
+      <fieldset id="inputs"><legend class="sr-only">Document controls</legend><input id="file" type="file" accept=".pdf,.png,.jpg,.jpeg,.tif,.tiff,.webp,image/*" hidden>
+        <button id="dropzone" type="button" class="dropzone"><span class="upload-icon" aria-hidden="true">↑</span><strong id="file-title">Drop a document here</strong><span id="file-hint">or choose from your device</span><small>Up to 20 MiB · 12 megapixels per page · up to 20 PDF pages</small></button>
+        <figure id="preview-wrap" hidden><img id="preview" alt="Your selected image"><p id="pdf-preview" hidden>PDF document selected. Up to 20 pages.</p><figcaption id="file-meta"></figcaption></figure>
         <div class="sample-heading"><h3>Or start with a benchmark</h3><span>Known reference</span></div>
         <div class="samples"><button type="button" data-sample="nutrition_clear"><img src="/samples/nutrition_clear.png" alt="Nutrition label sample"><strong>Nutrition label</strong><span>20 expected fields</span></button><button type="button" data-sample="receipt_clear"><img src="/samples/receipt_clear.png" alt="Receipt sample"><strong>Receipt</strong><span>Known reference text</span></button><button type="button" data-sample="no_text"><img src="/samples/no_text.png" alt="Blank image sample"><strong>Blank image</strong><span>Test no-text handling</span></button></div>
         <label class="extraction-option"><input id="nutrition" type="checkbox"> Extract nutrition fields <span>Rule-based, optional</span></label>

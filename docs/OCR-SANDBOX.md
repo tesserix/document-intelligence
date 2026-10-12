@@ -12,7 +12,7 @@ the examples below.
 
 ## What you can test
 
-- Upload one PDF, JPEG or PNG document (at most 4 MiB, one page and 12 megapixels).
+- Upload one PDF, PNG, JPEG, TIFF or WebP document (at most 20 MiB; PDFs up to 20 pages; 12 megapixels per page).
 - Read extracted text, warnings, provider confidence, and optional nutrition fields.
 - Download the result JSON.
 - Compare the bundled nutrition label, receipt and blank-image samples against
@@ -20,6 +20,34 @@ the examples below.
   Character error rate uses normalized text; it is not general OCR accuracy.
 - An arbitrary image has no known reference, so the UI shows **Not scored**.
   OCR cannot determine food weight or how much someone ate from a photograph.
+
+## Benchmark upload protection
+
+The picker allows image files to be selected so unsupported types produce a clear
+validation error. OCR supports PNG, JPEG, TIFF and WebP; SVG, GIF, BMP, HEIC, AVIF,
+archives and other formats are rejected. Browser preview is unavailable for TIFF.
+The managed provider currently receives only the first TIFF image; use PDF for
+multi-page benchmarks. Animated images are not scored as multi-frame benchmarks.
+
+The browser reads `/limits.json` from the server before accepting a selection.
+Actual content is verified independently on the server using byte length, SHA-256,
+MIME/signature agreement, page counts and pixel budgets. Every format is inspected
+in the existing parser subprocess with a cleared environment and five-second
+deadline. Pixel decoding is bounded to 64 MiB; page and pixel limits are supplied
+to the child and checked against its returned report. Corrupted image data,
+malformed/encrypted PDFs, over-budget files and failed inspections fail closed.
+Only one upload body is admitted per adapter process before body buffering.
+
+Accepted files still go through the core quarantine and ClamAV scan before OCR.
+A clean antivirus result does not guarantee that a document is harmless. Dependency
+and image vulnerability checks protect the software separately; the sandbox image
+CI job rejects HIGH/CRITICAL findings, including unfixed vulnerabilities.
+
+Larger tests increase shared processing cost: at the maximum 100 admitted uploads
+per day and 20 PDF pages per upload, the ceiling is 2,000 OCR pages per day. The
+same source can be read repeatedly by page tasks. Do not raise byte/page limits
+without checking the managed provider path, resource usage, gateway timeouts,
+quotas and retention. The 20 MiB cap matches the current managed OCR input guard.
 
 ## API walkthrough
 
@@ -90,6 +118,12 @@ object to `/v1/ocr/jobs/{job_id}/cancel` with the session bearer token.
 | Shared session budget | 1,000/day |
 | Shared upload budget | Configurable 1–100/day; default 100 |
 | Adapter concurrent requests | 8 per process |
+| Upload bodies and parser inspections | 1 per process |
+| Metadata JSON body | 64 KiB |
+| Upload body | 20 MiB |
+| PDF pages | 20 |
+| Image/PDF page pixels | 12 megapixels |
+| PDF total pixels | 240 megapixels |
 
 Counters are shared through PostgreSQL and fail closed. IPv6 addresses are grouped
 by /64. Only the actual TCP peer is used; forwarded headers are not trusted.

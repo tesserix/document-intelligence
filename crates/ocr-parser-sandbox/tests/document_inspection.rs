@@ -165,7 +165,7 @@ fn rejects_a_cyclic_page_parent_instead_of_defaulting_inherited_values() {
 }
 
 #[test]
-fn verifies_image_format_and_dimensions_without_decoding_pixels() {
+fn verifies_image_format_dimensions_and_bounded_pixel_decode() {
     let limits = DocumentLimits::new(1, 100, 100).unwrap();
     let report = inspect_document(&png(), "image/png", limits).unwrap();
     assert_eq!(report.page_count, 1);
@@ -197,4 +197,16 @@ fn rejects_compressed_pdf_streams_that_exceed_the_decoded_byte_limit() {
         result,
         Err(Error::DecodedStreamLimitExceeded { limit: 1024 })
     ));
+}
+
+#[test]
+fn rejects_corrupt_pixel_data_even_with_valid_dimensions() {
+    let mut encoded = png();
+    encoded[45] ^= 0xff;
+    assert!(inspect_document(
+        &encoded,
+        "image/png",
+        DocumentLimits::new(1, 100, 100).unwrap()
+    )
+    .is_err());
 }

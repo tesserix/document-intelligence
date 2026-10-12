@@ -283,6 +283,13 @@ fn inspect_image(
             limit: limits.maximum_page_pixels,
         });
     }
+    let mut decode_limits = image::Limits::default();
+    decode_limits.max_image_width = Some(width);
+    decode_limits.max_image_height = Some(height);
+    decode_limits.max_alloc = Some(64 * 1024 * 1024);
+    let mut decoder = ImageReader::with_format(Cursor::new(encoded), expected_format);
+    decoder.limits(decode_limits);
+    decoder.decode().map_err(|_| Error::InvalidDocument)?;
     Ok(InspectionReport {
         page_count: 1,
         maximum_page_pixels: pixels,

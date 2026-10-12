@@ -160,6 +160,22 @@ fn app(pool: PgPool, base: &url::Url) -> Arc<App> {
     };
     let mut app = App::new(config, pool).unwrap();
     let inner = Arc::get_mut(&mut app).unwrap();
+    inner.parser = ocr_service::ParserProcess::new(
+        std::env::current_exe()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .parent()
+            .unwrap()
+            .join("ocr-parser-sandbox"),
+        std::time::Duration::from_secs(5),
+    )
+    .unwrap()
+    .with_document_limits(
+        crate::config::MAX_PAGES,
+        crate::config::MAX_PIXELS,
+        crate::config::MAX_PIXELS * u64::from(crate::config::MAX_PAGES),
+    );
     inner.upstream.fixture(base.clone());
     inner.storage.fixture(base.join("/storage/v1/").unwrap());
     app
@@ -172,10 +188,14 @@ async fn call(
     token: Option<&str>,
     body: Vec<u8>,
 ) -> (StatusCode, HeaderMap, Value) {
-    let mut request = Request::builder()
-        .method(method)
-        .uri(path)
-        .header("content-type", "application/json");
+    let mut request = Request::builder().method(&method).uri(path).header(
+        "content-type",
+        if method == Method::PUT {
+            "image/png"
+        } else {
+            "application/json"
+        },
+    );
     if let Some(token) = token {
         request = request.header("authorization", format!("Bearer {token}"));
     }
@@ -197,13 +217,17 @@ async fn call(
 
 #[tokio::test]
 #[ignore = "requires TEST_DATABASE_ADMIN_URL"]
-async fn real_http_adapter_isolates_sessions_and_recovers_cleanup_after_restart() {
+async fn real_http_adapter_accepts_large_uploads_isolates_sessions_and_recovers_cleanup_after_restart(
+) {
     let (admin, pool, schema) = database().await;
     let cloud = Arc::new(Mutex::new(Cloud::default()));
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let base = url::Url::parse(&format!("http://{}/", listener.local_addr().unwrap())).unwrap();
     let upstream = Router::new()
         .fallback(any(fixture))
+        .layer(axum::extract::DefaultBodyLimit::max(
+            crate::config::MAX_BYTES,
+        ))
         .with_state(cloud.clone());
     let server = tokio::spawn(async move { axum::serve(listener, upstream).await.unwrap() });
     let app = app(pool.clone(), &base);
@@ -247,7 +271,8 @@ async fn real_http_adapter_isolates_sessions_and_recovers_cleanup_after_restart(
     )
     .await;
     let other = other["token"].as_str().unwrap();
-    let image = include_bytes!("../../../benchmarks/v1/images/no_text.png").to_vec();
+    let mut image = include_bytes!("../../../benchmarks/v1/images/no_text.png").to_vec();
+    image.resize(5 * 1024 * 1024, 0);
     let payload = json!({"content_type":"image/png","content_length":image.len(),"sha256":format!("sha256:{}",hash(&image))});
     let (status, _, upload) = call(
         &router,
@@ -274,6 +299,52 @@ async fn real_http_adapter_isolates_sessions_and_recovers_cleanup_after_restart(
     .await;
     assert_eq!(status, StatusCode::NOT_FOUND);
     let content = format!("/v1/ocr/uploads/{id}/content");
+    for (length, expected) in [
+        (crate::config::MAX_BYTES + 1, StatusCode::PAYLOAD_TOO_LARGE),
+        (image.len() + 1, StatusCode::BAD_REQUEST),
+    ] {
+        let response = router
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method(Method::PUT)
+                    .uri(&content)
+                    .header("authorization", format!("Bearer {token}"))
+                    .header("content-type", "image/png")
+                    .header("content-length", length)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), expected);
+    }
+    let (notice, buffering) = tokio::sync::oneshot::channel();
+    let waiting_body = Body::from_stream(futures_util::stream::once(async move {
+        notice.send(()).unwrap();
+        std::future::pending::<Result<axum::body::Bytes, std::io::Error>>().await
+    }));
+    let pending = tokio::spawn(
+        router.clone().oneshot(
+            Request::builder()
+                .method(Method::PUT)
+                .uri(&content)
+                .header("authorization", format!("Bearer {token}"))
+                .header("content-type", "image/png")
+                .body(waiting_body)
+                .unwrap(),
+        ),
+    );
+    tokio::time::timeout(std::time::Duration::from_secs(5), buffering)
+        .await
+        .unwrap()
+        .unwrap();
+    let (busy, _, _) = call(&router, Method::PUT, &content, Some(token), vec![]).await;
+    assert_eq!(busy, StatusCode::TOO_MANY_REQUESTS);
+    let (unauthorized, _, _) = call(&router, Method::PUT, &content, None, vec![]).await;
+    assert_eq!(unauthorized, StatusCode::UNAUTHORIZED);
+    pending.abort();
+    assert!(pending.await.unwrap_err().is_cancelled());
     let (status, _, _) = call(&router, Method::PUT, &content, Some(token), image.clone()).await;
     assert_eq!(status, StatusCode::NO_CONTENT);
     let count = cloud.lock().unwrap().objects.len();

@@ -2,7 +2,7 @@ import {isTerminalJob,isFailedJob} from './status.mjs';
 import {score} from './score.mjs';
 import {prepareFile} from './document.mjs';
 const $=id=>document.getElementById(id);
-let selected=null,reference=null,previewUrl=null,lastResult=null,busy=false,runNumber=0;
+let selected=null,reference=null,previewUrl=null,lastResult=null,busy=false,runNumber=0,uploadLimits;
 const pause=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 
 function setBusy(value){busy=value;$('inputs').disabled=value;$('run').disabled=value||!selected;}
@@ -10,7 +10,7 @@ function error(message){$('error').textContent=message;$('error').hidden=false;}
 function stage(name,message){$('progress').hidden=false;$('status').textContent=message;let reached=false;for(const item of document.querySelectorAll('[data-stage]')){item.classList.toggle('active',!reached);if(item.dataset.stage===name)reached=true;}}
 
 async function request(path,{token,method='GET',body,headers={}}={}){
-  const options={method,headers:{...headers},signal:AbortSignal.timeout(95000),cache:'no-store'};
+  const options={method,headers:{...headers},signal:AbortSignal.timeout(100000),cache:'no-store'};
   if(token)options.headers.Authorization=`Bearer ${token}`;
   if(body instanceof Blob)options.body=body;
   else if(body!==undefined){options.body=JSON.stringify(body);options.headers['Content-Type']='application/json';}
@@ -35,11 +35,15 @@ async function choose(file,sample=null){
   selected=null;reference=null;setBusy(true);
   if(previewUrl)URL.revokeObjectURL(previewUrl);
   previewUrl=null;$('preview-wrap').hidden=true;
-  try{file=await prepareFile(file);}catch(failure){error(failure.message);setBusy(false);return;}
+  try{
+    uploadLimits ??= (await request('/limits.json')).value;
+    file=await prepareFile(file,uploadLimits?.max_bytes);
+  }catch(failure){error(failure.message);setBusy(false);return;}
   selected=file;reference=sample;
-  const pdf=file.type==='application/pdf';
-  $('preview').hidden=pdf;$('pdf-preview').hidden=!pdf;
-  if(!pdf){previewUrl=URL.createObjectURL(file);$('preview').src=previewUrl;}
+  const pdf=file.type==='application/pdf',noPreview=pdf||file.type==='image/tiff';
+  $('pdf-preview').textContent=pdf?`PDF selected. Up to ${uploadLimits.max_pages} pages.`:'TIFF selected. Browser preview is unavailable.';
+  $('preview').hidden=noPreview;$('pdf-preview').hidden=!noPreview;
+  if(!noPreview){previewUrl=URL.createObjectURL(file);$('preview').src=previewUrl;}
   $('preview-wrap').hidden=false;
   $('file-title').textContent='Change selected document';$('file-hint').textContent='Choose another file or drop it here';
   $('file-meta').textContent=`${file.name} · ${(file.size/1024).toFixed(0)} KiB${sample?' · benchmark sample':''}`;

@@ -1,5 +1,5 @@
 use crate::{
-    config::{MAX_BYTES, MAX_PIXELS},
+    config::{MAX_BYTES, MAX_PAGES, MAX_PIXELS},
     storage::Storage,
     store::{hash, Session},
     upstream::Upstream,
@@ -7,11 +7,11 @@ use crate::{
 };
 use axum::{
     body::Bytes,
-    extract::{ConnectInfo, Path, State},
+    extract::{ConnectInfo, DefaultBodyLimit, Path, State},
     http::{HeaderMap, HeaderValue, StatusCode},
     response::{IntoResponse, Response},
     routing::{get, post, put},
-    Json, Router,
+    Extension, Json, Router,
 };
 use reqwest::Method;
 use serde::Deserialize;
@@ -25,8 +25,8 @@ pub struct App {
     pub(crate) storage: Storage,
     pub(crate) upstream: Upstream,
     permits: Semaphore,
-    pdf_permits: Semaphore,
-    parser: ocr_service::ParserProcess,
+    upload_permits: Semaphore,
+    pub(crate) parser: ocr_service::ParserProcess,
 }
 
 impl App {
@@ -37,12 +37,17 @@ impl App {
             upstream: Upstream::new(&config)?,
             config,
             permits: Semaphore::new(8),
-            pdf_permits: Semaphore::new(1),
+            upload_permits: Semaphore::new(1),
             parser: ocr_service::ParserProcess::new(
                 "/app/ocr-parser-sandbox".into(),
                 std::time::Duration::from_secs(5),
             )
-            .map_err(|_| Error::Configuration)?,
+            .map_err(|_| Error::Configuration)?
+            .with_document_limits(
+                MAX_PAGES,
+                MAX_PIXELS,
+                MAX_PIXELS * u64::from(MAX_PAGES),
+            ),
         }))
     }
 
@@ -64,15 +69,21 @@ pub fn router(app: Arc<App>) -> Router {
         .route("/v1/sandbox/session", get(session_status))
         .route("/v1/ocr/uploads", post(reserve_upload))
         .route("/v1/ocr/uploads/{id}", get(upload_status))
-        .route("/v1/ocr/uploads/{id}/content", put(upload_content))
         .route("/v1/ocr/uploads/{id}/complete", post(complete_upload))
         .route("/v1/ocr/jobs", post(create_job))
         .route("/v1/ocr/jobs/{id}", get(job_status))
         .route("/v1/ocr/jobs/{id}/result", get(job_result))
         .route("/v1/ocr/jobs/{id}/cancel", post(cancel_job))
         .merge(crate::web::router())
+        .layer(tower_http::limit::RequestBodyLimitLayer::new(64 * 1024))
+        .layer(DefaultBodyLimit::max(64 * 1024))
+        .merge(
+            Router::new()
+                .route("/v1/ocr/uploads/{id}/content", put(upload_content))
+                .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BYTES))
+                .layer(DefaultBodyLimit::max(MAX_BYTES)),
+        )
         .layer(axum::middleware::from_fn_with_state(app.clone(), boundary))
-        .layer(tower_http::limit::RequestBodyLimitLayer::new(MAX_BYTES))
         .layer(tower_http::timeout::TimeoutLayer::with_status_code(
             StatusCode::REQUEST_TIMEOUT,
             std::time::Duration::from_secs(90),
@@ -81,9 +92,60 @@ pub fn router(app: Arc<App>) -> Router {
         .with_state(app)
 }
 
+struct UploadAdmission {
+    session: Session,
+    input: UploadInput,
+}
+
+async fn authorize_upload(app: &App, request: &mut axum::extract::Request) -> Result<(), Response> {
+    let session = app
+        .session(request.headers())
+        .await
+        .map_err(IntoResponse::into_response)?;
+    let id = request
+        .uri()
+        .path()
+        .strip_prefix("/v1/ocr/uploads/")
+        .and_then(|path| path.strip_suffix("/content"))
+        .ok_or_else(|| Error::NotFound.into_response())?;
+    owned(&session, id, false).map_err(IntoResponse::into_response)?;
+    let input = validate_upload(
+        session
+            .upload_request
+            .as_ref()
+            .ok_or_else(|| Error::Conflict.into_response())?,
+    )
+    .map_err(IntoResponse::into_response)?;
+    if request
+        .headers()
+        .get("content-type")
+        .and_then(|header| header.to_str().ok())
+        != Some(input.content_type.as_str())
+    {
+        return Err(Error::Invalid.into_response());
+    }
+    if let Some(length) = request.headers().get("content-length") {
+        let length = length
+            .to_str()
+            .ok()
+            .and_then(|value| value.parse::<usize>().ok())
+            .ok_or_else(|| Error::Invalid.into_response())?;
+        if length > MAX_BYTES {
+            return Err(StatusCode::PAYLOAD_TOO_LARGE.into_response());
+        }
+        if length != input.content_length {
+            return Err(Error::Invalid.into_response());
+        }
+    }
+    request
+        .extensions_mut()
+        .insert(Arc::new(UploadAdmission { session, input }));
+    Ok(())
+}
+
 async fn boundary(
     State(app): State<Arc<App>>,
-    request: axum::extract::Request,
+    mut request: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
     let permit = match app.permits.try_acquire() {
@@ -95,7 +157,22 @@ async fn boundary(
     }) {
         return Error::Invalid.into_response();
     }
+    let upload_permit = if request.method() == Method::PUT
+        && request.uri().path().starts_with("/v1/ocr/uploads/")
+        && request.uri().path().ends_with("/content")
+    {
+        if let Err(error) = authorize_upload(&app, &mut request).await {
+            return error;
+        }
+        match app.upload_permits.try_acquire() {
+            Ok(permit) => Some(permit),
+            Err(_) => return Error::Limited.into_response(),
+        }
+    } else {
+        None
+    };
     let response = next.run(request).await;
+    drop(upload_permit);
     drop(permit);
     response
 }
@@ -145,7 +222,7 @@ async fn create_session(
     Ok((
         StatusCode::CREATED,
         Json(
-            json!({"token":token,"expires_at":session.expires,"limits":{"max_bytes":MAX_BYTES,"max_pixels":MAX_PIXELS,"images_per_session":1,"daily_uploads":app.config.daily_uploads}}),
+            json!({"token":token,"expires_at":session.expires,"limits":{"max_bytes":MAX_BYTES,"max_pixels":MAX_PIXELS,"max_pages":MAX_PAGES,"images_per_session":1,"daily_uploads":app.config.daily_uploads}}),
         ),
     ))
 }
@@ -173,7 +250,7 @@ fn validate_upload(body: &Value) -> Result<UploadInput, Error> {
     let digest = input.sha256.strip_prefix("sha256:").ok_or(Error::Invalid)?;
     if !matches!(
         input.content_type.as_str(),
-        "application/pdf" | "image/jpeg" | "image/png"
+        "application/pdf" | "image/jpeg" | "image/png" | "image/tiff" | "image/webp"
     ) || !(1..=MAX_BYTES).contains(&input.content_length)
         || digest.len() != 64
         || !digest
@@ -244,28 +321,7 @@ async fn reserve_upload(
     Ok((StatusCode::CREATED, Json(result)))
 }
 
-fn validate_image(body: &[u8], input: &UploadInput) -> Result<(), Error> {
-    if body.len() != input.content_length || format!("sha256:{}", hash(body)) != input.sha256 {
-        return Err(Error::Invalid);
-    }
-    let reader = image::ImageReader::new(std::io::Cursor::new(body))
-        .with_guessed_format()
-        .map_err(|_| Error::Invalid)?;
-    let format = reader.format().ok_or(Error::Invalid)?;
-    if !matches!(
-        (format, input.content_type.as_str()),
-        (image::ImageFormat::Png, "image/png") | (image::ImageFormat::Jpeg, "image/jpeg")
-    ) {
-        return Err(Error::Invalid);
-    }
-    let (width, height) = reader.into_dimensions().map_err(|_| Error::Invalid)?;
-    if width == 0 || height == 0 || u64::from(width) * u64::from(height) > MAX_PIXELS {
-        return Err(Error::Invalid);
-    }
-    Ok(())
-}
-
-async fn validate_pdf(
+async fn validate_document(
     body: &[u8],
     input: &UploadInput,
     parser: &ocr_service::ParserProcess,
@@ -273,12 +329,11 @@ async fn validate_pdf(
     if body.len() != input.content_length
         || body.len() > MAX_BYTES
         || format!("sha256:{}", hash(body)) != input.sha256
-        || !body.starts_with(b"%PDF-")
     {
         return Err(Error::Invalid);
     }
     let report = parser
-        .inspect(body, "application/pdf")
+        .inspect(body, &input.content_type)
         .await
         .map_err(|error| match error {
             ocr_service::ParserProcessError::PasswordRequired => Error::PasswordProtected,
@@ -286,7 +341,10 @@ async fn validate_pdf(
             | ocr_service::ParserProcessError::LimitsExceeded => Error::InvalidDocument,
             _ => Error::Unavailable,
         })?;
-    if report.page_count != 1 || report.maximum_page_pixels > MAX_PIXELS as i64 {
+    if report.page_count > MAX_PAGES as i32
+        || report.maximum_page_pixels > MAX_PIXELS as i64
+        || report.total_page_pixels > (MAX_PIXELS * u64::from(MAX_PAGES)) as i64
+    {
         return Err(Error::InvalidDocument);
     }
     Ok(())
@@ -295,21 +353,12 @@ async fn validate_pdf(
 async fn upload_content(
     State(app): State<Arc<App>>,
     Path(id): Path<String>,
-    headers: HeaderMap,
+    Extension(admission): Extension<Arc<UploadAdmission>>,
     body: Bytes,
 ) -> Result<StatusCode, Error> {
-    let session = app.session(&headers).await?;
-    owned(&session, &id, false)?;
-    let input = validate_upload(session.upload_request.as_ref().ok_or(Error::Conflict)?)?;
-    let bytes = body.clone();
-    if input.content_type == "application/pdf" {
-        let _permit = app.pdf_permits.try_acquire().map_err(|_| Error::Limited)?;
-        validate_pdf(&bytes, &input, &app.parser).await?;
-    } else {
-        tokio::task::spawn_blocking(move || validate_image(&bytes, &input))
-            .await
-            .map_err(|_| Error::Unavailable)??;
-    }
+    let session = &admission.session;
+    let input = &admission.input;
+    validate_document(&body, input, &app.parser).await?;
     if session.content_uploaded {
         return Ok(StatusCode::NO_CONTENT);
     }
@@ -320,7 +369,7 @@ async fn upload_content(
             .upstream
             .call(
                 &app.config,
-                &session,
+                session,
                 Method::POST,
                 "/v1/ocr/uploads",
                 Some(payload),
@@ -332,7 +381,7 @@ async fn upload_content(
         }
         let content_type = payload["content_type"].as_str().ok_or(Error::Invalid)?;
         app.upstream
-            .put(&app.config, &session, &reservation, body, content_type)
+            .put(&app.config, session, &reservation, body, content_type)
             .await
     }
     .await;
@@ -539,9 +588,118 @@ async fn job_result(
 
 #[cfg(test)]
 mod tests {
+    use tower::ServiceExt as _;
+    fn fixture_app() -> std::sync::Arc<super::App> {
+        let config = crate::Config {
+            database_url: "postgresql://localhost/synthetic".into(),
+            origin: "https://sandbox.example".parse().unwrap(),
+            upload_api: "http://localhost:9".parse().unwrap(),
+            job_api: "http://localhost:9".parse().unwrap(),
+            key_id: "fixture".into(),
+            secret: vec![17; 32],
+            buckets: [
+                "ocr-sandbox-q".into(),
+                "ocr-sandbox-s".into(),
+                "ocr-sandbox-p".into(),
+                "ocr-sandbox-r".into(),
+            ],
+            daily_uploads: 100,
+            admission_enabled: true,
+        };
+        super::App::new(
+            config,
+            sqlx::postgres::PgPoolOptions::new()
+                .connect_lazy("postgresql://localhost/synthetic")
+                .unwrap(),
+        )
+        .unwrap()
+    }
+
+    #[tokio::test]
+    async fn unauthenticated_upload_bodies_are_rejected_before_extraction_and_limits_remain_available(
+    ) {
+        let app = fixture_app();
+        let _held = app.upload_permits.try_acquire().unwrap();
+        let polled = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+        let observed = polled.clone();
+        let router = super::router(app.clone());
+        let response = router
+            .clone()
+            .oneshot(
+                axum::http::Request::builder()
+                    .method("PUT")
+                    .uri("/v1/ocr/uploads/upl_fixture/content")
+                    .body(axum::body::Body::from_stream(futures_util::stream::once(
+                        async move {
+                            observed.store(true, std::sync::atomic::Ordering::SeqCst);
+                            Ok::<_, std::io::Error>(axum::body::Bytes::from_static(
+                                b"untrusted bytes",
+                            ))
+                        },
+                    )))
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::UNAUTHORIZED);
+        assert!(!polled.load(std::sync::atomic::Ordering::SeqCst));
+        let response = router
+            .oneshot(
+                axum::http::Request::builder()
+                    .uri("/limits.json")
+                    .body(axum::body::Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(response.status(), axum::http::StatusCode::OK);
+        let bytes = axum::body::to_bytes(response.into_body(), 1024)
+            .await
+            .unwrap();
+        let limits: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+        assert_eq!(limits["max_bytes"], 20 * 1024 * 1024);
+        assert_eq!(limits["max_pages"], 20);
+    }
+
+    #[tokio::test]
+    async fn metadata_and_document_bodies_have_distinct_enforced_limits() {
+        let app = fixture_app();
+        let router = super::router(app.clone());
+        for (method, path, length) in [
+            ("POST", "/v1/ocr/uploads", 64 * 1024 + 1),
+            (
+                "PUT",
+                "/v1/ocr/uploads/upl_fixture/content",
+                20 * 1024 * 1024 + 1,
+            ),
+        ] {
+            let response = router
+                .clone()
+                .oneshot(
+                    axum::http::Request::builder()
+                        .method(method)
+                        .uri(path)
+                        .header("content-type", "application/json")
+                        .header("content-length", length)
+                        .body(axum::body::Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                response.status(),
+                if method == "PUT" {
+                    axum::http::StatusCode::UNAUTHORIZED
+                } else {
+                    axum::http::StatusCode::PAYLOAD_TOO_LARGE
+                }
+            );
+        }
+        assert_eq!(app.upload_permits.available_permits(), 1);
+    }
     use serde_json::json;
     #[tokio::test]
-    async fn sandbox_pdf_validation_checks_bytes_and_one_page_budget() {
+    async fn sandbox_pdf_validation_checks_bytes_and_document_budgets() {
         let path = std::env::current_exe()
             .unwrap()
             .parent()
@@ -558,7 +716,7 @@ mod tests {
             ),
             (
                 include_bytes!("../tests/fixtures/two-page.pdf").as_slice(),
-                false,
+                true,
             ),
             (
                 include_bytes!("../tests/fixtures/ocr-upload-test.png").as_slice(),
@@ -572,11 +730,84 @@ mod tests {
                 sha256: format!("sha256:{}", crate::store::hash(bytes)),
             };
             assert_eq!(
-                super::validate_pdf(bytes, &input, &parser).await.is_ok(),
+                super::validate_document(bytes, &input, &parser)
+                    .await
+                    .is_ok(),
                 accepted
             );
         }
     }
+    #[tokio::test]
+    async fn benchmark_documents_validate_format_pages_pixels_and_digest() {
+        let parser = ocr_service::ParserProcess::new(
+            std::env::current_exe()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .parent()
+                .unwrap()
+                .join("ocr-parser-sandbox"),
+            std::time::Duration::from_secs(5),
+        )
+        .unwrap();
+        for (bytes, content_type, accepted) in [
+            (
+                include_bytes!("../tests/fixtures/20-pages.pdf").as_slice(),
+                "application/pdf",
+                true,
+            ),
+            (
+                include_bytes!("../tests/fixtures/21-pages.pdf").as_slice(),
+                "application/pdf",
+                false,
+            ),
+            (
+                include_bytes!("../tests/fixtures/ocr-upload-test.webp").as_slice(),
+                "image/webp",
+                true,
+            ),
+            (
+                include_bytes!("../tests/fixtures/ocr-upload-test.tiff").as_slice(),
+                "image/tiff",
+                true,
+            ),
+            (
+                include_bytes!("../tests/fixtures/ocr-upload-test.png").as_slice(),
+                "image/webp",
+                false,
+            ),
+        ] {
+            let input = super::UploadInput {
+                content_type: content_type.into(),
+                content_length: bytes.len(),
+                sha256: format!("sha256:{}", crate::store::hash(bytes)),
+            };
+            assert_eq!(
+                super::validate_document(bytes, &input, &parser)
+                    .await
+                    .is_ok(),
+                accepted,
+                "{content_type} {} bytes",
+                bytes.len()
+            );
+        }
+    }
+
+    #[test]
+    fn benchmark_upload_reservations_accept_twenty_mib_and_all_supported_formats() {
+        let digest = format!("sha256:{}", "a".repeat(64));
+        for content_type in [
+            "application/pdf",
+            "image/png",
+            "image/jpeg",
+            "image/tiff",
+            "image/webp",
+        ] {
+            assert!(super::validate_upload(&json!({"content_type":content_type,"content_length":20 * 1024 * 1024,"sha256":digest})).is_ok(), "{content_type}");
+        }
+        assert!(super::validate_upload(&json!({"content_type":"application/pdf","content_length":20 * 1024 * 1024 + 1,"sha256":digest})).is_err());
+    }
+
     #[test]
     fn sandbox_accepts_pdf_upload_reservations() {
         let digest = format!("sha256:{}", "a".repeat(64));
@@ -610,8 +841,8 @@ mod tests {
         )
         .is_ok());
         for body in [
-            json!({"content_type":"image/tiff","content_length":100,"sha256":digest}),
-            json!({"content_type":"image/png","content_length":4194305,"sha256":digest}),
+            json!({"content_type":"image/gif","content_length":100,"sha256":digest}),
+            json!({"content_type":"image/png","content_length":20971521,"sha256":digest}),
             json!({"content_type":"image/png","content_length":100,"sha256":digest,"tenant_id":"ten_OTHER"}),
         ] {
             assert!(super::validate_upload(&body).is_err());
