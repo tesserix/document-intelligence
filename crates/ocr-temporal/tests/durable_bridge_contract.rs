@@ -122,6 +122,41 @@ fn temporal_activity_failure_preserves_retry_class_without_sensitive_details() {
 }
 
 #[test]
+fn provider_quota_failure_waits_for_the_quota_window_without_becoming_permanent() {
+    use temporalio_common::{
+        data_converters::{
+            DefaultFailureConverter, FailureConverter, PayloadConverter, SerializationContextData,
+        },
+        error::{OutgoingActivityError, OutgoingError},
+        protos::temporal::api::failure::v1::failure::FailureInfo,
+    };
+    let ActivityError::Application(error) =
+        DurableExecutionError::from(PageRunnerError::RateLimited).into_activity_error()
+    else {
+        panic!("quota failure must map to application failure");
+    };
+    assert!(!error.is_non_retryable());
+    let delay = error
+        .next_retry_delay()
+        .expect("quota window delay required");
+    assert!((Duration::from_secs(65)..=Duration::from_secs(75)).contains(&delay));
+    assert_eq!(error.to_string(), "durable activity execution failed");
+    let failure = DefaultFailureConverter::default().to_failure(
+        OutgoingError::Activity(OutgoingActivityError::Application(error)),
+        &PayloadConverter::default(),
+        &SerializationContextData::None,
+    );
+    let Some(FailureInfo::ApplicationFailureInfo(info)) = failure.failure_info else {
+        panic!("quota failure metadata must reach Temporal");
+    };
+    assert!(!info.non_retryable);
+    assert_eq!(
+        info.next_retry_delay.unwrap().seconds,
+        i64::try_from(delay.as_secs()).unwrap()
+    );
+}
+
+#[test]
 fn durable_runner_activity_has_bounded_transport_recovery() {
     let options = durable_activity_options(7).unwrap();
     let retry = options.retry_policy.unwrap();

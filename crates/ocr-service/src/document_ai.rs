@@ -72,6 +72,8 @@ fn is_component(value: &str) -> bool {
 
 #[derive(Debug, Copy, Clone, Error, PartialEq, Eq)]
 pub enum DocumentAiTransportError {
+    #[error("document ai quota exhausted")]
+    RateLimited,
     #[error("Document AI rejected the page")]
     Invalid,
     #[error("Document AI is unavailable")]
@@ -225,10 +227,9 @@ fn is_supported_content_type(value: &str) -> bool {
 }
 
 fn map_http_status(status: StatusCode) -> DocumentAiTransportError {
-    if status == StatusCode::REQUEST_TIMEOUT
-        || status == StatusCode::TOO_MANY_REQUESTS
-        || status.is_server_error()
-    {
+    if status == StatusCode::TOO_MANY_REQUESTS {
+        DocumentAiTransportError::RateLimited
+    } else if status == StatusCode::REQUEST_TIMEOUT || status.is_server_error() {
         DocumentAiTransportError::Unavailable
     } else {
         DocumentAiTransportError::Invalid
@@ -395,6 +396,7 @@ impl DocumentAiPageRecognizer {
             .map_err(|error| match error {
                 DocumentAiTransportError::Invalid => PageRecognitionError::Permanent,
                 DocumentAiTransportError::Unavailable => PageRecognitionError::Retryable,
+                DocumentAiTransportError::RateLimited => PageRecognitionError::RateLimited,
             })
             .map_err(failed("provider"))?;
         measure_stage("response_parse", job_id, async {
@@ -648,6 +650,17 @@ mod tests {
     use ocr_domain::{PageGeometry, PageNumber};
 
     use super::*;
+
+    #[test]
+    fn provider_quota_exhaustion_is_distinct_from_transport_unavailability() {
+        let error = map_http_status(StatusCode::TOO_MANY_REQUESTS);
+        assert_ne!(error, DocumentAiTransportError::Unavailable);
+        assert_ne!(error, DocumentAiTransportError::Invalid);
+        assert_eq!(
+            map_http_status(StatusCode::SERVICE_UNAVAILABLE),
+            DocumentAiTransportError::Unavailable
+        );
+    }
 
     #[tokio::test]
     async fn unknown_auth_modes_are_rejected_without_credential_lookup() {
@@ -912,6 +925,17 @@ mod tests {
                 .await,
             Err(PageRecognitionError::Retryable)
         );
+    }
+
+    #[tokio::test]
+    async fn provider_quota_exhaustion_survives_recognition() {
+        let (provider, _) = recognizer(Ok(source()), Err(DocumentAiTransportError::RateLimited));
+        let (product_id, tenant_id, job_id) = scope();
+        let error = provider
+            .recognize(&product_id, &tenant_id, &job_id, &task(2))
+            .await
+            .unwrap_err();
+        assert_eq!(error, PageRecognitionError::RateLimited);
     }
 
     #[test]

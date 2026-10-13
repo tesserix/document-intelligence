@@ -437,6 +437,7 @@ impl From<PageRunnerOutcome> for DurableActivityOutput {
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum DurableExecutionErrorKind {
+    ProviderRateLimited,
     DependencyUnavailable,
     RevisionConflict,
     InvalidInput,
@@ -459,6 +460,7 @@ impl DurableExecutionError {
         matches!(
             self.kind,
             DurableExecutionErrorKind::DependencyUnavailable
+                | DurableExecutionErrorKind::ProviderRateLimited
                 | DurableExecutionErrorKind::RevisionConflict
         )
     }
@@ -468,7 +470,16 @@ impl DurableExecutionError {
     }
 
     pub fn into_activity_error(self) -> ActivityError {
-        if self.is_retryable() {
+        if self.kind == DurableExecutionErrorKind::ProviderRateLimited {
+            let jitter = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|time| u64::from(time.subsec_nanos() % 11))
+                .unwrap_or_default();
+            ApplicationFailure::builder(self)
+                .next_retry_delay(Duration::from_secs(65 + jitter))
+                .build()
+                .into()
+        } else if self.is_retryable() {
             ApplicationFailure::new(self).into()
         } else {
             ApplicationFailure::non_retryable(self).into()
@@ -485,6 +496,7 @@ impl From<PageRunnerError> for DurableExecutionError {
 impl DurableExecutionError {
     fn from_ref(value: &PageRunnerError) -> Self {
         let kind = match value {
+            PageRunnerError::RateLimited => DurableExecutionErrorKind::ProviderRateLimited,
             PageRunnerError::RetryableConflict => DurableExecutionErrorKind::RevisionConflict,
             PageRunnerError::NotFound => DurableExecutionErrorKind::ScopeNotFound,
             PageRunnerError::InvalidConfiguration | PageRunnerError::Domain(_) => {
