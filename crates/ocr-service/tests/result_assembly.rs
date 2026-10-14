@@ -108,7 +108,7 @@ fn assembles_pages_in_reading_order_with_leaf_citations_and_untrusted_text() {
 #[test]
 fn rejects_an_assembled_result_over_the_service_limit() {
     let huge = "x".repeat(65_536);
-    let observations = (0..300)
+    let observations = (0..(ocr_domain::MAXIMUM_DOCUMENT_RESULT_BYTES / 65_536 + 1) as u32)
         .map(|index| {
             observation(
                 &format!("obs_large_{index}"),
@@ -157,4 +157,100 @@ fn low_confidence_text_is_preserved_with_actionable_review_guidance() {
         .warnings
         .iter()
         .any(|v| *v == ocr_domain::StableCode::new("retake_sharper_image").unwrap()));
+}
+
+#[test]
+fn mixed_documents_preserve_text_and_flag_pages_needing_manual_review() {
+    let result = assemble_document_result(
+        DocumentId::new("doc_MIXED_NATIVE").unwrap(),
+        DocumentVersion::new(&format!("sha256:{}", "d".repeat(64))).unwrap(),
+        vec![
+            DocumentPage::new(
+                PageNumber::new(1).unwrap(),
+                1000,
+                1400,
+                vec![observation(
+                    "obs_native_p1_line0",
+                    ObservationLevel::Line,
+                    "Invoice 1048",
+                    0,
+                    None,
+                )],
+            )
+            .unwrap(),
+            DocumentPage::new(PageNumber::new(2).unwrap(), 1000, 1400, vec![]).unwrap(),
+        ],
+        None,
+    )
+    .unwrap();
+    assert_eq!(result.text, "Invoice 1048");
+    assert_eq!(result.pages.len(), 2);
+    assert!(result.pages[1].observations.is_empty());
+    assert!(result.validation_failures.iter().any(|failure| failure.code
+        == ocr_domain::StableCode::new("ocr_page_requires_manual_review").unwrap()));
+    assert!(result
+        .warnings
+        .iter()
+        .any(|warning| *warning == ocr_domain::StableCode::new("manual_review_required").unwrap()));
+}
+
+#[test]
+fn native_results_record_non_model_provenance_without_changing_evidence() {
+    let result = ocr_service::assemble_native_document_result(
+        DocumentId::new("doc_NATIVE_PROFILE").unwrap(),
+        DocumentVersion::new(&format!("sha256:{}", "a".repeat(64))).unwrap(),
+        vec![DocumentPage::new(
+            PageNumber::new(1).unwrap(),
+            1000,
+            1400,
+            vec![observation(
+                "obs_native_p1_line0",
+                ObservationLevel::Line,
+                "Invoice 1048",
+                0,
+                None,
+            )],
+        )
+        .unwrap()],
+        None,
+        42,
+    )
+    .unwrap();
+    let json = serde_json::to_value(&result).unwrap();
+    assert_eq!(json["provider"], "native-text");
+    assert_eq!(json["model_version"], "none");
+    assert_eq!(json["processing_profile_version"], "native-text-v1");
+    assert_eq!(json["duration_ms"], 42);
+    assert_eq!(json["text"], "Invoice 1048");
+    assert_eq!(result.citations.len(), 1);
+}
+
+#[test]
+fn resumed_legacy_artifacts_are_preserved_but_never_labelled_as_native_only() {
+    let result = ocr_service::assemble_native_document_result(
+        DocumentId::new("doc_NATIVE_LEGACY").unwrap(),
+        DocumentVersion::new(&format!("sha256:{}", "a".repeat(64))).unwrap(),
+        vec![DocumentPage::new(
+            PageNumber::new(1).unwrap(),
+            1000,
+            1400,
+            vec![observation(
+                "obs_legacy_line0",
+                ObservationLevel::Line,
+                "Existing invoice",
+                0,
+                None,
+            )],
+        )
+        .unwrap()],
+        None,
+        42,
+    )
+    .unwrap();
+    let json = serde_json::to_value(&result).unwrap();
+    assert_eq!(json["provider"], "legacy-mixed");
+    assert_ne!(json["model_version"], "none");
+    assert_eq!(result.text, "Existing invoice");
+    assert!(result.validation_failures.iter().any(|failure| failure.code
+        == ocr_domain::StableCode::new("legacy_processing_requires_review").unwrap()));
 }

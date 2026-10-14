@@ -461,7 +461,7 @@
       "items": {
         "$ref": "#/$defs/page"
       },
-      "maxItems": 300,
+      "maxItems": 1000,
       "type": "array"
     },
     "processing_profile_version": {

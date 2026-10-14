@@ -45,6 +45,8 @@ google-cloud-auth = { version = "1.17.0", default-features = false }
 gcp_auth = { version = "0.12.7", default-features = false, features = ["ring", "webpki-roots"] }
 url = "2.5"
 lopdf = { version = "0.44", default-features = false }
+quick-xml = { version = "0.41", features = ["serialize"] }
+tiff = "0.11.3"
 temporalio-client = { version = "=0.8.0", default-features = false }
 temporalio-common = { version = "=0.8.0", default-features = false, features = ["serde_serialize"] }
 temporalio-macros = "=0.8.0"

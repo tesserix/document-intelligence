@@ -1,17 +1,20 @@
 //! Bounded structural inspection for the disposable document parser sandbox.
 
+mod native_text;
+pub use native_text::extract_native_document;
+
 use std::{collections::HashSet, io::Cursor};
 
 use image::{ImageFormat, ImageReader};
 use lopdf::{DecompressError, Document, LoadOptions, Object, ObjectId};
-use ocr_domain::{PageGeometry, PageNumber};
+use ocr_domain::{PageGeometry, PageNumber, MAXIMUM_PAGE_COUNT, MAXIMUM_TOTAL_PAGE_PIXELS};
 use serde::{Deserialize, Serialize};
 use thiserror::Error;
 
 pub const MAXIMUM_ENCODED_BYTES: usize = 100 * 1024 * 1024;
-const HARD_MAXIMUM_PAGES: usize = 300;
+const HARD_MAXIMUM_PAGES: usize = MAXIMUM_PAGE_COUNT as usize;
 const HARD_MAXIMUM_PAGE_PIXELS: u64 = 100_000_000;
-const HARD_MAXIMUM_TOTAL_PIXELS: u64 = 1_000_000_000;
+const HARD_MAXIMUM_TOTAL_PIXELS: u64 = MAXIMUM_TOTAL_PAGE_PIXELS;
 const HARD_MAXIMUM_DECODED_STREAM_BYTES: usize = 64 * 1024 * 1024;
 const MAXIMUM_DECOMPRESSION_RATIO: usize = 200;
 const MAXIMUM_PDF_OBJECTS: usize = 500_000;
@@ -22,6 +25,10 @@ const PDF_POINTS_PER_INCH: f64 = 72.0;
 
 #[derive(Debug, Error, PartialEq, Eq)]
 pub enum Error {
+    #[error("native text extraction is unavailable")]
+    NativeTextUnavailable,
+    #[error("native text exceeds its output limit")]
+    NativeTextLimitExceeded,
     #[error("document limits are invalid")]
     InvalidLimits,
     #[error("document content type is unsupported")]
@@ -118,7 +125,7 @@ pub fn inspect_document(
         "application/pdf" => inspect_pdf(encoded, limits),
         "image/jpeg" => inspect_image(encoded, ImageFormat::Jpeg, limits),
         "image/png" => inspect_image(encoded, ImageFormat::Png, limits),
-        "image/tiff" => inspect_image(encoded, ImageFormat::Tiff, limits),
+        "image/tiff" => inspect_tiff(encoded, limits),
         "image/webp" => inspect_image(encoded, ImageFormat::WebP, limits),
         _ => Err(Error::UnsupportedContentType),
     }
@@ -401,8 +408,15 @@ fn page_geometry(document: &Document, page_id: ObjectId, page: u32) -> Result<Pa
             limit: u64::MAX,
         });
     }
-    let width = width_pixels as u32;
-    let height = height_pixels as u32;
+    let rotation = inherited_optional_number(document, page_id, b"Rotate")?.unwrap_or(0.0);
+    if !rotation.is_finite() || rotation.rem_euclid(90.0) != 0.0 {
+        return Err(Error::InvalidDocument);
+    }
+    let (width, height) = if rotation.rem_euclid(180.0) == 90.0 {
+        (height_pixels as u32, width_pixels as u32)
+    } else {
+        (width_pixels as u32, height_pixels as u32)
+    };
     let pixels =
         u64::from(width)
             .checked_mul(u64::from(height))
@@ -531,4 +545,66 @@ pub fn prepare_ocr_image(encoded: &[u8], content_type: &str) -> Result<Option<Ve
         .write_to(&mut output, ImageFormat::Png)
         .map_err(|_| Error::InvalidDocument)?;
     Ok(Some(output.into_inner()))
+}
+
+fn inspect_tiff(encoded: &[u8], limits: DocumentLimits) -> Result<InspectionReport> {
+    let mut decoder =
+        tiff::decoder::Decoder::new(Cursor::new(encoded)).map_err(|_| Error::InvalidDocument)?;
+    let mut decode_limits = tiff::decoder::Limits::default();
+    decode_limits.decoding_buffer_size = HARD_MAXIMUM_DECODED_STREAM_BYTES;
+    decode_limits.intermediate_buffer_size = HARD_MAXIMUM_DECODED_STREAM_BYTES;
+    decoder = decoder.with_limits(decode_limits);
+    let mut pages = Vec::new();
+    let mut total = 0_u64;
+    let mut maximum = 0_u64;
+    loop {
+        if pages.len() >= limits.maximum_pages {
+            return Err(Error::PageLimitExceeded {
+                pages: pages.len() + 1,
+                limit: limits.maximum_pages,
+            });
+        }
+        let (width, height) = decoder.dimensions().map_err(|_| Error::InvalidDocument)?;
+        let pixels = u64::from(width)
+            .checked_mul(u64::from(height))
+            .filter(|n| *n > 0 && *n <= limits.maximum_page_pixels)
+            .ok_or(Error::PixelLimitExceeded {
+                pixels: u64::MAX,
+                limit: limits.maximum_total_pixels,
+            })?;
+        total = total
+            .checked_add(pixels)
+            .filter(|n| *n <= limits.maximum_total_pixels)
+            .ok_or(Error::PixelLimitExceeded {
+                pixels: u64::MAX,
+                limit: limits.maximum_total_pixels,
+            })?;
+        maximum = maximum.max(pixels);
+        decoder.read_image().map_err(|error| match error {
+            tiff::TiffError::LimitsExceeded => Error::PixelLimitExceeded {
+                pixels,
+                limit: limits.maximum_page_pixels,
+            },
+            _ => Error::InvalidDocument,
+        })?;
+        pages.push(
+            PageGeometry::new(
+                PageNumber::new(pages.len() as u32 + 1).map_err(|_| Error::InvalidDocument)?,
+                width,
+                height,
+            )
+            .map_err(|_| Error::InvalidDocument)?,
+        );
+        if !decoder.more_images() {
+            break;
+        }
+        decoder.next_image().map_err(|_| Error::InvalidDocument)?;
+    }
+    Ok(InspectionReport {
+        page_count: pages.len(),
+        maximum_page_pixels: maximum,
+        total_page_pixels: total,
+        pages,
+        password_protected: false,
+    })
 }

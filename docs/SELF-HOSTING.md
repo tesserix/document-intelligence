@@ -2,16 +2,18 @@
 
 The source is Apache-2.0. You can build it without Tesserix registry credentials.
 The complete OCR pipeline currently requires PostgreSQL, Temporal, ClamAV,
-versioned object storage and Google Document AI. GCS remains the default;
+versioned object storage and the bundled Poppler native text extractor. GCS remains the default;
 S3/Azure adapters require migration 0018 and real-cloud qualification. See
 [bring your own storage](BRING-YOUR-OWN-STORAGE.md) for routes, IAM and secrets. It is not an offline OCR appliance.
-Use your own accounts, buckets, processor and credentials; provider charges are
-separate. Valkey and OTLP telemetry are optional.
+Use your own accounts, buckets and storage credentials; infrastructure charges are
+separate. This execution worker makes no AI inference calls. PDFs with embedded
+text are extracted with page coordinates; scans and images require manual review.
+It does not recognize handwriting or text pixels. See [the native processing decision](adr/0016-native-document-processing.md). Valkey and OTLP telemetry are optional.
 
 ## Build and local startup check
 
 Install Docker with BuildKit, Git, and (for source tests) Rust 1.94, a C/C++
-compiler, pkg-config and protoc. Clone this repository and select a reviewed
+compiler, pkg-config, protoc and Poppler (`pdftotext`). Clone this repository and select a reviewed
 release tag or commit. Build both images:
 
 ```sh
@@ -46,14 +48,14 @@ never use it in a deployed environment.
 3. Provision separate private GCS buckets for quarantine, accepted sources,
    derived page artifacts and canonical results. Enable uniform bucket-level
    access, public-access prevention and lifecycle rules appropriate to your
-   retention obligations. Create a Document AI OCR processor in your chosen
-   residency region and enable the relevant Google APIs and billing.
+   retention obligations. Enable the storage APIs and billing. No Document AI
+   processor, GPU, model download, Qdrant or pgvector extension is required.
 4. Use workload identities for each service, with only the required bucket and
-   processor permissions. Upload issuance needs permission to issue its upload
+   storage permissions. Upload issuance needs permission to issue its upload
    capability. The execution worker defaults to Google metadata-server credentials (for example
-   GKE Workload Identity). Outside GCP, explicitly configure the documented
-   `application-default` mode and your own credential federation. Validate it
-   from the actual worker environment before accepting traffic. Do not distribute
+   GKE Workload Identity). Outside GCP, configure the storage adapter's documented credential chain
+   and your own credential federation. Validate it from the actual worker
+   environment before accepting traffic. Do not distribute
    service-account keys, reuse Tesserix identities, or put credentials in images.
 5. Run an updated ClamAV daemon on the dispatch worker's loopback network
    (`127.0.0.1:3310`); the adapter intentionally rejects remote scanner addresses.
@@ -66,6 +68,40 @@ never use it in a deployed environment.
    workload-signing keys. Put authenticated HTTPS ingress and rate limits in
    front of the API; never publish database, Temporal or scanner ports.
 
+## Native processing limits and upgrades
+
+The envelope is 100 MiB per source, up to 1,000 pages, 64 MiB of output/page
+artifacts per document, and 128 MiB of native layout XML. A document can exceed
+an output or time limit before reaching the page-count ceiling. Parser timeout
+is 60 seconds; recognition, including cache pressure, is bounded to 75 seconds.
+The existing 3,000-iteration Temporal ceiling and 50-iteration continue-as-new
+boundary remain unchanged for replay compatibility. Keep the default eight-page
+batch for the enlarged envelope; small batches can exhaust this ceiling during
+repeated failures. Synthetic tests are capacity checks, not a guarantee for every
+file or language.
+
+Apply migrations 0019–0021 before starting the updated worker. Native text and
+page coordinates are cached in tenant-scoped PostgreSQL JSONB rows, then cleared
+after successful publication. Failed/cancelled jobs retain the derived rows until
+job retention/cleanup; include them in residency, backup and retention policy.
+The final result and renderable page artifacts remain in object storage. Vectors
+and embeddings are unnecessary for extraction or rendering.
+
+Rollback migrations in reverse order only after an approved worker rollback.
+The down scripts refuse outstanding native cache rows, artifacts over 16 MiB
+or records over the old 300-page envelope. Retain/reprocess those records through
+an approved procedure; do not bypass the guards. Resumed older page artifacts
+require review and receive legacy provenance. The new worker ignores
+`DOCUMENT_AI_*` settings; remove obsolete processor grants through a separately
+reviewed IAM change. Downstream applications can still invoke AI independently.
+
+Linux parser children deny network socket creation via an inherited seccomp
+filter; starting that filter must succeed. The native runtime is a minimal
+text-only Poppler build, with corresponding source and build recipe bundled.
+Native package versions and license notices ship under `/licenses/native-text*`;
+Poppler has its own license obligations in addition to this repository's license.
+Review redistribution/source obligations before publishing container images.
+
 ## Process configuration
 
 All binaries below are included in the service image under `/app`.
@@ -74,7 +110,7 @@ All binaries below are included in the service image under `/app`.
 |---|---|
 | `ocr-service` | `DATABASE_URL`, `OCR_API_CAPABILITY=full` (or separate `uploads`/`jobs` deployments), `OCR_WORKLOAD_IDENTITY_KEYS`, `QUARANTINE_BUCKETS`, `RESULT_BUCKETS` |
 | `ocr-dispatch-worker` | `DATABASE_URL`, `WORK_SCOPE_DATABASE_URL`, `WORKER_ID`, `TEMPORAL_TARGET`, `TEMPORAL_NAMESPACE`, `TEMPORAL_TASK_QUEUE`, `QUARANTINE_BUCKETS`, `SOURCE_BUCKETS`, `CLAMD_ADDRESS=127.0.0.1:3310`, `PARSER_EXECUTABLE=/app/ocr-parser-sandbox` |
-| `ocr-execution-worker` | `DATABASE_URL`, `WORKER_ID`, the same Temporal settings, `SOURCE_BUCKETS`, `PAGE_BUCKETS`, `RESULT_BUCKETS`, `DOCUMENT_AI_PROJECT_ID`, `DOCUMENT_AI_LOCATION`, `DOCUMENT_AI_PROCESSOR_ID` |
+| `ocr-execution-worker` | `DATABASE_URL`, `WORKER_ID`, the same Temporal settings, `SOURCE_BUCKETS`, `PAGE_BUCKETS`, `RESULT_BUCKETS`; parser binary at `/app/ocr-parser-sandbox`, Poppler at `/usr/bin/pdftotext` |
 
 `WORKER_ID` must be unique per worker instance. `TEMPORAL_TARGET` is an HTTP(S)
 URL to your server. Consult your network and server configuration for transport
@@ -101,7 +137,7 @@ liveness probes. `healthz` alone is not proof of dependency health.
 
 For a first complete installation, use a dedicated Google Compute Engine Linux
 VM with a metadata-server service account authorized for your own test buckets
-and processor. Restrict access to the VM. This single-node example is for
+only. Restrict access to the VM. This single-node example is for
 integration qualification, not an HA production topology. Production should
 separate per-process workload identities and place replicas across failure
 domains. It requires the provisioned PostgreSQL and Temporal services above.
@@ -142,7 +178,7 @@ docker run -d --name ocr-clamav --network container:ocr-dispatch \
 
 docker run -d --name ocr-execution --network ocr-integration \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
-  --memory 1g --cpus 2 --pids-limit 256 --no-healthcheck \
+  --memory 4g --cpus 2 --pids-limit 256 --no-healthcheck \
   --tmpfs /tmp:rw,noexec,nosuid,size=128m \
   --env-file /secure/ocr/execution.env \
   "$OCR_IMAGE" /app/ocr-execution-worker

@@ -14,13 +14,14 @@ concurrency:
 
 jobs:
   rust:
-    uses: tesserix/tesserix-workflows/.github/workflows/rust-ci.yml@57cebb53e06629dab4fe88268810360623a19e0f
+    uses: tesserix/tesserix-workflows/.github/workflows/rust-ci.yml@d3c8f68105d9743d71fc34117a5a6b19dc564016
     with:
       toolchain: 1.94.0
       coverage_min_lines: 70
       database_enabled: true
       database_setup_script: scripts/setup-test-database.sh
       protoc_enabled: true
+      poppler_enabled: true
 
   secret-scan:
     uses: tesserix/tesserix-workflows/.github/workflows/secret-scan.yml@57cebb53e06629dab4fe88268810360623a19e0f
@@ -52,6 +53,23 @@ jobs:
           /tmp/ocr-benchmark-tools/bin/mypy --strict scripts/ocr_benchmark.py
           /tmp/ocr-benchmark-tools/bin/pytest scripts/tests -q
           python3 -c 'from pathlib import Path; from ocr_benchmark import load_cases; print(len(load_cases(Path("benchmarks/v1/manifest.json"))), "verified benchmark fixtures")'
+
+  migration-container:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09
+      - name: Build migration client
+        run: docker build -f Dockerfile.migrator -t ocr-migrator:ci .
+      - name: Test non-root read-only client startup
+        run: docker run --rm --network=none --read-only --cap-drop=ALL --security-opt=no-new-privileges ocr-migrator:ci --version
+      - name: Scan migration runtime vulnerabilities
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ocr-migrator:ci
+          exit-code: 1
+          ignore-unfixed: false
+          severity: CRITICAL,HIGH
+          vuln-type: os,library
 
   sandbox-container:
     runs-on: ubuntu-latest

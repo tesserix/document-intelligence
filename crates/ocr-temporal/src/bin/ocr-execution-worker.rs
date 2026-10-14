@@ -9,9 +9,8 @@ use std::{
 use anyhow::{Context, Result};
 use ocr_service::{
     AcceptedPageSourceLoader, ArtifactPageProcessor, CloudAcceptedSourceReader,
-    CloudPageArtifactReader, CloudPageArtifactWriter, CloudResultWriter, DocumentAiConfiguration,
-    DocumentAiPageRecognizer, DocumentFinalizer, MetadataDocumentAiTransport, ResultPublisher,
-    TelemetryConfig, TelemetryRuntime,
+    CloudPageArtifactReader, CloudPageArtifactWriter, CloudResultWriter, DocumentFinalizer,
+    NativePageRecognizer, ParserProcess, ResultPublisher, TelemetryConfig, TelemetryRuntime,
 };
 use ocr_store::PgJobStore;
 use ocr_temporal::{
@@ -74,28 +73,13 @@ async fn run() -> Result<()> {
                 .collect::<Vec<_>>(),
         )?),
     ));
-    let transport = Arc::new(
-        MetadataDocumentAiTransport::new_with_auth(
-            DocumentAiConfiguration::new(
-                required("DOCUMENT_AI_PROJECT_ID")?,
-                required("DOCUMENT_AI_LOCATION")?,
-                required("DOCUMENT_AI_PROCESSOR_ID")?,
-            )?,
-            &env::var("DOCUMENT_AI_AUTH_MODE").unwrap_or_else(|_| "metadata".to_owned()),
-        )
-        .await
-        .map_err(|_| anyhow::anyhow!("Document AI workload identity is unavailable"))?,
-    );
     let pages = Arc::new(CloudPageArtifactWriter::new(page_buckets.clone())?);
     let processor = ArtifactPageProcessor::new(
-        Arc::new(
-            DocumentAiPageRecognizer::new(source, transport).with_preprocessor(
-                ocr_service::ParserProcess::new(
-                    "/app/ocr-parser-sandbox".into(),
-                    Duration::from_secs(5),
-                )?,
-            ),
-        ),
+        Arc::new(NativePageRecognizer::new(
+            source,
+            ParserProcess::new("/app/ocr-parser-sandbox".into(), Duration::from_secs(60))?,
+            store.clone(),
+        )),
         pages,
     );
     let page_executor = CheckpointedPageExecutor::new(
@@ -113,7 +97,8 @@ async fn run() -> Result<()> {
         page_reader,
         ResultPublisher::new(store, result_writer),
         bounded("FINALIZATION_CONCURRENCY", 4, 1, 64)?,
-    )?;
+    )?
+    .with_native_processing();
 
     let namespace_value = required("TEMPORAL_NAMESPACE")?;
     let namespace = temporal_namespace(&namespace_value)?;

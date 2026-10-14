@@ -12,12 +12,15 @@ mod importer;
 mod job_status_cache;
 mod malware;
 mod mcp;
+mod native_recognizer;
 mod nutrition_label;
 mod outbox_relay;
 mod page_artifacts;
 mod page_processor;
 mod page_runner;
 mod page_source;
+#[cfg(target_os = "linux")]
+mod parser_isolation;
 mod parser_process;
 mod result_artifacts;
 mod result_assembly;
@@ -53,6 +56,7 @@ pub use document_ai::{
 
 pub use document_finalizer::{DocumentFinalizeError, DocumentFinalizer};
 pub use extraction::{ExtractedFields, ExtractionSchema};
+pub use native_recognizer::NativePageRecognizer;
 pub use page_artifacts::{
     GcsPageArtifactReader, GcsPageArtifactWriter, PageArtifactConfigurationError,
     PageArtifactReadError, PageArtifactReadFuture, PageArtifactReader, PageArtifactWriteError,
@@ -76,7 +80,9 @@ pub use result_artifacts::{
     GcsResultReader, GcsResultWriter, ResultArtifactConfigurationError, ResultArtifactWriteError,
     ResultArtifactWriteFuture, ResultArtifactWriter,
 };
-pub use result_assembly::{assemble_document_result, ResultAssemblyError};
+pub use result_assembly::{
+    assemble_document_result, assemble_native_document_result, ResultAssemblyError,
+};
 pub use result_publisher::{PublishResultError, ResultPublisher};
 pub use telemetry::{TelemetryConfig, TelemetryConfigError, TelemetryInitError, TelemetryRuntime};
 pub use upload_artifacts::{GcsUploadArtifactReader, UploadArtifactConfigurationError};
@@ -132,7 +138,7 @@ use tracing_opentelemetry::OpenTelemetrySpanExt;
 use uuid::Uuid;
 
 const REQUEST_ID_HEADER: &str = "x-request-id";
-const MAXIMUM_RESULT_BYTES: usize = 16 * 1024 * 1024;
+const MAXIMUM_RESULT_BYTES: usize = ocr_domain::MAXIMUM_DOCUMENT_RESULT_BYTES;
 pub(crate) const MAXIMUM_UPLOAD_BYTES: i64 = 100 * 1024 * 1024;
 const UPLOAD_INTENT_TTL_MINUTES: i64 = 10;
 

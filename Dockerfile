@@ -26,7 +26,12 @@ FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d
 RUN apt-get update && apt-get install --no-install-recommends -y tini \
     && rm -rf /var/lib/apt/lists/*
 
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS native-text
+COPY ci/install-native-text.sh /tmp/install-native-text.sh
+RUN sh /tmp/install-native-text.sh
+
 FROM ${TESSERIX_RUNTIME}
+COPY --from=native-text /native/ /
 COPY --from=init /usr/bin/tini /usr/bin/tini
 COPY --from=init /usr/share/doc/tini/copyright /usr/share/doc/tini/copyright
 COPY LICENSE /licenses/document-intelligence.LICENSE

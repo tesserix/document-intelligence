@@ -1,5 +1,7 @@
 # ADR-0011: Signed OCR model profile contract
 
+The model/inference runtime direction in this historical record is superseded by [ADR-0016](0016-native-document-processing.md) for the strict no-AI execution path.
+
 **Status:** proposed
 
 ## Context

@@ -7,6 +7,7 @@ rust-version.workspace = true
 publish = false
 
 [dependencies]
+ocr-domain = { path = "../ocr-domain" }
 anyhow.workspace = true
 axum.workspace = true
 bytes.workspace = true

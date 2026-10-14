@@ -199,3 +199,12 @@ fn durable_workflow_rejects_injected_or_impossible_run_state() {
         );
     }
 }
+
+#[test]
+fn legacy_durable_run_retains_its_terminal_boundary_after_page_limit_expansion() {
+    let last = serde_json::from_str::<DurableWorkflowRunInput>(
+        r#"{"schema_version":"1","product_id":"kora","tenant_id":"ten_BRIDGE","job_id":"job_BRIDGE","next_iteration":2951,"run_number":60}"#,
+    ).unwrap();
+    assert_eq!(last.iteration_range(), 2951..=3000);
+    assert!(last.next_run().is_none());
+}

@@ -2506,9 +2506,11 @@ dependencies = [
  "image",
  "lopdf",
  "ocr-domain",
+ "quick-xml",
  "serde",
  "serde_json",
  "thiserror",
+ "tiff",
 ]
 
 [[package]]
@@ -2522,6 +2524,7 @@ dependencies = [
  "hmac",
  "http-body-util",
  "object_store",
+ "ocr-domain",
  "ocr-service",
  "reqwest",
  "serde",
@@ -2555,6 +2558,7 @@ dependencies = [
  "http-body-util",
  "jsonschema",
  "libc",
+ "lopdf",
  "object_store",
  "ocr-domain",
  "ocr-store",
@@ -2584,6 +2588,7 @@ dependencies = [
 name = "ocr-store"
 version = "0.1.0"
 dependencies = [
+ "futures-util",
  "ocr-domain",
  "serde_json",
  "sqlx",
@@ -3075,9 +3080,9 @@ dependencies = [
 
 [[package]]
 name = "quinn-proto"
-version = "0.11.17"
+version = "0.11.18"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "04759210543be93709136e28212294a659ef5001836ff4eab4d663e4529bba83"
+checksum = "a9746dbde176634f4f2f1faf2404e30a31b2bc1e9cafb5329c95d8177a18c9fc"
 dependencies = [
  "aws-lc-rs",
  "bytes",
@@ -4122,7 +4127,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "32497e9a4c7b38532efcdebeef879707aa9f794296a4f0244f6f69e9bc8574bd"
 dependencies = [
  "fastrand",
- "getrandom 0.4.3",
+ "getrandom 0.3.4",
  "once_cell",
  "rustix",
  "windows-sys 0.61.2",

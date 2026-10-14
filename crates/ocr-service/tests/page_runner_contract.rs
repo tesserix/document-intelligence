@@ -813,6 +813,7 @@ async fn finalizer_applies_the_extraction_schema_stored_on_the_job() {
         *writer.failures.lock().unwrap(),
         vec![
             "nutrition_panel_not_found".to_owned(),
+            "ocr_page_requires_manual_review".to_owned(),
             "ocr_no_text_detected".to_owned()
         ]
     );
@@ -842,4 +843,179 @@ async fn finalizer_applies_the_extraction_schema_stored_on_the_job() {
             .state,
         JobState::Processing
     );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn finalizer_rejects_aggregate_artifact_budget_before_reading_pages() {
+    let (store, admin) = store().await;
+    let tenant = TenantId::new("ten_FINALIZER_BUDGET").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let job = JobId::new("job_FINALIZER_BUDGET").unwrap();
+    seed_job(&store, &admin, job.as_str(), tenant.as_str()).await;
+    store
+        .create_page_workflow(
+            &tenant,
+            &product,
+            &job,
+            PageWorkflow::new(job.clone(), 2, 1).unwrap(),
+        )
+        .await
+        .unwrap();
+    CheckpointedPageRunner::new(&store, &RecordingProcessor::default(), 2, 2)
+        .unwrap()
+        .run_once(&tenant, &product, &job)
+        .await
+        .unwrap();
+    sqlx::query("update ocr_page_artifacts set content_length=$2 where job_id=$1")
+        .bind(job.as_str())
+        .bind(ocr_domain::MAXIMUM_DOCUMENT_RESULT_BYTES as i64)
+        .execute(&admin)
+        .await
+        .unwrap();
+    let finalizer = DocumentFinalizer::new(
+        store.clone(),
+        Arc::new(WrongPageJsonReader),
+        ResultPublisher::new(store.clone(), Arc::new(MatchingResultWriter)),
+        2,
+    )
+    .unwrap();
+    assert!(matches!(
+        finalizer.finalize_stored(&tenant, &product, &job).await,
+        Err(ocr_service::DocumentFinalizeError::Assembly(
+            ocr_service::ResultAssemblyError::TooLarge
+        ))
+    ));
+    assert_eq!(
+        store
+            .find(&tenant, &product, &job)
+            .await
+            .unwrap()
+            .unwrap()
+            .state,
+        JobState::Processing
+    );
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn native_finalization_replay_does_not_read_or_republish_after_cleanup() {
+    let (store, admin) = store().await;
+    let tenant = TenantId::new("ten_NATIVE_FINALIZER_REPLAY").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let job = JobId::new("job_NATIVE_FINALIZER_REPLAY").unwrap();
+    seed_job(&store, &admin, job.as_str(), tenant.as_str()).await;
+    sqlx::query("update ocr_uploads set parser_page_count=1,parser_maximum_page_pixels=1000000,parser_total_page_pixels=1000000,parser_profile='strict-v1',parser_version='test' where tenant_id=$1").bind(tenant.as_str()).execute(&admin).await.unwrap();
+    let page = DocumentPage::new(PageNumber::new(1).unwrap(), 1000, 1400, vec![]).unwrap();
+    store
+        .save_native_pages(
+            &tenant,
+            &product,
+            &job,
+            "native-text-v1",
+            &format!("sha256:{}", "f".repeat(64)),
+            &[page],
+        )
+        .await
+        .unwrap();
+    store
+        .create_page_workflow(
+            &tenant,
+            &product,
+            &job,
+            PageWorkflow::new(job.clone(), 1, 1).unwrap(),
+        )
+        .await
+        .unwrap();
+    CheckpointedPageRunner::new(&store, &RecordingProcessor::default(), 1, 1)
+        .unwrap()
+        .run_once(&tenant, &product, &job)
+        .await
+        .unwrap();
+    let first = DocumentFinalizer::new(
+        store.clone(),
+        Arc::new(PageJsonReader),
+        ResultPublisher::new(store.clone(), Arc::new(MatchingResultWriter)),
+        1,
+    )
+    .unwrap()
+    .with_native_processing();
+    assert!(matches!(
+        first
+            .finalize_stored(&tenant, &product, &job)
+            .await
+            .unwrap(),
+        CommitResultOutcome::Committed(_)
+    ));
+    assert!(store
+        .load_native_pages(&tenant, &product, &job, "native-text-v1")
+        .await
+        .unwrap()
+        .is_none());
+    let before = match store.find_result(&tenant, &product, &job).await.unwrap() {
+        ResultLookup::Ready(value) => value,
+        _ => panic!("result must be committed"),
+    };
+    let replay = DocumentFinalizer::new(
+        store.clone(),
+        Arc::new(WrongPageJsonReader),
+        ResultPublisher::new(store.clone(), Arc::new(FailingResultWriter)),
+        1,
+    )
+    .unwrap()
+    .with_native_processing();
+    assert!(matches!(
+        replay
+            .finalize_stored(&tenant, &product, &job)
+            .await
+            .unwrap(),
+        CommitResultOutcome::Existing(_)
+    ));
+    let after = match store.find_result(&tenant, &product, &job).await.unwrap() {
+        ResultLookup::Ready(value) => value,
+        _ => panic!("result must be preserved"),
+    };
+    assert_eq!(before, after);
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn native_finalizer_marks_resumed_artifacts_without_native_metadata_for_review() {
+    let (store, admin) = store().await;
+    let tenant = TenantId::new("ten_NATIVE_LEGACY_REVIEW").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let job = JobId::new("job_NATIVE_LEGACY_REVIEW").unwrap();
+    seed_job(&store, &admin, job.as_str(), tenant.as_str()).await;
+    store
+        .create_page_workflow(
+            &tenant,
+            &product,
+            &job,
+            PageWorkflow::new(job.clone(), 1, 1).unwrap(),
+        )
+        .await
+        .unwrap();
+    CheckpointedPageRunner::new(&store, &RecordingProcessor::default(), 1, 1)
+        .unwrap()
+        .run_once(&tenant, &product, &job)
+        .await
+        .unwrap();
+    let writer = Arc::new(CapturingResultWriter::default());
+    let finalizer = DocumentFinalizer::new(
+        store.clone(),
+        Arc::new(PageJsonReader),
+        ResultPublisher::new(store.clone(), writer.clone()),
+        1,
+    )
+    .unwrap()
+    .with_native_processing();
+    finalizer
+        .finalize_stored(&tenant, &product, &job)
+        .await
+        .unwrap();
+    assert!(writer
+        .failures
+        .lock()
+        .unwrap()
+        .contains(&"legacy_processing_requires_review".to_owned()));
 }

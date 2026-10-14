@@ -3,6 +3,10 @@
 mod page_workflow;
 mod semantic_memory;
 
+pub const MAXIMUM_DOCUMENT_RESULT_BYTES: usize = 64 * 1024 * 1024;
+
+pub const MAXIMUM_TOTAL_PAGE_PIXELS: u64 = MAXIMUM_PAGE_COUNT as u64 * 100_000_000;
+
 pub use page_workflow::{
     PageTask, PageWorkflow, PageWorkflowStatus, MAXIMUM_PAGE_ATTEMPTS, MAXIMUM_PAGE_COUNT,
 };
@@ -1321,7 +1325,7 @@ impl DocumentResult {
         {
             return Err(Error::InvalidFieldName);
         }
-        if payload.pages.len() > 300 {
+        if payload.pages.len() > MAXIMUM_PAGE_COUNT as usize {
             return Err(Error::InvalidDocumentPage);
         }
         payload.pages.sort_by_key(|page| u32::from(page.page));

@@ -17,6 +17,8 @@ docker run --rm -i --network none --read-only --cap-drop ALL \
   --max-total-pixels 100000000 < benchmarks/v1/images/receipt_dark.png \
   | python3 -c 'import json,sys; r=json.load(sys.stdin); assert r["page_count"] == 1; assert r["pages"][0]["width"] == 1100; assert r["pages"][0]["height"] == 850'
 
+python3 ci/native-text-smoke.py "$parser_image"
+
 set +e
 printf 'invalid document' | docker run --rm -i --network none --read-only \
   --cap-drop ALL --security-opt no-new-privileges "$parser_image" \

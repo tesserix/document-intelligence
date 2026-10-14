@@ -126,7 +126,7 @@ fn sdk_page_activity_options_match_the_bounded_policy() {
 fn page_activity_input_rejects_out_of_range_or_injected_values() {
     for json in [
         r#"{"product_id":"kora","tenant_id":"ten_RELAY","job_id":"job_RELAY","page":0}"#,
-        r#"{"product_id":"kora","tenant_id":"ten_RELAY","job_id":"job_RELAY","page":301}"#,
+        r#"{"product_id":"kora","tenant_id":"ten_RELAY","job_id":"job_RELAY","page":1001}"#,
         r#"{"product_id":"kora","tenant_id":"ten_RELAY","job_id":"job_RELAY","page":1,"document_text":"untrusted"}"#,
     ] {
         assert!(
@@ -142,9 +142,10 @@ fn qualification_observer_accepts_only_a_real_page() {
     assert!(
         QualificationPageActivities::with_page_started_notifier(0, Arc::clone(&started)).is_none()
     );
-    assert!(
-        QualificationPageActivities::with_page_started_notifier(301, Arc::clone(&started))
-            .is_none()
-    );
+    assert!(QualificationPageActivities::with_page_started_notifier(
+        ocr_domain::MAXIMUM_PAGE_COUNT + 1,
+        Arc::clone(&started)
+    )
+    .is_none());
     assert!(QualificationPageActivities::with_page_started_notifier(51, started).is_some());
 }
