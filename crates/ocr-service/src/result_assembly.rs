@@ -1,3 +1,4 @@
+use ocr_domain::ProcessingProvenance;
 use std::collections::BTreeSet;
 
 use ocr_domain::{
@@ -21,8 +22,66 @@ pub enum ResultAssemblyError {
 pub fn assemble_document_result(
     document_id: DocumentId,
     document_version: DocumentVersion,
+    pages: Vec<DocumentPage>,
+    schema: Option<ExtractionSchema>,
+) -> Result<DocumentResult, ResultAssemblyError> {
+    assemble_with_provenance(document_id, document_version, pages, schema, None)
+}
+
+pub fn assemble_native_document_result(
+    document_id: DocumentId,
+    document_version: DocumentVersion,
+    pages: Vec<DocumentPage>,
+    schema: Option<ExtractionSchema>,
+    duration_ms: u64,
+) -> Result<DocumentResult, ResultAssemblyError> {
+    let legacy = pages
+        .iter()
+        .flat_map(|page| &page.observations)
+        .any(|observation| {
+            !String::from(observation.observation_id.clone()).starts_with("obs_native_")
+        });
+    let (provider, model, profile) = if legacy {
+        ("legacy-mixed", "unknown", "native-text-transition-v1")
+    } else {
+        ("native-text", "none", "native-text-v1")
+    };
+    let provenance = ProcessingProvenance::new(provider, model, profile, duration_ms)?;
+    assemble_with_provenance(
+        document_id,
+        document_version,
+        pages,
+        schema,
+        Some(provenance),
+    )
+}
+
+pub(crate) fn assemble_legacy_document_result(
+    document_id: DocumentId,
+    document_version: DocumentVersion,
+    pages: Vec<DocumentPage>,
+    schema: Option<ExtractionSchema>,
+) -> Result<DocumentResult, ResultAssemblyError> {
+    assemble_with_provenance(
+        document_id,
+        document_version,
+        pages,
+        schema,
+        Some(ProcessingProvenance::new(
+            "legacy-mixed",
+            "unknown",
+            "native-text-transition-v1",
+            0,
+        )?),
+    )
+}
+
+fn assemble_with_provenance(
+    document_id: DocumentId,
+    document_version: DocumentVersion,
     mut pages: Vec<DocumentPage>,
     schema: Option<ExtractionSchema>,
+    provenance: Option<ProcessingProvenance>,
 ) -> Result<DocumentResult, ResultAssemblyError> {
     pages.sort_by_key(|page| u32::from(page.page));
     let mut text = String::new();
@@ -64,6 +123,23 @@ pub fn assemble_document_result(
         .map(|schema| schema.extract(&pages))
         .unwrap_or_default();
     let mut warnings = Vec::new();
+    if provenance
+        .as_ref()
+        .is_some_and(|profile| profile.provider == "legacy-mixed")
+    {
+        extraction.validation_failures.push(ValidationFailure::new(
+            StableCode::new("legacy_processing_requires_review")?,
+            ValidationSeverity::Warning,
+        ));
+        warnings.push(StableCode::new("manual_review_required")?);
+    }
+    if pages.iter().any(|page| page.observations.is_empty()) {
+        extraction.validation_failures.push(ValidationFailure::new(
+            StableCode::new("ocr_page_requires_manual_review")?,
+            ValidationSeverity::Warning,
+        ));
+        warnings.push(StableCode::new("manual_review_required")?);
+    }
     if low_confidence {
         extraction.validation_failures.push(ValidationFailure::new(
             StableCode::new("ocr_low_confidence")?,
@@ -102,6 +178,7 @@ pub fn assemble_document_result(
             fields: extraction.fields,
             warnings,
             validation_failures: extraction.validation_failures,
+            provenance,
             ..DocumentResultPayload::default()
         },
     )?;

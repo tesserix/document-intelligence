@@ -1,9 +1,11 @@
 //! PostgreSQL persistence for document jobs.
 
+mod native_pages;
+
 use ocr_domain::{
     DocumentId, DocumentVersion, IdempotencyKey, JobId, JobState, PageGeometry, PageTask,
     PageWorkflow, PageWorkflowStatus, ProductId, RequestDigest, TenantId, UploadId,
-    WebhookSubscriptionId,
+    WebhookSubscriptionId, MAXIMUM_PAGE_COUNT, MAXIMUM_TOTAL_PAGE_PIXELS,
 };
 use sqlx::{PgPool, Postgres, Row, Transaction};
 use thiserror::Error;
@@ -2025,7 +2027,7 @@ fn stored_job_outbox_event(row: sqlx::postgres::PgRow) -> Result<StoredJobOutbox
     };
     let page_count = u32::try_from(row.try_get::<i32, _>("parser_page_count")?)
         .map_err(|_| Error::InvalidOutboxEvent)?;
-    if !(1..=300).contains(&page_count) {
+    if !(1..=MAXIMUM_PAGE_COUNT).contains(&page_count) {
         return Err(Error::InvalidOutboxEvent);
     }
     Ok(StoredJobOutboxEvent {
@@ -2161,9 +2163,9 @@ fn validate_accepted_source(source: &AcceptUpload) -> Result<()> {
         || !(1..=104_857_600).contains(&source.source_content_length)
         || !valid_digest
         || !is_valid_lease_owner(&source.inspection_lease_owner)
-        || !(1..=300).contains(&source.parser_inspection.page_count)
+        || !(1..=MAXIMUM_PAGE_COUNT as i32).contains(&source.parser_inspection.page_count)
         || !(1..=100_000_000).contains(&source.parser_inspection.maximum_page_pixels)
-        || !(source.parser_inspection.maximum_page_pixels..=1_000_000_000)
+        || !(source.parser_inspection.maximum_page_pixels..=MAXIMUM_TOTAL_PAGE_PIXELS as i64)
             .contains(&source.parser_inspection.total_page_pixels)
         || !valid_page_geometries(
             &source.parser_inspection.page_geometries,
@@ -2198,9 +2200,10 @@ fn validate_accepted_source_locator(source: &StoredAcceptedSource) -> Result<()>
         || !(1..=104_857_600).contains(&source.content_length)
         || !valid_digest
         || !valid_content_type
-        || !(1..=300).contains(&source.page_count)
+        || !(1..=MAXIMUM_PAGE_COUNT).contains(&source.page_count)
         || !(1..=100_000_000).contains(&source.maximum_page_pixels)
-        || !(source.maximum_page_pixels..=1_000_000_000).contains(&source.total_page_pixels)
+        || !(source.maximum_page_pixels..=MAXIMUM_TOTAL_PAGE_PIXELS)
+            .contains(&source.total_page_pixels)
         || !valid_page_geometries(
             &source.page_geometries,
             source.page_count,
@@ -2342,7 +2345,7 @@ fn validate_page_artifact(artifact: &StoredPageArtifact) -> Result<()> {
                 .bytes()
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
     });
-    if !(1..=300).contains(&artifact.page)
+    if !(1..=MAXIMUM_PAGE_COUNT).contains(&artifact.page)
         || !(1..=10).contains(&artifact.attempt)
         || artifact.activity_key.is_empty()
         || artifact.activity_key.len() > 160
@@ -2351,7 +2354,8 @@ fn validate_page_artifact(artifact: &StoredPageArtifact) -> Result<()> {
         || artifact.object_name.is_empty()
         || artifact.object_name.len() > 1024
         || !valid_object_version(&artifact.object_version)
-        || !(1..=16_777_216).contains(&artifact.content_length)
+        || !(1..=ocr_domain::MAXIMUM_DOCUMENT_RESULT_BYTES as i64)
+            .contains(&artifact.content_length)
         || !digest_is_valid
     {
         return Err(Error::InvalidStoredPageArtifact);

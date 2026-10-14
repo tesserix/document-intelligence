@@ -1,5 +1,7 @@
 # ADR-0004: Rust-native, evidence-first OCR engine
 
+The model/inference runtime direction in this historical record is superseded by [ADR-0016](0016-native-document-processing.md) for the strict no-AI execution path.
+
 **Status:** proposed
 
 ## Context

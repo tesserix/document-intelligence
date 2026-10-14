@@ -40,6 +40,7 @@ url.workspace = true
 uuid.workspace = true
 
 [dev-dependencies]
+lopdf.workspace = true
 http-body-util.workspace = true
 jsonschema.workspace = true
 opentelemetry_sdk = { workspace = true, features = ["testing"] }

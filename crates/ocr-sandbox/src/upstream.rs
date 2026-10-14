@@ -13,7 +13,7 @@ pub struct Upstream {
 pub async fn response_json(mut response: Response) -> Result<Value, Error> {
     let mut body = Vec::new();
     while let Some(chunk) = response.chunk().await.map_err(|_| Error::Unavailable)? {
-        if body.len() + chunk.len() > 16 * 1024 * 1024 {
+        if body.len() + chunk.len() > ocr_domain::MAXIMUM_DOCUMENT_RESULT_BYTES {
             return Err(Error::Unavailable);
         }
         body.extend_from_slice(&chunk);

@@ -5,13 +5,21 @@ FROM ${RUST_BUILDER} AS build
 WORKDIR /src
 COPY Cargo.toml Cargo.lock ./
 COPY crates ./crates
-RUN cargo build --locked --release -p ocr-parser-sandbox --bin ocr-parser-sandbox
+RUN --mount=type=cache,id=document-intelligence-parser-registry,target=/usr/local/cargo/registry \
+    --mount=type=cache,id=document-intelligence-parser-target,target=/src/target \
+    cargo build --locked --release -p ocr-parser-sandbox --bin ocr-parser-sandbox \
+    && mkdir -p /out && cp /src/target/release/ocr-parser-sandbox /out/ocr-parser-sandbox
 
 FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS init
 RUN apt-get update && apt-get install --no-install-recommends -y tini \
     && rm -rf /var/lib/apt/lists/*
 
+FROM debian:trixie-slim@sha256:a29215f6a35e51e22adffa17f89e9d2ef06214e64a2bad10d765c46aea49f11f AS native-text
+COPY ci/install-native-text.sh /tmp/install-native-text.sh
+RUN sh /tmp/install-native-text.sh
+
 FROM ${TESSERIX_RUNTIME}
+COPY --from=native-text /native/ /
 COPY --from=init /usr/bin/tini /usr/bin/tini
 COPY --from=init /usr/share/doc/tini/copyright /usr/share/doc/tini/copyright
 COPY LICENSE /licenses/document-intelligence.LICENSE
@@ -19,5 +27,5 @@ WORKDIR /app
 USER 10001:10001
 LABEL org.opencontainers.image.source="https://github.com/tesserix/document-intelligence" \
       org.opencontainers.image.licenses="Apache-2.0"
-COPY --from=build --chown=10001:10001 /src/target/release/ocr-parser-sandbox /app/ocr-parser-sandbox
+COPY --from=build --chown=10001:10001 /out/ocr-parser-sandbox /app/ocr-parser-sandbox
 ENTRYPOINT ["/usr/bin/tini", "--", "/app/ocr-parser-sandbox"]

@@ -1666,3 +1666,201 @@ async fn opaque_cloud_versions_round_trip_without_numeric_conversion() {
             .is_none());
     }
 }
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn native_large_documents_persist_page_1000_and_keep_tenant_isolation() {
+    let (store, admin, _) = store().await;
+    clear_fixture(&admin, &["job_NATIVE_LARGE"]).await;
+    seed_accepted_upload(&admin, "ten_NATIVE_LARGE").await;
+    let geometry = (1..=1000)
+        .map(|page| serde_json::json!({"page":page,"width":2550,"height":3300}))
+        .collect::<Vec<_>>();
+    sqlx::query("update ocr_uploads set parser_page_count=1000,parser_maximum_page_pixels=8415000,parser_total_page_pixels=8415000000,parser_page_geometries=$1::jsonb where tenant_id='ten_NATIVE_LARGE'")
+        .bind(serde_json::Value::Array(geometry).to_string()).execute(&admin).await.unwrap();
+    store
+        .create(request(
+            "job_NATIVE_LARGE",
+            "ten_NATIVE_LARGE",
+            "native-large",
+            'a',
+        ))
+        .await
+        .unwrap();
+    let tenant = TenantId::new("ten_NATIVE_LARGE").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let job = JobId::new("job_NATIVE_LARGE").unwrap();
+    let source = store
+        .load_accepted_source(&tenant, &product, &job)
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(source.page_count, 1000);
+    assert!(matches!(
+        store
+            .create_page_workflow(
+                &tenant,
+                &product,
+                &job,
+                PageWorkflow::new(job.clone(), 1000, 3).unwrap()
+            )
+            .await
+            .unwrap(),
+        CreatePageWorkflowOutcome::Created(_)
+    ));
+    sqlx::query("insert into ocr_page_artifacts (job_id,product_id,tenant_id,page_number,attempt,activity_key,object_bucket,object_name,object_generation,object_version,object_digest,content_length) values ($1,'kora',$2,1000,1,'native-page-1000','dev-kora-ocr-pages','products/kora/tenants/ten_NATIVE_LARGE/pages/job_NATIVE_LARGE/1000.json',1,'1',$3,128)")
+        .bind(job.as_str()).bind(tenant.as_str()).bind(format!("sha256:{}","a".repeat(64))).execute(&admin).await.unwrap();
+    assert_eq!(
+        store
+            .load_page_artifacts(&tenant, &product, &job)
+            .await
+            .unwrap()[0]
+            .page,
+        1000
+    );
+    assert!(store
+        .load_page_artifacts(&TenantId::new("ten_OTHER_NATIVE").unwrap(), &product, &job)
+        .await
+        .unwrap()
+        .is_empty());
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn native_pages_are_immutable_scoped_versioned_and_reusable_after_restart() {
+    let (store, admin, _) = store().await;
+    let tenant = TenantId::new("ten_NATIVE_CACHE").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let job = JobId::new("job_NATIVE_CACHE").unwrap();
+    clear_fixture(&admin, &[job.as_str()]).await;
+    seed_accepted_upload(&admin, tenant.as_str()).await;
+    store
+        .create(request(job.as_str(), tenant.as_str(), "native-cache", 'b'))
+        .await
+        .unwrap();
+    let page =
+        ocr_domain::DocumentPage::new(ocr_domain::PageNumber::new(1).unwrap(), 1000, 1000, vec![])
+            .unwrap();
+    let canonical = store
+        .save_native_pages(
+            &tenant,
+            &product,
+            &job,
+            "native-text-v1",
+            &format!("sha256:{}", "f".repeat(64)),
+            std::slice::from_ref(&page),
+        )
+        .await
+        .unwrap();
+    assert_eq!(canonical, vec![page.clone()]);
+    let duration = store
+        .load_native_duration_ms(&tenant, &product, &job, "native-text-v1")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        store
+            .load_native_page(&tenant, &product, &job, "native-text-v1", 1)
+            .await
+            .unwrap(),
+        Some(page.clone())
+    );
+    let replacement =
+        ocr_domain::DocumentPage::new(ocr_domain::PageNumber::new(1).unwrap(), 2000, 1000, vec![])
+            .unwrap();
+    assert_eq!(
+        store
+            .save_native_pages(
+                &tenant,
+                &product,
+                &job,
+                "native-text-v1",
+                &format!("sha256:{}", "f".repeat(64)),
+                &[replacement]
+            )
+            .await
+            .unwrap(),
+        vec![page.clone()]
+    );
+    assert_eq!(
+        store
+            .load_native_duration_ms(&tenant, &product, &job, "native-text-v1")
+            .await
+            .unwrap(),
+        Some(duration)
+    );
+    let fresh = PgJobStore::new(
+        sqlx::PgPool::connect(&std::env::var("TEST_DATABASE_URL").unwrap())
+            .await
+            .unwrap(),
+    );
+    assert_eq!(
+        fresh
+            .load_native_page(&tenant, &product, &job, "native-text-v1", 1)
+            .await
+            .unwrap(),
+        Some(page)
+    );
+    assert!(fresh
+        .load_native_page(
+            &TenantId::new("ten_OTHER_NATIVE_CACHE").unwrap(),
+            &product,
+            &job,
+            "native-text-v1",
+            1
+        )
+        .await
+        .unwrap()
+        .is_none());
+    assert!(fresh
+        .load_native_page(&tenant, &product, &job, "native-text-v2", 1)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn native_cache_rejects_a_different_source_even_when_canonical_pages_exist() {
+    let (store, admin, _) = store().await;
+    let tenant = TenantId::new("ten_NATIVE_DIGEST").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let job = JobId::new("job_NATIVE_DIGEST").unwrap();
+    clear_fixture(&admin, &[job.as_str()]).await;
+    seed_accepted_upload(&admin, tenant.as_str()).await;
+    store
+        .create(request(job.as_str(), tenant.as_str(), "native-digest", 'b'))
+        .await
+        .unwrap();
+    let pages = vec![ocr_domain::DocumentPage::new(
+        ocr_domain::PageNumber::new(1).unwrap(),
+        1000,
+        1000,
+        vec![],
+    )
+    .unwrap()];
+    store
+        .save_native_pages(
+            &tenant,
+            &product,
+            &job,
+            "native-text-v1",
+            &format!("sha256:{}", "f".repeat(64)),
+            &pages,
+        )
+        .await
+        .unwrap();
+    assert!(matches!(
+        store
+            .save_native_pages(
+                &tenant,
+                &product,
+                &job,
+                "native-text-v1",
+                &format!("sha256:{}", "a".repeat(64)),
+                &pages
+            )
+            .await,
+        Err(ocr_store::Error::InvalidStoredPageArtifact)
+    ));
+}

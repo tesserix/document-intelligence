@@ -11,7 +11,7 @@ use std::{
     future::Future, net::SocketAddr, ops::RangeInclusive, pin::Pin, sync::Arc, time::Duration,
 };
 
-use ocr_domain::{JobId, ProductId, TenantId, MAXIMUM_PAGE_ATTEMPTS, MAXIMUM_PAGE_COUNT};
+use ocr_domain::{JobId, ProductId, TenantId, MAXIMUM_PAGE_COUNT};
 use ocr_service::{
     scoped_workflow_id, CheckpointedPageRunner, DocumentFinalizeError, DocumentFinalizer,
     PageArtifactReader, PageProcessor, PageRunnerError, PageRunnerOutcome, ResultArtifactWriter,
@@ -42,7 +42,8 @@ const MAX_WORKFLOW_INPUT_BYTES: usize = 512;
 const TEMPORAL_RPC_TIMEOUT: Duration = Duration::from_secs(5);
 const PAGES_PER_RUN: u32 = 50;
 const DURABLE_ITERATIONS_PER_RUN: u32 = 50;
-const MAX_DURABLE_RUNNER_ITERATIONS: u32 = MAX_PAGE_COUNT * MAXIMUM_PAGE_ATTEMPTS as u32;
+// Preserve the existing workflow boundary independently of upload page limits.
+const MAX_DURABLE_RUNNER_ITERATIONS: u32 = 3_000;
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct WorkflowInput {
@@ -649,7 +650,7 @@ pub fn durable_activity_options(iteration: u32) -> Option<ActivityOptions> {
 }
 
 pub fn finalization_activity_options(iteration: u32) -> Option<ActivityOptions> {
-    if !(1..=MAX_PAGE_COUNT * u32::from(MAXIMUM_PAGE_ATTEMPTS)).contains(&iteration) {
+    if !(1..=MAX_DURABLE_RUNNER_ITERATIONS).contains(&iteration) {
         return None;
     }
     let policy = ActivityPolicy::page_ocr();
@@ -668,7 +669,7 @@ pub fn finalization_activity_options(iteration: u32) -> Option<ActivityOptions> 
 }
 
 fn activity_options(iteration: u32, activity_name: &str) -> Option<ActivityOptions> {
-    if !(1..=MAX_PAGE_COUNT * u32::from(MAXIMUM_PAGE_ATTEMPTS)).contains(&iteration) {
+    if !(1..=MAX_DURABLE_RUNNER_ITERATIONS).contains(&iteration) {
         return None;
     }
     let policy = ActivityPolicy::page_ocr();

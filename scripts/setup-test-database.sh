@@ -33,6 +33,9 @@ psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0017_job_extraction_
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f scripts/fixtures/storage-legacy.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0018_storage_versions.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f scripts/fixtures/storage-versions.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0019_native_document_limits.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0020_native_page_cache.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0021_document_output_limits.sql >/dev/null
 rollback_log="$(mktemp)"
 trap 'rm -f "$rollback_log"' EXIT
 if psql "$database_admin_url" -1 -v ON_ERROR_STOP=1 -f migrations/0018_storage_versions.down.sql >"$rollback_log" 2>&1; then
@@ -42,6 +45,9 @@ fi
 grep -q 'cannot downgrade while opaque storage versions exist' "$rollback_log"
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -c "delete from ocr_uploads where upload_id in ('upl_MIGRATIONLEGACY', 'upl_MIGRATIONOPAQUE')" >/dev/null
 
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0021_document_output_limits.down.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0020_native_page_cache.down.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0019_native_document_limits.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0018_storage_versions.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0017_job_extraction_schema.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0016_parser_page_geometry.down.sql >/dev/null
@@ -81,6 +87,9 @@ psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0018_storage_version
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0018_storage_versions.down.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 -c 'alter table ocr_uploads drop constraint ocr_uploads_verification_complete, drop constraint ocr_uploads_accepted_source_complete' >/dev/null
 psql "$database_admin_url" -1 -v ON_ERROR_STOP=1 -f migrations/0018_storage_versions.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0019_native_document_limits.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0020_native_page_cache.sql >/dev/null
+psql "$database_admin_url" -v ON_ERROR_STOP=1 -f migrations/0021_document_output_limits.sql >/dev/null
 psql "$database_admin_url" -v ON_ERROR_STOP=1 <<'SQL' >/dev/null
 do $$ begin
     if (select count(*) from pg_constraint where conrelid = 'ocr_uploads'::regclass
@@ -98,6 +107,8 @@ grant select, insert, update, delete on ocr_uploads to ${application_role};
 grant select, insert, update, delete on ocr_upload_outbox to ${application_role};
 grant select, insert, update, delete on ocr_page_workflows to ${application_role};
 grant select, insert on ocr_page_artifacts to ${application_role};
+grant select, insert, delete on ocr_native_documents, ocr_native_pages to ${application_role};
+grant usage, select on sequence ocr_native_documents_native_document_id_seq to ${application_role};
 grant usage, select on sequence ocr_upload_outbox_event_id_seq to ${application_role};
 grant usage, select on sequence ocr_outbox_event_id_seq to ${application_role};
 grant execute on function ocr_claim_work_scopes(text, integer) to ${application_role};
@@ -108,3 +119,14 @@ SQL
 
 echo "TEST_DATABASE_URL=postgres://${application_role}:local@127.0.0.1:${test_port}/${database_name}"
 echo "TEST_DATABASE_ADMIN_URL=${database_admin_url}"
+
+if ! command -v pdftotext >/dev/null; then
+    if command -v apt-get >/dev/null; then
+        sudo apt-get update >/dev/null
+        sudo apt-get install --no-install-recommends -y poppler-utils >/dev/null
+    else
+        echo 'Install Poppler (pdftotext) before native-processing tests.' >&2
+        exit 1
+    fi
+fi
+cargo build --locked -p ocr-parser-sandbox --bin ocr-parser-sandbox >&2

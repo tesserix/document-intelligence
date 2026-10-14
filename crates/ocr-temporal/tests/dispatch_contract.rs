@@ -60,7 +60,7 @@ fn workflow_input_is_versioned_bounded_and_content_free() {
         ]
     );
     assert!(serde_json::from_str::<WorkflowInput>(
-        r#"{"schema_version":"1","product_id":"kora","tenant_id":"ten_RELAY","job_id":"job_RELAY","page_count":301}"#,
+        r#"{"schema_version":"1","product_id":"kora","tenant_id":"ten_RELAY","job_id":"job_RELAY","page_count":1001}"#,
     )
     .is_err());
     assert!(serde_json::from_str::<WorkflowInput>(

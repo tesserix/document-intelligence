@@ -1,6 +1,6 @@
 use std::{path::PathBuf, process::Stdio, time::Duration};
 
-use ocr_domain::PageGeometry;
+use ocr_domain::{DocumentPage, PageGeometry, MAXIMUM_PAGE_COUNT, MAXIMUM_TOTAL_PAGE_PIXELS};
 use serde::Deserialize;
 use thiserror::Error;
 use tokio::{
@@ -94,6 +94,7 @@ pub struct ParserProcess {
     maximum_pages: u32,
     maximum_page_pixels: u64,
     maximum_total_pixels: u64,
+    pdf_text_executable: PathBuf,
 }
 
 impl ParserProcess {
@@ -104,9 +105,10 @@ impl ParserProcess {
         Ok(Self {
             executable,
             deadline,
-            maximum_pages: 300,
+            maximum_pages: MAXIMUM_PAGE_COUNT,
             maximum_page_pixels: 100_000_000,
-            maximum_total_pixels: 1_000_000_000,
+            maximum_total_pixels: MAXIMUM_TOTAL_PAGE_PIXELS,
+            pdf_text_executable: "/usr/bin/pdftotext".into(),
         })
     }
 
@@ -117,12 +119,50 @@ impl ParserProcess {
         self
     }
 
+    pub fn with_pdf_text_executable(
+        mut self,
+        executable: PathBuf,
+    ) -> Result<Self, ParserProcessError> {
+        if !executable.is_absolute() {
+            return Err(ParserProcessError::InvalidConfiguration);
+        }
+        self.pdf_text_executable = executable;
+        Ok(self)
+    }
+
+    pub async fn extract_native(
+        &self,
+        encoded: &[u8],
+        content_type: &str,
+    ) -> Result<Vec<DocumentPage>, ParserProcessError> {
+        let output = self.run(encoded, content_type, ParserMode::Native).await?;
+        let pages: Vec<DocumentPage> =
+            serde_json::from_slice(&output).map_err(|_| ParserProcessError::Unavailable)?;
+        if pages.is_empty() || pages.len() > self.maximum_pages as usize {
+            return Err(ParserProcessError::Unavailable);
+        }
+        let mut total = 0_u64;
+        for (index, page) in pages.iter().enumerate() {
+            let pixels = u64::from(page.width) * u64::from(page.height);
+            if u32::from(page.page) != index as u32 + 1 || pixels > self.maximum_page_pixels {
+                return Err(ParserProcessError::Unavailable);
+            }
+            total = total
+                .checked_add(pixels)
+                .ok_or(ParserProcessError::Unavailable)?;
+        }
+        if total > self.maximum_total_pixels {
+            return Err(ParserProcessError::Unavailable);
+        }
+        Ok(pages)
+    }
+
     pub async fn inspect(
         &self,
         encoded: &[u8],
         content_type: &str,
     ) -> Result<ParserInspectionReport, ParserProcessError> {
-        let report = parse_report(&self.run(encoded, content_type, false).await?)?;
+        let report = parse_report(&self.run(encoded, content_type, ParserMode::Inspect).await?)?;
         if i64::from(report.page_count) > i64::from(self.maximum_pages)
             || report.maximum_page_pixels > self.maximum_page_pixels as i64
             || report.total_page_pixels > self.maximum_total_pixels as i64
@@ -137,7 +177,7 @@ impl ParserProcess {
         encoded: &[u8],
         content_type: &str,
     ) -> Result<Option<Vec<u8>>, ParserProcessError> {
-        let output = self.run(encoded, content_type, true).await?;
+        let output = self.run(encoded, content_type, ParserMode::Prepare).await?;
         if output.is_empty() {
             return Ok(None);
         }
@@ -151,12 +191,12 @@ impl ParserProcess {
         &self,
         encoded: &[u8],
         content_type: &str,
-        prepare: bool,
+        mode: ParserMode,
     ) -> Result<Vec<u8>, ParserProcessError> {
-        let output_limit = if prepare {
-            20 * 1024 * 1024
-        } else {
-            MAXIMUM_OUTPUT_BYTES
+        let output_limit = match mode {
+            ParserMode::Prepare => 20 * 1024 * 1024,
+            ParserMode::Native => crate::MAXIMUM_RESULT_BYTES,
+            ParserMode::Inspect => MAXIMUM_OUTPUT_BYTES,
         };
         if encoded.is_empty()
             || encoded.len() > MAXIMUM_INPUT_BYTES
@@ -169,8 +209,17 @@ impl ParserProcess {
         }
 
         let mut command = Command::new(&self.executable);
-        if prepare {
-            command.arg("prepare-ocr");
+        match mode {
+            ParserMode::Prepare => {
+                command.arg("prepare-ocr");
+            }
+            ParserMode::Native => {
+                command
+                    .arg("extract-native")
+                    .arg("--pdf-text-executable")
+                    .arg(&self.pdf_text_executable);
+            }
+            ParserMode::Inspect => {}
         }
         command
             .env_clear()
@@ -190,6 +239,9 @@ impl ParserProcess {
             .kill_on_drop(true);
         #[cfg(unix)]
         command.process_group(0);
+        #[cfg(target_os = "linux")]
+        crate::parser_isolation::configure(&mut command)
+            .map_err(|_| ParserProcessError::Unavailable)?;
         let mut child = command
             .spawn()
             .map_err(|_| ParserProcessError::Unavailable)?;
@@ -274,9 +326,9 @@ fn parse_report(output: &[u8]) -> Result<ParserInspectionReport, ParserProcessEr
     let total_page_pixels =
         i64::try_from(report.total_page_pixels).map_err(|_| ParserProcessError::Unavailable)?;
     if report.password_protected
-        || !(1..=300).contains(&page_count)
+        || !(1..=MAXIMUM_PAGE_COUNT as i32).contains(&page_count)
         || !(1..=100_000_000).contains(&maximum_page_pixels)
-        || !(maximum_page_pixels..=1_000_000_000).contains(&total_page_pixels)
+        || !(maximum_page_pixels..=MAXIMUM_TOTAL_PAGE_PIXELS as i64).contains(&total_page_pixels)
         || report.pages.len()
             != usize::try_from(page_count).map_err(|_| ParserProcessError::Unavailable)?
     {
@@ -308,4 +360,11 @@ fn parse_report(output: &[u8]) -> Result<ParserInspectionReport, ParserProcessEr
         total_page_pixels,
         pages: report.pages,
     })
+}
+
+#[derive(Clone, Copy)]
+enum ParserMode {
+    Inspect,
+    Prepare,
+    Native,
 }

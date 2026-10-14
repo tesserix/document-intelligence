@@ -2,7 +2,7 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, JobId, Result};
 
-pub const MAXIMUM_PAGE_COUNT: u32 = 300;
+pub const MAXIMUM_PAGE_COUNT: u32 = 1_000;
 pub const MAXIMUM_PAGE_ATTEMPTS: u8 = 10;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]

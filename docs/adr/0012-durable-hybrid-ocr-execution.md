@@ -1,5 +1,7 @@
 # ADR-0012: Durable hybrid OCR execution
 
+The model/inference runtime direction in this historical record is superseded by [ADR-0016](0016-native-document-processing.md) for the strict no-AI execution path.
+
 ## Status
 
 Proposed. Implementation and review are tracked in GitHub issue #46.

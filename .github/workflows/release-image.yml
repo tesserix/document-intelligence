@@ -16,9 +16,22 @@ concurrency:
 jobs:
   publish-ocr-service:
     runs-on: ubuntu-24.04
-    permissions:
-      contents: write
-      packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - id: service
+            file: Dockerfile
+            image: ghcr.io/tesserix/document-intelligence/ocr-service
+          - id: parser
+            file: Dockerfile.parser
+            image: ghcr.io/tesserix/document-intelligence/ocr-parser-sandbox
+          - id: sandbox
+            file: Dockerfile.sandbox
+            image: ghcr.io/tesserix/document-intelligence/ocr-sandbox
+          - id: migrator
+            file: Dockerfile.migrator
+            image: ghcr.io/tesserix/document-intelligence/ocr-migrator
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
         with:
@@ -29,50 +42,61 @@ jobs:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
+      - name: Build candidate image
         if: github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
         with:
           context: .
-          file: Dockerfile
-          push: true
-          tags: ghcr.io/tesserix/document-intelligence/ocr-service:${{ github.sha }}
-          provenance: mode=max
-          sbom: true
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
+          load: true
+          tags: ${{ matrix.image }}:candidate-${{ github.sha }}
+          cache-from: type=gha,scope=release-${{ matrix.id }}
+          cache-to: type=gha,mode=max,scope=release-${{ matrix.id }}
+      - name: Require clean runtime vulnerability scan
         if: github.ref == 'refs/heads/main'
+        uses: aquasecurity/trivy-action@ed142fd0673e97e23eac54620cfb913e5ce36c25 # v0.36.0
+        with:
+          image-ref: ${{ matrix.image }}:candidate-${{ github.sha }}
+          format: table
+          exit-code: 1
+          ignore-unfixed: false
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+      - name: Publish verified image
+        if: github.ref == 'refs/heads/main'
+        uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
         with:
           context: .
-          file: Dockerfile.parser
+          file: ${{ matrix.file }}
+          platforms: linux/amd64
           push: true
-          tags: ghcr.io/tesserix/document-intelligence/ocr-parser-sandbox:${{ github.sha }}
+          tags: ${{ matrix.image }}:${{ github.sha }}
+          cache-from: type=gha,scope=release-${{ matrix.id }}
           provenance: mode=max
           sbom: true
-      - uses: docker/build-push-action@53b7df96c91f9c12dcc8a07bcb9ccacbed38856a
-        if: github.ref == 'refs/heads/main'
-        with:
-          context: .
-          file: Dockerfile.sandbox
-          push: true
-          tags: ghcr.io/tesserix/document-intelligence/ocr-sandbox:${{ github.sha }}
-          provenance: mode=max
-          sbom: true
-      - name: Publish version aliases
+      - name: Publish version alias
         if: startsWith(github.ref, 'refs/tags/v')
         env:
           VERSION: ${{ github.ref_name }}
           SOURCE_SHA: ${{ github.sha }}
+          IMAGE: ${{ matrix.image }}
         run: |
           git merge-base --is-ancestor "${SOURCE_SHA}" origin/main
-          for image in ocr-service ocr-parser-sandbox ocr-sandbox; do
-            docker buildx imagetools create \
-              --tag "ghcr.io/tesserix/document-intelligence/${image}:${VERSION}" \
-              "ghcr.io/tesserix/document-intelligence/${image}:${SOURCE_SHA}"
-          done
-      - name: Advance deploy ref after image publication
-        if: github.ref == 'refs/heads/main'
+          docker buildx imagetools create --tag "${IMAGE}:${VERSION}" "${IMAGE}:${SOURCE_SHA}"
+
+  advance-deploy-ref:
+    needs: publish-ocr-service
+    if: github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+      - name: Advance deploy ref after all verified images publish
         env:
-          GITHUB_SHA: ${{ github.sha }}
+          SOURCE_SHA: ${{ github.sha }}
         run: |
           git fetch origin deploy
-          git merge-base --is-ancestor origin/deploy "${GITHUB_SHA}"
-          git push origin "${GITHUB_SHA}:refs/heads/deploy"
+          git merge-base --is-ancestor origin/deploy "${SOURCE_SHA}"
+          git push origin "${SOURCE_SHA}:refs/heads/deploy"

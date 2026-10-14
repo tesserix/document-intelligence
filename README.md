@@ -25,9 +25,11 @@ backends and AI agents. Self-host it with your own infrastructure and credential
 **Used by Kora · Self-hosting beta · Apache-2.0**
 
 - **Bring your own infrastructure:** the license does not include Tesserix
-  services, customer data, Google Document AI access or cloud credits.
+  services, customer data, cloud credits. The updated execution worker uses native PDF text extraction;
+  production keeps its deployed behavior until a reviewed rollout.
 - **Know the limits:** synthetic benchmarks are regression tests, not a
-  real-world accuracy guarantee. OCR reads visible text; it cannot measure food
+  real-world accuracy guarantee. The native path reads embedded PDF text and
+  requires manual review for scanned PDFs/images; it cannot measure food
   weight or determine how much someone ate from a photograph.
 - **License:** commercial use, modification and redistribution are permitted
   subject to the [Apache-2.0 terms](LICENSE).
@@ -51,7 +53,7 @@ evidence, confidence, provider routing, and human-review routing. It does
 
 Products consume the same versioned HTTP API through generated clients. AI
 agents consume the provider-neutral Australis tool backed by that API. Product
-code never embeds the OCR engine or receives its GCS, CNPG, Qdrant or Valkey
+code never embeds the OCR engine or receives its GCS, CNPG or Valkey
 credentials. Product-specific storage, prompts, policy and observability remain
 consumer integrations around the shared service.
 
@@ -94,6 +96,7 @@ consumer integrations around the shared service.
 - [ADR-0001: service and repository boundaries](docs/adr/0001-service-boundaries.md)
 - [ADR-0002: durable document workflows](docs/adr/0002-durable-document-workflows.md)
 - [ADR-0003: untrusted content and evidence](docs/adr/0003-untrusted-content-and-evidence.md)
+- [ADR-0016: Native document processing without AI](docs/adr/0016-native-document-processing.md)
 - [ADR-0004: Rust-native OCR engine](docs/adr/0004-rust-native-ocr-engine.md)
 - [ADR-0005: CNPG, Qdrant, and Valkey](docs/adr/0005-data-platform.md)
 - [ADR-0006: Kora runtime storage as a consumer integration](docs/adr/0006-kora-runtime-storage.md)
@@ -109,7 +112,7 @@ Before deploying a new installation, confirm:
 
 - **Data policy:** residency regions and retention defaults.
 - **Access and ownership:** supported identity issuer and review-application owner.
-- **Infrastructure:** launch scale, Google Document AI processor locations and Temporal hosting model.
+- **Infrastructure:** launch scale, CPU/memory budgets and Temporal hosting model.
 - **Quality and cost:** thresholds from the evaluation plan.
 
 ## Runtime guide
