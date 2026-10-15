@@ -7,6 +7,7 @@ use thiserror::Error;
 
 #[derive(Debug, Copy, Clone, PartialEq, Eq)]
 pub enum PageProcessError {
+    RateLimited,
     Retryable,
     Permanent,
 }
@@ -32,6 +33,8 @@ pub enum PageRunnerOutcome {
 
 #[derive(Debug, Error)]
 pub enum PageRunnerError {
+    #[error("page provider quota exhausted")]
+    RateLimited,
     #[error("invalid page runner configuration")]
     InvalidConfiguration,
     #[error("page workflow not found")]
@@ -116,6 +119,7 @@ where
         .await;
 
         let mut artifacts = Vec::new();
+        let mut rate_limited = false;
         for (task, outcome) in outcomes {
             match outcome {
                 Ok(artifact) => {
@@ -124,6 +128,10 @@ where
                 }
                 Err(PageProcessError::Retryable) => {
                     stored.workflow.record_retryable_failure(&task)?;
+                }
+                Err(PageProcessError::RateLimited) => {
+                    stored.workflow.record_retryable_failure(&task)?;
+                    rate_limited |= task.attempt < stored.workflow.maximum_attempts();
                 }
                 Err(PageProcessError::Permanent) => {
                     stored.workflow.record_permanent_failure(&task)?;
@@ -143,6 +151,11 @@ where
             )
             .await?
         {
+            SavePageWorkflowOutcome::Saved(_)
+                if rate_limited && status == PageWorkflowStatus::Running =>
+            {
+                Err(PageRunnerError::RateLimited)
+            }
             SavePageWorkflowOutcome::Saved(_) => Ok(PageRunnerOutcome::Progressed(status)),
             SavePageWorkflowOutcome::Conflict => Err(PageRunnerError::RetryableConflict),
             SavePageWorkflowOutcome::NotFound => Err(PageRunnerError::NotFound),

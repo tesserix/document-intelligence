@@ -127,6 +127,17 @@ async fn recognized_page_is_written_as_the_claimed_activity_artifact() {
 }
 
 #[tokio::test]
+async fn provider_quota_failure_survives_artifact_processing() {
+    let (product_id, tenant_id, job_id) = scope();
+    assert_eq!(
+        processor(Some(PageRecognitionError::RateLimited), None)
+            .process(&product_id, &tenant_id, &job_id, task())
+            .await,
+        Err(PageProcessError::RateLimited)
+    );
+}
+
+#[tokio::test]
 async fn transient_dependencies_retry_but_invalid_output_is_permanent() {
     let (product_id, tenant_id, job_id) = scope();
     assert_eq!(

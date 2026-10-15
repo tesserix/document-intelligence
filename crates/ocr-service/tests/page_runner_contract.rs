@@ -27,6 +27,7 @@ use sqlx::PgPool;
 struct RecordingProcessor {
     calls: Arc<Mutex<Vec<PageTask>>>,
     failures_remaining: Arc<Mutex<HashMap<u32, usize>>>,
+    rate_limited: bool,
 }
 
 fn page_artifact(task: &PageTask) -> StoredPageArtifact {
@@ -74,7 +75,11 @@ impl PageProcessor for RecordingProcessor {
             let remaining = failures.entry(task.page).or_default();
             if *remaining > 0 {
                 *remaining -= 1;
-                Err(PageProcessError::Retryable)
+                Err(if self.rate_limited {
+                    PageProcessError::RateLimited
+                } else {
+                    PageProcessError::Retryable
+                })
             } else {
                 Ok(page_artifact(&task))
             }
@@ -374,6 +379,120 @@ async fn seed_job(store: &PgJobStore, admin_pool: &PgPool, job_id: &str, tenant_
         .await
         .unwrap();
     assert!(matches!(created, CreateOutcome::Created(_)));
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn quota_failure_checkpoints_successes_before_requesting_durable_backoff() {
+    let (store, admin_pool) = store().await;
+    let tenant = TenantId::new("ten_PAGE_QUOTA").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let job = JobId::new("job_PAGE_QUOTA").unwrap();
+    seed_job(&store, &admin_pool, job.as_str(), tenant.as_str()).await;
+    store
+        .create_page_workflow(
+            &tenant,
+            &product,
+            &job,
+            PageWorkflow::new(job.clone(), 3, 3).unwrap(),
+        )
+        .await
+        .unwrap();
+    let processor = RecordingProcessor {
+        rate_limited: true,
+        ..RecordingProcessor::fail_retryably_once(2)
+    };
+    let runner = CheckpointedPageRunner::new(&store, &processor, 3, 2).unwrap();
+
+    let result = runner.run_once(&tenant, &product, &job).await;
+    assert!(
+        result.is_err(),
+        "quota failure must request durable backoff; got {result:?}"
+    );
+    assert!(matches!(
+        result.unwrap_err(),
+        ocr_service::PageRunnerError::RateLimited
+    ));
+    assert_eq!(
+        store
+            .load_page_artifacts(&tenant, &product, &job)
+            .await
+            .unwrap()
+            .iter()
+            .map(|a| a.page)
+            .collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    assert_eq!(
+        runner.run_once(&tenant, &product, &job).await.unwrap(),
+        PageRunnerOutcome::Progressed(PageWorkflowStatus::Completed)
+    );
+    assert_eq!(processor.pages(), vec![1, 2, 3, 2]);
+    assert_eq!(
+        store
+            .load_page_artifacts(&tenant, &product, &job)
+            .await
+            .unwrap()
+            .iter()
+            .map(|a| a.page)
+            .collect::<Vec<_>>(),
+        vec![1, 2, 3]
+    );
+    assert!(store
+        .load_page_workflow(&TenantId::new("ten_OTHER_QUOTA").unwrap(), &product, &job)
+        .await
+        .unwrap()
+        .is_none());
+}
+
+#[tokio::test]
+#[ignore = "requires TEST_DATABASE_URL"]
+async fn exhausted_quota_page_does_not_block_unclaimed_pages() {
+    let (store, admin_pool) = store().await;
+    let tenant = TenantId::new("ten_QUOTA_EXHAUSTED").unwrap();
+    let product = ProductId::new("kora").unwrap();
+    let job = JobId::new("job_QUOTA_EXHAUSTED").unwrap();
+    seed_job(&store, &admin_pool, job.as_str(), tenant.as_str()).await;
+    store
+        .create_page_workflow(
+            &tenant,
+            &product,
+            &job,
+            PageWorkflow::new(job.clone(), 2, 3).unwrap(),
+        )
+        .await
+        .unwrap();
+    let processor = RecordingProcessor {
+        rate_limited: true,
+        failures_remaining: Arc::new(Mutex::new(HashMap::from([(1, 3)]))),
+        ..RecordingProcessor::default()
+    };
+    let runner = CheckpointedPageRunner::new(&store, &processor, 1, 1).unwrap();
+    for _ in 0..2 {
+        assert!(matches!(
+            runner.run_once(&tenant, &product, &job).await,
+            Err(ocr_service::PageRunnerError::RateLimited)
+        ));
+    }
+    assert_eq!(
+        runner.run_once(&tenant, &product, &job).await.unwrap(),
+        PageRunnerOutcome::Progressed(PageWorkflowStatus::Running)
+    );
+    assert_eq!(
+        runner.run_once(&tenant, &product, &job).await.unwrap(),
+        PageRunnerOutcome::Progressed(PageWorkflowStatus::Partial)
+    );
+    assert_eq!(processor.pages(), vec![1, 1, 1, 2]);
+    assert_eq!(
+        store
+            .load_page_artifacts(&tenant, &product, &job)
+            .await
+            .unwrap()
+            .iter()
+            .map(|a| a.page)
+            .collect::<Vec<_>>(),
+        vec![2]
+    );
 }
 
 #[tokio::test]

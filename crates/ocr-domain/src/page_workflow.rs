@@ -122,6 +122,10 @@ impl PageWorkflow {
         &self.job_id
     }
 
+    pub fn maximum_attempts(&self) -> u8 {
+        self.max_attempts
+    }
+
     pub fn successful_page_count(&self) -> usize {
         self.pages
             .iter()

@@ -9,6 +9,8 @@ use crate::{
 
 #[derive(Debug, Copy, Clone, Error, PartialEq, Eq)]
 pub enum PageRecognitionError {
+    #[error("page recognition quota exhausted")]
+    RateLimited,
     #[error("page recognition is temporarily unavailable")]
     Retryable,
     #[error("page cannot be recognized")]
@@ -71,6 +73,7 @@ where
                 .await
                 .map_err(|error| match error {
                     PageRecognitionError::Retryable => PageProcessError::Retryable,
+                    PageRecognitionError::RateLimited => PageProcessError::RateLimited,
                     PageRecognitionError::Permanent => PageProcessError::Permanent,
                 })?;
             if u32::from(page.page) != task.page {
