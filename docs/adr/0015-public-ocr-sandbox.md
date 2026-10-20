@@ -1,5 +1,7 @@
 # ADR 0015: Public OCR capability sandbox
 
+Status: Superseded. The public sandbox was retired on 2026-10-20; products integrate through the signed product API in [PRODUCT-OCR-INTEGRATION.md](../design/PRODUCT-OCR-INTEGRATION.md).
+
 ## Decision
 
 Serve a small static UI and a server-side API adapter from one GKE service at

@@ -88,7 +88,7 @@ def check(image: str, name: str, data: bytes, expected_exit: int) -> None:
 
 def main() -> None:
     parser = argparse.ArgumentParser()
-    parser.add_argument("--image", default="ocr-sandbox:ci")
+    parser.add_argument("--image", default="ocr-parser-sandbox:ci")
     args = parser.parse_args()
     check(args.image, "valid PNG", png(), 0)
     check(

@@ -26,9 +26,6 @@ jobs:
           - id: parser
             file: Dockerfile.parser
             image: ghcr.io/tesserix/document-intelligence/ocr-parser-sandbox
-          - id: sandbox
-            file: Dockerfile.sandbox
-            image: ghcr.io/tesserix/document-intelligence/ocr-sandbox
           - id: migrator
             file: Dockerfile.migrator
             image: ghcr.io/tesserix/document-intelligence/ocr-migrator
