@@ -97,6 +97,7 @@ consumer integrations around the shared service.
 - [ADR-0002: durable document workflows](docs/adr/0002-durable-document-workflows.md)
 - [ADR-0003: untrusted content and evidence](docs/adr/0003-untrusted-content-and-evidence.md)
 - [ADR-0016: Native document processing without AI](docs/adr/0016-native-document-processing.md)
+- [ADR-0017: Hybrid OCR for photos and image-only pages](docs/adr/0017-hybrid-photo-ocr.md)
 - [ADR-0004: Rust-native OCR engine](docs/adr/0004-rust-native-ocr-engine.md)
 - [ADR-0005: CNPG, Qdrant, and Valkey](docs/adr/0005-data-platform.md)
 - [ADR-0006: Kora runtime storage as a consumer integration](docs/adr/0006-kora-runtime-storage.md)

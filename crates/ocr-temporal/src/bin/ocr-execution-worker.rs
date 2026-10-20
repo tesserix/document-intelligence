@@ -9,8 +9,10 @@ use std::{
 use anyhow::{Context, Result};
 use ocr_service::{
     AcceptedPageSourceLoader, ArtifactPageProcessor, CloudAcceptedSourceReader,
-    CloudPageArtifactReader, CloudPageArtifactWriter, CloudResultWriter, DocumentFinalizer,
-    NativePageRecognizer, ParserProcess, ResultPublisher, TelemetryConfig, TelemetryRuntime,
+    CloudPageArtifactReader, CloudPageArtifactWriter, CloudResultWriter, DocumentAiConfiguration,
+    DocumentAiPageRecognizer, DocumentFinalizer, HybridPageRecognizer, MetadataDocumentAiTransport,
+    NativePageRecognizer, PageRecognizer, ParserProcess, ResultPublisher, TelemetryConfig,
+    TelemetryRuntime, DOCUMENT_AI_OCR_VERSION,
 };
 use ocr_store::PgJobStore;
 use ocr_temporal::{
@@ -74,14 +76,42 @@ async fn run() -> Result<()> {
         )?),
     ));
     let pages = Arc::new(CloudPageArtifactWriter::new(page_buckets.clone())?);
-    let processor = ArtifactPageProcessor::new(
-        Arc::new(NativePageRecognizer::new(
-            source,
-            ParserProcess::new("/app/ocr-parser-sandbox".into(), Duration::from_secs(60))?,
-            store.clone(),
-        )),
-        pages,
-    );
+    let native = Arc::new(NativePageRecognizer::new(
+        source.clone(),
+        ParserProcess::new("/app/ocr-parser-sandbox".into(), Duration::from_secs(60))?,
+        store.clone(),
+    ));
+    let recognizer: Arc<dyn PageRecognizer> = match document_ai(
+        setting("DOCUMENT_AI_PROJECT_ID")?,
+        setting("DOCUMENT_AI_LOCATION")?,
+        setting("DOCUMENT_AI_PROCESSOR_ID")?,
+    )? {
+        Some(configuration) => {
+            let transport = MetadataDocumentAiTransport::new_with_auth(
+                configuration,
+                &env::var("DOCUMENT_AI_AUTH_MODE").unwrap_or_else(|_| "metadata".to_owned()),
+            )
+            .await
+            .map_err(|_| anyhow::anyhow!("Document AI workload identity is unavailable"))?;
+            info!(
+                version = DOCUMENT_AI_OCR_VERSION,
+                "pages without native text use Document AI"
+            );
+            Arc::new(HybridPageRecognizer::new(
+                native,
+                Arc::new(
+                    DocumentAiPageRecognizer::new(source, Arc::new(transport)).with_preprocessor(
+                        ParserProcess::new(
+                            "/app/ocr-parser-sandbox".into(),
+                            Duration::from_secs(5),
+                        )?,
+                    ),
+                ),
+            ))
+        }
+        None => native,
+    };
+    let processor = ArtifactPageProcessor::new(recognizer, pages);
     let page_executor = CheckpointedPageExecutor::new(
         store.clone(),
         processor,
@@ -204,6 +234,32 @@ fn require_matching_products(
     Ok(())
 }
 
+/// Unset processor settings keep the worker native-only, as the public sandbox requires (ADR-0017).
+fn document_ai(
+    project: Option<String>,
+    location: Option<String>,
+    processor: Option<String>,
+) -> Result<Option<DocumentAiConfiguration>> {
+    match (project, location, processor) {
+        (None, None, None) => Ok(None),
+        (Some(project), Some(location), Some(processor)) => Ok(Some(
+            DocumentAiConfiguration::new(project, location, processor)
+                .context("DOCUMENT_AI_* processor settings are invalid")?,
+        )),
+        _ => {
+            anyhow::bail!("DOCUMENT_AI_PROJECT_ID, LOCATION and PROCESSOR_ID must be set together")
+        }
+    }
+}
+
+fn setting(name: &str) -> Result<Option<String>> {
+    match env::var(name) {
+        Ok(value) if !value.trim().is_empty() => Ok(Some(value)),
+        Ok(_) | Err(env::VarError::NotPresent) => Ok(None),
+        Err(env::VarError::NotUnicode(_)) => anyhow::bail!("{name} is not valid UTF-8"),
+    }
+}
+
 fn bounded(name: &str, default: usize, minimum: usize, maximum: usize) -> Result<usize> {
     let value = env::var(name)
         .ok()
@@ -250,7 +306,7 @@ async fn shutdown_signal() {
 mod tests {
     use std::collections::HashMap;
 
-    use super::{require_matching_products, temporal_namespace};
+    use super::{document_ai, require_matching_products, temporal_namespace};
 
     #[test]
     fn requires_a_dedicated_temporal_namespace() {
@@ -260,6 +316,21 @@ mod tests {
         );
         assert!(temporal_namespace("default").is_err());
         assert!(temporal_namespace("document-intelligence-prod-").is_err());
+    }
+
+    #[test]
+    fn document_ai_is_enabled_only_by_a_complete_processor_setting() {
+        let set = |value: &str| Some(value.to_owned());
+        assert!(document_ai(None, None, None).unwrap().is_none());
+        assert!(document_ai(
+            set("tesseracthub-480811"),
+            set("asia-south1"),
+            set("395d58b2596d5031")
+        )
+        .unwrap()
+        .is_some());
+        assert!(document_ai(set("tesseracthub-480811"), None, set("395d58b2596d5031")).is_err());
+        assert!(document_ai(set("tesseracthub-480811"), set("asia-south1"), set("a/b")).is_err());
     }
 
     #[test]

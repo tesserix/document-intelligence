@@ -22,6 +22,8 @@ const CLOUD_PLATFORM_SCOPE: &str = "https://www.googleapis.com/auth/cloud-platfo
 const DOCUMENT_AI_TIMEOUT: Duration = Duration::from_secs(30);
 const MAXIMUM_MANAGED_INPUT_BYTES: usize = 20 * 1024 * 1024;
 const MAXIMUM_MANAGED_RESPONSE_BYTES: usize = 16 * 1024 * 1024;
+/// Pinned so a provider default change cannot silently alter results; v1.0 misreads Thai and Odia.
+pub const DOCUMENT_AI_OCR_VERSION: &str = "pretrained-ocr-v2.1.1-2025-01-31";
 
 #[derive(Debug, Copy, Clone, Error, PartialEq, Eq)]
 pub enum DocumentAiConfigurationError {
@@ -57,8 +59,8 @@ impl DocumentAiConfiguration {
 
     fn endpoint(&self) -> String {
         format!(
-            "https://{}-documentai.googleapis.com/v1/projects/{}/locations/{}/processors/{}:process",
-            self.location, self.project_id, self.location, self.processor_id
+            "https://{}-documentai.googleapis.com/v1/projects/{}/locations/{}/processors/{}/processorVersions/{}:process",
+            self.location, self.project_id, self.location, self.processor_id, DOCUMENT_AI_OCR_VERSION
         )
     }
 }
@@ -501,7 +503,7 @@ fn observation(
         .collect::<Result<Vec<_>, _>>()?;
     let polygon = Polygon::new(points).map_err(|_| PageRecognitionError::Permanent)?;
     let observation_id =
-        ObservationId::try_from(format!("obs_gdoc_{}_{}", u32::from(page), index + 1))
+        ObservationId::try_from(format!("obs_docai_p{}_line{index}", u32::from(page)))
             .map_err(|_| PageRecognitionError::Permanent)?;
     TextObservation::new(
         observation_id,
@@ -789,6 +791,10 @@ mod tests {
         assert_eq!(page.observations.len(), 1);
         assert_eq!(page.observations[0].text, "Example");
         assert_eq!(
+            String::from(page.observations[0].observation_id.clone()),
+            "obs_docai_p2_line0"
+        );
+        assert_eq!(
             transport.request.lock().unwrap().as_ref(),
             Some(&(2, "application/pdf".to_owned(), 16))
         );
@@ -936,6 +942,16 @@ mod tests {
             .await
             .unwrap_err();
         assert_eq!(error, PageRecognitionError::RateLimited);
+    }
+
+    #[test]
+    fn requests_name_the_pinned_ocr_model_version() {
+        assert_eq!(
+            DocumentAiConfiguration::new("tesseracthub-480811", "asia-south1", "abc_123")
+                .unwrap()
+                .endpoint(),
+            "https://asia-south1-documentai.googleapis.com/v1/projects/tesseracthub-480811/locations/asia-south1/processors/abc_123/processorVersions/pretrained-ocr-v2.1.1-2025-01-31:process"
+        );
     }
 
     #[test]
