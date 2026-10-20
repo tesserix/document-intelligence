@@ -254,3 +254,34 @@ fn resumed_legacy_artifacts_are_preserved_but_never_labelled_as_native_only() {
     assert!(result.validation_failures.iter().any(|failure| failure.code
         == ocr_domain::StableCode::new("legacy_processing_requires_review").unwrap()));
 }
+
+#[test]
+fn photos_read_by_document_ai_are_attributed_to_it_without_legacy_review() {
+    let page = |number: u32, id: &str, text: &str| {
+        DocumentPage::new(
+            PageNumber::new(number).unwrap(),
+            1000,
+            1400,
+            vec![observation(id, ObservationLevel::Line, text, 0, None)],
+        )
+        .unwrap()
+    };
+    let result = ocr_service::assemble_native_document_result(
+        DocumentId::new("doc_HYBRID_PROFILE").unwrap(),
+        DocumentVersion::new(&format!("sha256:{}", "a".repeat(64))).unwrap(),
+        vec![
+            page(1, "obs_native_p1_line0", "Invoice 1048"),
+            page(2, "obs_docai_p2_line0", "出口"),
+        ],
+        None,
+        42,
+    )
+    .unwrap();
+    let json = serde_json::to_value(&result).unwrap();
+    assert_eq!(json["provider"], "native-text-document-ai");
+    assert_eq!(json["model_version"], "pretrained-ocr-v2.1.1-2025-01-31");
+    assert_eq!(json["processing_profile_version"], "hybrid-ocr-v1");
+    assert_eq!(result.text, "Invoice 1048\n\n出口");
+    assert!(result.validation_failures.is_empty(), "{json}");
+    assert!(result.warnings.is_empty(), "{json}");
+}

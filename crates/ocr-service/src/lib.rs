@@ -8,6 +8,7 @@ mod document_ai;
 mod document_finalizer;
 mod document_reader;
 mod extraction;
+mod hybrid_recognizer;
 mod importer;
 mod job_status_cache;
 mod malware;
@@ -52,10 +53,12 @@ pub use accepted_source_reader::{
 pub use document_ai::{
     DocumentAiConfiguration, DocumentAiConfigurationError, DocumentAiPageRecognizer,
     DocumentAiTransport, DocumentAiTransportError, MetadataDocumentAiTransport,
+    DOCUMENT_AI_OCR_VERSION,
 };
 
 pub use document_finalizer::{DocumentFinalizeError, DocumentFinalizer};
 pub use extraction::{ExtractedFields, ExtractionSchema};
+pub use hybrid_recognizer::HybridPageRecognizer;
 pub use native_recognizer::NativePageRecognizer;
 pub use page_artifacts::{
     GcsPageArtifactReader, GcsPageArtifactWriter, PageArtifactConfigurationError,

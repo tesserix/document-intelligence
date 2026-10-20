@@ -8,7 +8,7 @@ S3/Azure adapters require migration 0018 and real-cloud qualification. See
 Use your own accounts, buckets and storage credentials; infrastructure charges are
 separate. This execution worker makes no AI inference calls. PDFs with embedded
 text are extracted with page coordinates; scans and images require manual review.
-It does not recognize handwriting or text pixels. See [the native processing decision](adr/0016-native-document-processing.md). Valkey and OTLP telemetry are optional.
+Pages without a text layer, such as photos, are read by Document AI when `DOCUMENT_AI_*` is configured and flagged for manual review otherwise. See [the hybrid OCR decision](adr/0017-hybrid-photo-ocr.md). Valkey and OTLP telemetry are optional.
 
 ## Build and local startup check
 
@@ -91,9 +91,8 @@ Rollback migrations in reverse order only after an approved worker rollback.
 The down scripts refuse outstanding native cache rows, artifacts over 16 MiB
 or records over the old 300-page envelope. Retain/reprocess those records through
 an approved procedure; do not bypass the guards. Resumed older page artifacts
-require review and receive legacy provenance. The new worker ignores
-`DOCUMENT_AI_*` settings; remove obsolete processor grants through a separately
-reviewed IAM change. Downstream applications can still invoke AI independently.
+require review and receive legacy provenance. Set all three `DOCUMENT_AI_*`
+settings to read photos and image-only pages, or none to stay native-only.
 
 Linux parser children deny network socket creation via an inherited seccomp
 filter; starting that filter must succeed. The native runtime is a minimal

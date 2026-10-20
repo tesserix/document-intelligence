@@ -30,14 +30,14 @@ pub trait PageRecognizer: Send + Sync {
     ) -> PageRecognitionFuture<'a>;
 }
 
-pub struct ArtifactPageProcessor<R, W> {
+pub struct ArtifactPageProcessor<R: ?Sized, W> {
     recognizer: Arc<R>,
     writer: Arc<W>,
 }
 
 impl<R, W> ArtifactPageProcessor<R, W>
 where
-    R: PageRecognizer,
+    R: PageRecognizer + ?Sized,
     W: PageArtifactWriter,
 {
     pub fn new(recognizer: Arc<R>, writer: Arc<W>) -> Self {
@@ -47,7 +47,7 @@ where
 
 impl<R, W> PageProcessor for ArtifactPageProcessor<R, W>
 where
-    R: PageRecognizer,
+    R: PageRecognizer + ?Sized,
     W: PageArtifactWriter,
 {
     fn process<'a>(

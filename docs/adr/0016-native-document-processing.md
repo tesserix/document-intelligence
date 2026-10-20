@@ -1,6 +1,6 @@
 # ADR-0016: Native document processing without AI
 
-Status: Accepted for implementation; production rollout requires separate approval.
+Status: Accepted. Image pages and the native-only execution binary are superseded by [ADR-0017](0017-hybrid-photo-ocr.md).
 
 ## Context and requirements
 

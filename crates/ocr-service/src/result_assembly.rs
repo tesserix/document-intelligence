@@ -7,7 +7,7 @@ use ocr_domain::{
 };
 use thiserror::Error;
 
-use crate::{ExtractionSchema, MAXIMUM_RESULT_BYTES};
+use crate::{ExtractionSchema, DOCUMENT_AI_OCR_VERSION, MAXIMUM_RESULT_BYTES};
 
 #[derive(Debug, Error)]
 pub enum ResultAssemblyError {
@@ -35,17 +35,24 @@ pub fn assemble_native_document_result(
     schema: Option<ExtractionSchema>,
     duration_ms: u64,
 ) -> Result<DocumentResult, ResultAssemblyError> {
-    let legacy = pages
-        .iter()
-        .flat_map(|page| &page.observations)
-        .any(|observation| {
-            !String::from(observation.observation_id.clone()).starts_with("obs_native_")
-        });
-    let (provider, model, profile) = if legacy {
-        ("legacy-mixed", "unknown", "native-text-transition-v1")
-    } else {
-        ("native-text", "none", "native-text-v1")
+    let ids = || {
+        pages
+            .iter()
+            .flat_map(|page| &page.observations)
+            .map(|observation| String::from(observation.observation_id.clone()))
     };
+    let (provider, model, profile) =
+        if ids().any(|id| !id.starts_with("obs_native_") && !id.starts_with("obs_docai_")) {
+            ("legacy-mixed", "unknown", "native-text-transition-v1")
+        } else if ids().any(|id| id.starts_with("obs_docai_")) {
+            (
+                "native-text-document-ai",
+                DOCUMENT_AI_OCR_VERSION,
+                "hybrid-ocr-v1",
+            )
+        } else {
+            ("native-text", "none", "native-text-v1")
+        };
     let provenance = ProcessingProvenance::new(provider, model, profile, duration_ms)?;
     assemble_with_provenance(
         document_id,
