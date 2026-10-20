@@ -234,7 +234,7 @@ fn require_matching_products(
     Ok(())
 }
 
-/// Unset processor settings keep the worker native-only, as the public sandbox requires (ADR-0017).
+/// Unset processor settings keep the worker native-only (ADR-0017).
 fn document_ai(
     project: Option<String>,
     location: Option<String>,

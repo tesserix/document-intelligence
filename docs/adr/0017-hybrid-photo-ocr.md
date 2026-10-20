@@ -15,7 +15,7 @@ The execution worker recognizes each page natively first. A page with native tex
 - Requests name `pretrained-ocr-v2.1.1-2025-01-31` explicitly (`DOCUMENT_AI_OCR_VERSION`), so a provider default change cannot alter results silently. Moving to another version is a reviewed code change.
 - Document AI observations use `obs_docai_p{page}_line{n}` IDs. Results containing them record provider `native-text-document-ai`, the pinned model version and profile `hybrid-ocr-v1`; only other non-native IDs are treated as legacy and sent to review.
 - Document AI quota or outage errors retry the page through the existing durable checkpoints. A page Document AI rejects (unsupported type, over 20 MiB, invalid response) keeps its empty native page and is flagged for manual review rather than failing the document.
-- Document AI is enabled only when `DOCUMENT_AI_PROJECT_ID`, `DOCUMENT_AI_LOCATION` and `DOCUMENT_AI_PROCESSOR_ID` are all set; a partial setting stops startup. The public sandbox (ADR-0015) leaves them unset and stays native-only, so anonymous uploads never reach a paid provider.
+- Document AI is enabled only when `DOCUMENT_AI_PROJECT_ID`, `DOCUMENT_AI_LOCATION` and `DOCUMENT_AI_PROCESSOR_ID` are all set; a partial setting stops startup. Leaving all three unset keeps a worker native-only.
 
 ## Consequences
 
